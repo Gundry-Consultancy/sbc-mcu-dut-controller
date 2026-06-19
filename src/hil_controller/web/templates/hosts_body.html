@@ -1,0 +1,31 @@
+{% for h in hosts %}
+{% set hw = h.hw or {} %}
+<tr id="host-row-{{ h.id }}">
+  <td class="mono">{{ h.id }}</td>
+  <td><span class="badge badge-info">{{ h.role }}</span></td>
+  <td class="mono">{{ h.addr }}</td>
+  <td>{{ hw.model or '—' }}</td>
+  <td class="mono" style="font-size:0.73rem;">
+    {%- if hw.cpu_cores %}{{ hw.cpu_cores }}×{% else %}—{% endif %}
+    {%- if hw.mem_total_kb %} · {{ (hw.mem_total_kb // 1024) }} MB{% endif %}</td>
+  <td class="mono" style="font-size:0.73rem;" title="1/5/15-min load{% if hw.load_updated_at %} @ {{ hw.load_updated_at }}{% endif %}">
+    {%- if hw.load1 is not none %}{{ hw.load1 }}{% if hw.temp_c is not none %} · {{ hw.temp_c }}°C{% endif %}{% else %}—{% endif %}</td>
+  <td class="mono">{% if hw.speed_score is not none %}{{ hw.speed_score }}×{% else %}—{% endif %}</td>
+  <td>{{ h.max_concurrent_jobs if h.max_concurrent_jobs is not none else '∞' }}</td>
+  <td><div class="caps">{% for c in h.capabilities %}<span class="badge badge-gray">{{ c }}</span>{% endfor %}</div></td>
+  <td><span class="badge {% if h.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ h.status }}</span></td>
+  <td>
+    <button class="btn btn-sm btn-outline"
+      hx-get="/ui/hosts/{{ h.id }}/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">Edit</button>
+    <button class="btn btn-sm btn-danger"
+      hx-delete="/ui/hosts/{{ h.id }}"
+      hx-target="#host-row-{{ h.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="Delete host {{ h.id }}?">Del</button>
+  </td>
+</tr>
+{% else %}
+<tr id="hosts-empty"><td colspan="11" style="color:#6c757d;text-align:center;padding:1.5rem;">No hosts — click + Add Host to create one.</td></tr>
+{% endfor %}

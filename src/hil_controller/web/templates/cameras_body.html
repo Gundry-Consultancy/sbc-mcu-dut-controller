@@ -1,0 +1,33 @@
+{% for c in cameras %}
+<tr id="cam-row-{{ c.id }}">
+  <td class="mono">{{ c.id }}</td>
+  <td>{{ c.model }}</td>
+  <td class="mono" style="font-size:0.8rem;">{% if c.host_id %}{{ c.host_id }}{% else %}<em style="color:#999">network</em>{% endif %}</td>
+  <td>
+    {% if c.streams %}
+      {% for s in c.streams %}
+      <div class="mono" style="font-size:0.72rem;margin-bottom:0.2rem;">
+        <span class="badge badge-info">{{ s.get('type','?') }}</span> {{ s.get('url','') }}
+      </div>
+      {% endfor %}
+    {% elif c.source %}
+      <span class="mono" style="font-size:0.72rem;">{{ c.source }}</span>
+    {% endif %}
+  </td>
+  <td>{{ c.pool }}</td>
+  <td><span class="badge {% if c.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ c.status }}</span></td>
+  <td>
+    <button class="btn btn-sm btn-outline"
+      hx-get="/ui/cameras/{{ c.id }}/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">Edit</button>
+    <button class="btn btn-sm btn-danger"
+      hx-delete="/ui/cameras/{{ c.id }}"
+      hx-target="#cam-row-{{ c.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="Delete camera {{ c.id }}?">Del</button>
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="7" style="color:#6c757d;text-align:center;padding:1.5rem;">No cameras configured — click + Add Camera.</td></tr>
+{% endfor %}

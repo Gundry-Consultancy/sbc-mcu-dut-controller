@@ -1,0 +1,58 @@
+# Caller workflow for the Wippersnapper-Python repo.
+#
+# Drop this into the WS-Python repo as `.github/workflows/hil.yml`.
+# Runs the HIL display tests on every push and PR; manual dispatch is
+# kept for ad-hoc invocations with a different pytest spec.
+#
+# Prerequisites:
+#
+#   - Nothing strictly required — the reusable workflow defaults to
+#     HIL_API_BASE = http://wan.gdenu.fi:8080 and audience = hil-controller.
+#
+#   - Optional overrides under Settings → Variables → Actions:
+#       HIL_API_BASE        another controller URL
+#       HIL_OIDC_AUDIENCE   another OIDC audience
+#
+#   - Optional under Settings → Secrets → Actions:
+#       HIL_API_TOKEN       only needed if the controller's OIDC policy
+#                           doesn't already cover this repo.
+#
+# The reusable workflow this calls lives at
+# `tyeth-ai-assisted/usbip-hil-controller/.github/workflows/ws-python-ci.yml`
+# and centralises the job-submission body so every WS-Python push hits
+# the same well-defined contract against the controller.
+
+name: hil-display
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: "Pytest spec override (e.g. -k display_basic, tests/test_st7701.py)"
+        required: false
+        type: string
+        default: ""
+      secrets_profile:
+        description: "Secrets profile (bench-protomq | live-io-test | live-io-prod)"
+        required: false
+        type: string
+        default: "bench-protomq"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  display:
+    uses: tyeth-ai-assisted/usbip-hil-controller/.github/workflows/ws-python-ci.yml@main
+    with:
+      repo_owner:      ${{ github.repository_owner }}
+      repo_name:       ${{ github.event.repository.name }}
+      caller:          ${{ github.actor }}
+      ref:             ${{ github.sha }}
+      tests:           ${{ inputs.tests || '' }}
+      secrets_profile: ${{ inputs.secrets_profile || 'bench-protomq' }}
+    secrets:
+      HIL_API_TOKEN: ${{ secrets.HIL_API_TOKEN }}

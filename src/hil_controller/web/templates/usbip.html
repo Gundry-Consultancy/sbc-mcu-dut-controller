@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>USB-IP overview</h1>
+
+<p style="color:#6c757d;">
+  Live view of every hub host's exportable busids, with assignment to
+  topology devices. Each host's table loads on connect, then best-effort
+  enriches the rows with <code>lsusb</code> and <code>uhubctl</code>
+  details when those commands are available on the host. Refresh the page
+  to re-query.
+</p>
+
+<p style="font-size:0.8rem;color:#6c757d;margin-top:-0.5rem;">
+  {% if timeout %}
+    Per-command timeout: <strong>{{ timeout }}s</strong> (tables may be partial).
+    <a href="/ui/usbip">Wait fully instead →</a>
+  {% else %}
+    Waiting for the full result (<code>lsusb -v</code> can be slow on a large or
+    wedged bus). <a href="/ui/usbip?timeout=8">Cap each query at 8s →</a>
+  {% endif %}
+</p>
+
+{% if not hosts %}
+<div class="alert alert-info">
+  No hosts in topology. Add one on the <a href="/ui/hosts">Hosts</a>
+  page first.
+</div>
+{% endif %}
+
+{% for h in hosts %}
+<div class="tbl-wrap" style="margin-bottom:1.25rem;">
+  <div class="tbl-header">
+    <h2 style="display:flex;align-items:baseline;gap:0.5rem;">
+      <a href="/ui/hosts" class="mono">{{ h.id }}</a>
+      <span style="font-size:0.78rem;color:#6c757d;">{{ h.addr }}</span>
+      {% if h.role %}<span class="badge badge-gray" style="font-size:0.7rem;">{{ h.role }}</span>{% endif %}
+    </h2>
+    <button class="btn btn-sm btn-outline"
+            hx-get="/ui/usbip/host/{{ h.id }}{% if timeout %}?timeout={{ timeout }}{% endif %}"
+            hx-target="#usbip-section-{{ h.id }}"
+            hx-swap="innerHTML">Refresh</button>
+  </div>
+  <div id="usbip-section-{{ h.id }}"
+       hx-get="/ui/usbip/host/{{ h.id }}{% if timeout %}?timeout={{ timeout }}{% endif %}"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    <p style="color:#6c757d;padding:1rem;text-align:center;">
+      Querying <code>{{ h.id }}</code>...
+    </p>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

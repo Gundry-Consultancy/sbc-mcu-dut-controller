@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Devices</h1>
+
+<div id="form-panel"></div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>All Devices <span class="tbl-count">{{ devices|length }}</span></h2>
+    <div style="display:flex;gap:0.5rem;align-items:center;">
+      <select id="kind-filter" style="font-size:0.8rem;padding:0.3rem 0.5rem;" onchange="filterDevices(this.value)">
+        <option value="">All kinds</option>
+        <option value="microcontroller">microcontroller (Arduino DUTs)</option>
+        <option value="sbc">sbc (SBC runners)</option>
+      </select>
+      <button class="btn btn-primary"
+        hx-get="/ui/devices/form"
+        hx-target="#form-panel"
+        hx-swap="innerHTML">+ Add Device</button>
+    </div>
+  </div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Kind</th><th>Model</th><th>Host</th><th>Hub port</th><th>Pool</th>
+      <th>Capabilities</th><th>Serial Port</th><th>Flasher</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody id="devices-body">
+      {% include "devices_body.html" %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+function filterDevices(kind) {
+  document.querySelectorAll('#devices-body tr[id^="device-row-"]').forEach(row => {
+    if (!kind) { row.style.display = ''; return; }
+    const badge = row.querySelector('.badge');
+    row.style.display = (badge && badge.textContent.trim() === kind) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}

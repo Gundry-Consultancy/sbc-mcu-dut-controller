@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 580" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="am" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .t{fill:#0f172a;font-size:13px;}
+      .b{fill:#0f172a;font-size:13.5px;font-weight:700;}
+      .s{fill:#475569;font-size:11px;}
+      .si{fill:#e2e8f0;font-size:11px;}
+      .edge{stroke:#475569;stroke-width:1.7;fill:none;}
+      .feed{stroke:#db2777;stroke-width:1.8;fill:none;stroke-dasharray:5 4;}
+    </style>
+  </defs>
+
+  <text x="500" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Manual Operation — Interactive Bench Access</text>
+  <text x="500" y="50" text-anchor="middle" class="s">The same platform an operator drives by hand: log in to a device, toggle power, flash, watch serial + camera live</text>
+
+  <!-- operator -->
+  <rect x="34" y="92" width="200" height="150" rx="12" fill="#334155"/>
+  <text x="134" y="118" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">Operator</text>
+  <rect x="50" y="132" width="168" height="46" rx="8" fill="#475569"/>
+  <text x="134" y="151" text-anchor="middle" class="si" font-weight="600">HTMX dashboard /ui</text>
+  <text x="134" y="168" text-anchor="middle" class="si">hosts · devices · cameras</text>
+  <rect x="50" y="186" width="168" height="46" rx="8" fill="#475569"/>
+  <text x="134" y="205" text-anchor="middle" class="si" font-weight="600">CLI / SSH helpers</text>
+  <text x="134" y="222" text-anchor="middle" class="si">solenoid_hub_cli · turn_on/off.sh</text>
+
+  <path class="edge" d="M234 167 H300" marker-end="url(#am)"/>
+
+  <!-- controller actions -->
+  <rect x="300" y="78" width="320" height="320" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="460" y="100" text-anchor="middle" class="b" fill="#4338ca">Controller — manual actions</text>
+
+  <rect x="316" y="114" width="288" height="48" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="133" class="b" font-size="12.5">Log in to a device</text>
+  <text x="326" y="150" class="s">SSH to owning HIL host · open serial console · device detail page</text>
+
+  <rect x="316" y="170" width="288" height="48" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="189" class="b" font-size="12.5">Toggle USB power / reset</text>
+  <text x="326" y="206" class="s">MCP23017 solenoid per channel · timing profiles · usb-ids learn</text>
+
+  <rect x="316" y="226" width="288" height="48" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="245" class="b" font-size="12.5">Flash / deploy on demand</text>
+  <text x="326" y="262" class="s">esptool · picotool · uf2-msc · git-source — same adapters</text>
+
+  <rect x="316" y="282" width="288" height="48" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="301" class="b" font-size="12.5">Camera control</text>
+  <text x="326" y="318" class="s">snapshot · set ROI · calibrate (QR auto-hint) · preview focus</text>
+
+  <rect x="316" y="338" width="288" height="46" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="357" class="b" font-size="12.5">Submit an ad-hoc job</text>
+  <text x="326" y="374" class="s">raw-firmware-smoke / git-clone-and-run (trusted-firmware gate)</text>
+
+  <!-- bench -->
+  <rect x="690" y="92" width="278" height="150" rx="12" fill="#ccfbf1" stroke="#0d9488" stroke-width="2"/>
+  <text x="829" y="116" text-anchor="middle" class="b" fill="#0f766e">Bench hardware</text>
+  <text x="829" y="138" text-anchor="middle" class="s">HIL host · solenoid hub · DUT</text>
+  <text x="829" y="160" text-anchor="middle" class="s">CSI camera + IP webcam</text>
+  <text x="829" y="182" text-anchor="middle" class="s">/dev/serial/by-id/… (stable)</text>
+  <text x="829" y="204" text-anchor="middle" class="s">per-session ProtoMQ broker</text>
+  <text x="829" y="226" text-anchor="middle" class="s">power/reset solenoid channels</text>
+
+  <path class="edge" d="M620 200 H690" marker-end="url(#am)"/>
+  <text x="655" y="192" text-anchor="middle" class="s" font-style="italic">over SSH</text>
+
+  <!-- feedback panel -->
+  <rect x="690" y="270" width="278" height="128" rx="12" fill="#fdf2f8" stroke="#db2777" stroke-width="2"/>
+  <text x="829" y="294" text-anchor="middle" class="b" fill="#be185d">Live feedback</text>
+  <text x="829" y="316" text-anchor="middle" class="s">serial log — live tail (HTMX SSE)</text>
+  <text x="829" y="336" text-anchor="middle" class="s">camera frame / ROI snapshot</text>
+  <text x="829" y="356" text-anchor="middle" class="s">flash + protomq logs as assets</text>
+  <text x="829" y="376" text-anchor="middle" class="s">dmesg / usbmon (exclusive host)</text>
+
+  <path class="feed" d="M829 242 V270" marker-end="url(#am)"/>
+  <path class="feed" d="M690 306 C662 318 650 344 624 354" marker-end="url(#am)"/>
+  <text x="654" y="300" text-anchor="middle" class="s" fill="#be185d" font-style="italic">streamed live</text>
+
+  <text x="500" y="468" text-anchor="middle" class="s">Everything an automated job does is also exposed as a manual control — useful for bring-up, debugging a wedged board, or eyeballing a display.</text>
+  <text x="500" y="488" text-anchor="middle" class="s">Read-only pages are public on the LAN; power/flash/job actions require a bearer token.</text>
+</svg>

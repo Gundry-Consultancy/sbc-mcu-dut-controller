@@ -1,0 +1,99 @@
+<div class="form-panel">
+  <h2>{% if aux %}Edit Hardware — {{ aux.id }}{% else %}New Hardware Item{% endif %}</h2>
+  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+  <form hx-post="/ui/hardware{% if aux %}/{{ aux.id }}{% endif %}"
+        hx-target="#form-panel"
+        hx-swap="innerHTML">
+    <div class="form-grid">
+      {% if not aux %}
+      <div class="form-group">
+        <label for="f-hw-id">ID *</label>
+        <input type="text" id="f-hw-id" name="id" value="" required placeholder="oled-128x32-01">
+      </div>
+      {% endif %}
+      <div class="form-group">
+        <label for="f-hw-kind">Kind *</label>
+        <select id="f-hw-kind" name="kind">
+          {% for k in ['display','sensor','led','button','relay','mux','other'] %}
+          <option value="{{ k }}" {% if aux and aux.kind == k %}selected{% endif %}>{{ k }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="f-hw-model">Model</label>
+        <input type="text" id="f-hw-model" name="model" value="{{ aux.model if aux else '' }}" placeholder="ssd1306, ht16k33, …">
+      </div>
+      <div class="form-group">
+        <label for="f-hw-interface">Interface</label>
+        <input type="text" id="f-hw-interface" name="interface" value="{{ aux.interface if aux else '' }}" placeholder="i2c, spi, uart, …">
+      </div>
+      <div class="form-group">
+        <label for="f-hw-obs">Observability</label>
+        <select id="f-hw-obs" name="observability">
+          {% for o in ['none','camera','uart-log','snapshot'] %}
+          <option value="{{ o }}" {% if aux and aux.observability == o %}selected{% elif not aux and o == 'none' %}selected{% endif %}>{{ o }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="f-hw-caps">Capabilities</label>
+        <input type="text" id="f-hw-caps" name="capabilities" value="{{ (aux.capabilities | join(', ')) if aux else '' }}" placeholder="display:128x32, display:i2c">
+        <span class="form-hint">Comma-separated</span>
+      </div>
+      <div class="form-group">
+        <label for="f-hw-pool">Pool</label>
+        <input type="text" id="f-hw-pool" name="pool" value="{{ aux.pool if aux else 'public' }}">
+      </div>
+      <div class="form-group">
+        <label for="f-hw-status">Status</label>
+        <select id="f-hw-status" name="status">
+          {% for s in ['available','offline','maintenance'] %}
+          <option value="{{ s }}" {% if aux and aux.status == s %}selected{% elif not aux and s == 'available' %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    {% if aux %}
+    <hr class="section-sep">
+    <h2>Connections (attached to devices)</h2>
+    <div id="conn-list" style="margin-bottom:0.75rem;">
+      {% for conn in aux.connections %}
+      <div id="conn-{{ conn.id }}" style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.4rem;">
+        <span class="badge badge-sbc">{{ conn.device_id or '(no device)' }}</span>
+        {% if conn.mux_id %}<span class="badge badge-gray">mux:{{ conn.mux_id }} ch:{{ conn.mux_channel }}</span>{% endif %}
+        <button type="button" class="btn btn-sm btn-danger"
+          hx-delete="/ui/connections/{{ conn.id }}"
+          hx-target="#conn-{{ conn.id }}"
+          hx-swap="outerHTML">Remove</button>
+      </div>
+      {% else %}
+      <p style="color:#6c757d;font-size:0.8rem;">No device connections yet.</p>
+      {% endfor %}
+    </div>
+    <div style="display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
+      <div class="form-group" style="min-width:180px;">
+        <label>Add connection to device</label>
+        <select id="conn-device-sel" name="_conn_device">
+          <option value="">— select device —</option>
+          {% for d in devices %}
+          <option value="{{ d.id }}">{{ d.id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="button" class="btn btn-success btn-sm"
+        hx-post="/ui/connections"
+        hx-vals='js:{aux_id: "{{ aux.id }}", device_id: document.getElementById("conn-device-sel").value}'
+        hx-target="#conn-list"
+        hx-swap="outerHTML">Connect</button>
+    </div>
+    {% endif %}
+
+    <hr class="section-sep" style="margin-top:1rem;">
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">{% if aux %}Save Changes{% else %}Create Hardware{% endif %}</button>
+      <button type="button" class="btn btn-secondary"
+        hx-get="/ui/empty" hx-target="#form-panel" hx-swap="innerHTML">Cancel</button>
+    </div>
+  </form>
+</div>

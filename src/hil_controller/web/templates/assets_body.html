@@ -1,0 +1,37 @@
+{% for a in assets %}
+<tr id="asset-row-{{ a.id }}">
+  <td class="mono" style="font-size:0.78rem;">{{ a.filename }}</td>
+  <td><span class="badge badge-info">{{ a.kind }}</span></td>
+  <td style="font-size:0.8rem;">{{ a.size_fmt }}</td>
+  <td>
+    {% if a.job_id %}
+    <a href="/ui/jobs/{{ a.job_id }}" class="mono" style="font-size:0.7rem;">{{ a.job_id[:16] }}…</a>
+    {% else %}—{% endif %}
+  </td>
+  <td style="font-size:0.78rem;">{{ a.created_at[:16] if a.created_at else '—' }}</td>
+  <td style="font-size:0.78rem;">{{ a.purge_at[:16] if a.purge_at else '—' }}</td>
+  <td>
+    {% if a.purged_at %}
+      <span class="badge badge-gray">purged</span>
+    {% elif a.url and not a.path %}
+      <span class="badge badge-info">url-ref</span>
+    {% else %}
+      <span class="badge badge-ok">stored</span>
+    {% endif %}
+  </td>
+  <td style="white-space:nowrap;">
+    {% if not a.purged_at %}
+    <a class="btn btn-sm btn-outline" href="/ui/assets/{{ a.id }}/view"
+       {% if a.kind != 'log' %}download="{{ a.filename }}"{% else %}target="_blank"{% endif %}>
+      {% if a.kind == 'log' %}View{% else %}Download{% endif %}</a>
+    <button class="btn btn-sm btn-danger"
+      hx-delete="/ui/assets/{{ a.id }}"
+      hx-target="#asset-row-{{ a.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="Delete asset {{ a.filename }}?">Purge</button>
+    {% endif %}
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="8" style="color:#6c757d;text-align:center;padding:1.5rem;">No assets stored yet.</td></tr>
+{% endfor %}

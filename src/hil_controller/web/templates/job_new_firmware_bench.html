@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>New Firmware Bench Session</h1>
+<p class="form-hint" style="margin-bottom:1rem;max-width:900px;">
+  Flash a combined <code>.bin</code> to a DUT (erase → flash → verify), optionally write
+  <code>secrets.json</code> to its MSC drive pointing at a freshly-launched protomq, power-cycle,
+  then <strong>hold the device</strong> with live serial + protomq logging for a time-boxed window
+  you can extend. Drive it manually, via the API, or from pytest.
+</p>
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/ui/jobs/firmware-bench" enctype="multipart/form-data" style="max-width:900px;">
+
+  <div class="form-panel">
+    <h2>Target DUT</h2>
+    <div class="form-group">
+      <label for="device_id">Device</label>
+      <select id="device_id" name="device_id" required onchange="applyDeviceFilters()">
+        <option value="">— select a microcontroller —</option>
+        {% for d in mcu_devices %}
+        <option value="{{ d.id }}" {% if form and form.device_id == d.id %}selected{% endif %}>
+          {{ d.id }}{% if d.model %} — {{ d.model }}{% endif %}
+          {% if d.solenoid_channel is none %} (no power channel — soft reset only){% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <span class="form-hint">Flash/serial/MSC run on this DUT's host; protomq runs on the controller.</span>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Firmware</h2>
+    <div id="source-tabs" style="display:flex;gap:1rem;margin-bottom:1rem;">
+      <label style="display:flex;align-items:center;gap:0.4rem;font-weight:600;">
+        <input type="radio" name="firmware_source" value="upload"
+          {% if not form or form.firmware_source != 'path' %}checked{% endif %}
+          onchange="onSourceMode('upload')"> Upload file
+      </label>
+      <label style="display:flex;align-items:center;gap:0.4rem;font-weight:600;">
+        <input type="radio" name="firmware_source" value="path"
+          {% if form and form.firmware_source == 'path' %}checked{% endif %}
+          onchange="onSourceMode('path')"> Server path
+      </label>
+    </div>
+
+    <div id="upload-section">
+      <div class="form-group">
+        <label for="firmware_file">Combined .bin</label>
+        <input type="file" id="firmware_file" name="firmware_file" accept=".bin">
+      </div>
+      {% if recent_assets %}
+      <div class="form-group">
+        <label style="font-size:0.8rem;">Or reuse a previous upload</label>
+        <select name="reuse_asset_id">
+          <option value="">— upload new file above —</option>
+          {% for a in recent_assets %}
+          <option value="{{ a.id }}" {% if form and form.reuse_asset_id == a.id %}selected{% endif %}>
+            {{ a.filename }} ({{ a.size_fmt }}, {{ a.created_at[:10] }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+    </div>
+
+    <div id="path-section" style="display:none;">
+      <div class="form-group">
+        <label for="firmware_path">Path on controller</label>
+        <input type="text" id="firmware_path" name="firmware_path"
+          value="{{ form.firmware_path if form else '' }}"
+          placeholder="/var/lib/hil/builds/combined.bin">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="offset">Flash offset</label>
+      <input type="text" id="offset" name="offset" value="{{ form.offset if form else '0x0' }}" size="12">
+      <span class="form-hint">Default 0x0 for a combined image.</span>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Stages</h2>
+    <p class="form-hint">Run in this order. Uncheck to skip. An advanced JSON list (below) overrides these.</p>
+    <label style="display:block;"><input type="checkbox" name="stage_touch" {% if form and form.stage_touch %}checked{% endif %}> 1200-baud bootloader touch
+      <input type="text" name="touch_settle_s" value="{{ form.touch_settle_s if form else '2.0' }}" size="4" title="settle seconds"></label>
+    <label style="display:block;"><input type="checkbox" name="stage_enter_bootloader" {% if not form or form.stage_enter_bootloader %}checked{% endif %}> Enter bootloader first (reboot via hub switch if needed → 1200-touch loop until esptool connects)</label>
+    <label style="display:block;"><input type="checkbox" name="stage_erase" {% if not form or form.stage_erase %}checked{% endif %}> Erase flash (--after no_reset)</label>
+    <label style="display:block;"><input type="checkbox" name="stage_flash" {% if not form or form.stage_flash %}checked{% endif %}> Flash bin@offset (--after no_reset) via
+      <select name="flasher">
+        <option value="esptool" {% if not form or form.flasher == 'esptool' %}selected{% endif %}>esptool</option>
+        <option value="pio" {% if form and form.flasher == 'pio' %}selected{% endif %}>pio-upload</option>
+        <option value="uf2-msc" {% if form and form.flasher == 'uf2-msc' %}selected{% endif %}>uf2-msc (SAM/UF2 — copy .uf2)</option>
+        <option value="bossac" {% if form and form.flasher == 'bossac' %}selected{% endif %}>bossac (SAM/SAMD51)</option>
+      </select>
+      <span class="form-hint">uf2-msc (SAM/UF2): flash a <code>.uf2</code> by copying to the bootloader drive — uncheck Erase/Verify (the bootloader handles both). bossac (SAM): one call does erase+write+verify+reset at 0x4000 — uncheck Erase/Verify, set offset 0x4000.</span></label>
+    <label style="display:block;"><input type="checkbox" name="stage_verify" {% if not form or form.stage_verify %}checked{% endif %}> Verify flash</label>
+    <label style="display:block;"><input type="checkbox" id="stage_power_boot" name="stage_power_boot" {% if form and form.stage_power_boot %}checked{% endif %}> Power-cycle <em>before</em> secrets (boot the app so its MSC drive enumerates)</label>
+    <label style="display:block;"><input type="checkbox" id="stage_secrets" name="stage_secrets" {% if form and form.stage_secrets %}checked{% endif %} onchange="if(this.checked)document.getElementById('stage_power_boot').checked=true"> Write secrets.json to MSC drive <span class="form-hint">(needs the power-cycle above — auto-checked)</span></label>
+    <label style="display:block;"><input type="checkbox" name="stage_power_final" {% if not form or form.stage_power_final %}checked{% endif %}> Power-cycle <em>after</em> (apply secrets / boot the flashed app)
+      <input type="text" name="power_off_s" value="{{ form.power_off_s if form else '1.0' }}" size="4" title="off seconds"></label>
+
+    <div class="form-group" style="margin-top:0.75rem;">
+      <label for="advanced_stages">Advanced: stage JSON override</label>
+      <textarea id="advanced_stages" name="advanced_stages" rows="4"
+        placeholder='[{"type":"flash","offset":"0x0","after":"no_reset"}]'>{{ form.advanced_stages if form else '' }}</textarea>
+      <span class="form-hint">When non-empty, replaces the checkboxes above. Matches the API stage list 1:1.</span>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Port &amp; MSC filters</h2>
+    <p class="form-hint">Pre-filled from the DUT profile (assign on the usbip page). The flash-mode port differs from the post-reboot logging port. Match iSerial / by-id / label — never VID.</p>
+    <div class="form-group">
+      <label for="flash_port_filter">Flash serial port filter</label>
+      <input type="text" id="flash_port_filter" name="flash_port_filter" value="{{ form.flash_port_filter if form else '' }}">
+    </div>
+    <div class="form-group">
+      <label for="log_port_filter">Log serial port filter (post-reboot)</label>
+      <input type="text" id="log_port_filter" name="log_port_filter" value="{{ form.log_port_filter if form else '' }}">
+    </div>
+    <div class="form-group">
+      <label for="msc_filter">MSC drive filter</label>
+      <input type="text" id="msc_filter" name="msc_filter" value="{{ form.msc_filter if form else '' }}">
+    </div>
+    <details>
+      <summary>Explicit port overrides (skip filter resolution)</summary>
+      <div class="form-group">
+        <label for="flash_serial_port">Flash serial port</label>
+        <input type="text" id="flash_serial_port" name="flash_serial_port" value="{{ form.flash_serial_port if form else '' }}" placeholder="/dev/serial/by-id/...">
+      </div>
+      <div class="form-group">
+        <label for="log_serial_port">Log serial port</label>
+        <input type="text" id="log_serial_port" name="log_serial_port" value="{{ form.log_serial_port if form else '' }}" placeholder="/dev/serial/by-id/...">
+      </div>
+    </details>
+  </div>
+
+  <div class="form-panel">
+    <h2>protomq &amp; secrets</h2>
+    <div class="form-group">
+      <label for="protomq_repo">protomq repo</label>
+      <input type="text" id="protomq_repo" name="protomq_repo" value="{{ form.protomq_repo if form else cfg.protomq_repo }}">
+    </div>
+    <div class="form-group">
+      <label for="protomq_ref">protomq ref</label>
+      <input type="text" id="protomq_ref" name="protomq_ref" value="{{ form.protomq_ref if form else cfg.protomq_default_ref }}">
+    </div>
+    <div class="form-group">
+      <label for="protomq_script">Active script (optional)</label>
+      <input type="text" id="protomq_script" name="protomq_script" value="{{ form.protomq_script if form else '' }}">
+      <span class="form-hint">Activated via protomq's HTTP API for autoresponder/echo setup.</span>
+    </div>
+    <div class="form-group">
+      <label for="io_username">io_username</label>
+      <input type="text" id="io_username" name="io_username" value="{{ form.io_username if form else '' }}">
+    </div>
+    <div class="form-group">
+      <label for="io_key">io_key</label>
+      <input type="password" id="io_key" name="io_key" value="">
+    </div>
+    <div class="form-group">
+      <label for="wifi_ssid">WiFi SSID</label>
+      <input type="text" id="wifi_ssid" name="wifi_ssid" value="{{ form.wifi_ssid if form else 'bench-wifi' }}">
+    </div>
+    <div class="form-group">
+      <label for="wifi_password">WiFi password</label>
+      <input type="text" id="wifi_password" name="wifi_password" value="{{ form.wifi_password if form and form.wifi_password else 'password' }}">
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Window &amp; hardware</h2>
+    <div class="form-group">
+      <label for="window_minutes">Hold window (minutes)</label>
+      <input type="number" id="window_minutes" name="window_minutes" value="{{ form.window_minutes if form else '30' }}" min="1" max="600">
+      <span class="form-hint">Extendable any time from the job page.</span>
+    </div>
+    <div class="form-group">
+      <label for="esptool_chip">esptool chip</label>
+      <input type="text" id="esptool_chip" name="esptool_chip" value="{{ form.esptool_chip if form else 'auto' }}" size="10">
+    </div>
+    <div class="form-group">
+      <label for="esptool_baud">esptool baud</label>
+      <input type="text" id="esptool_baud" name="esptool_baud" value="{{ form.esptool_baud if form else '921600' }}" size="10">
+    </div>
+    <div class="form-group">
+      <label for="serial_baud">Serial log baud</label>
+      <input type="text" id="serial_baud" name="serial_baud" value="{{ form.serial_baud if form else '115200' }}" size="10">
+    </div>
+  </div>
+
+  <button type="submit" class="btn btn-primary">Start session</button>
+  <a href="/ui/jobs" class="btn btn-secondary">Cancel</a>
+</form>
+
+<script>
+  const DEVICE_FILTERS = {{ device_filters | tojson }};
+  function onSourceMode(mode) {
+    document.getElementById('upload-section').style.display = mode === 'upload' ? '' : 'none';
+    document.getElementById('path-section').style.display = mode === 'path' ? '' : 'none';
+  }
+  function applyDeviceFilters() {
+    const id = document.getElementById('device_id').value;
+    const f = DEVICE_FILTERS[id];
+    if (!f) return;
+    // Only pre-fill empty fields so a manual edit isn't clobbered.
+    for (const key of ['flash_port_filter', 'log_port_filter', 'msc_filter']) {
+      const el = document.getElementById(key);
+      if (el && !el.value) el.value = f[key] || '';
+    }
+  }
+  onSourceMode(document.querySelector('input[name=firmware_source]:checked').value);
+  applyDeviceFilters();
+</script>
+{% endblock %}

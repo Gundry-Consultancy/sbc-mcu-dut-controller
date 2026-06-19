@@ -1,0 +1,40 @@
+{% for j in jobs %}
+<tr id="job-row-{{ j.id }}">
+  <td class="mono" style="font-size:0.7rem;">
+    <a href="/ui/jobs/{{ j.id }}" style="text-decoration:none;color:#0d6efd;">{{ j.id[:18] }}…</a>
+  </td>
+  <td>
+    <span class="badge
+      {% if j.state == 'finished' %}badge-ok
+      {% elif j.state in ('error','timeout','cancelled') %}badge-err
+      {% elif j.state in ('running','flashing','preparing') %}badge-info
+      {% else %}badge-gray{% endif %}">{{ j.state }}</span>
+    {% if j.result and j.result != j.state %}
+      <span class="badge {% if j.result == 'pass' %}badge-ok{% else %}badge-err{% endif %}">{{ j.result }}</span>
+    {% endif %}
+  </td>
+  <td class="mono" style="font-size:0.75rem;">{{ j.assigned_device or '—' }}</td>
+  <td style="font-size:0.75rem;">{{ j.repo_url or '—' }}</td>
+  <td style="font-size:0.75rem;">{{ j.ref or '—' }}</td>
+  <td style="font-size:0.75rem;">{{ j.created_at[:16] if j.created_at else '—' }}</td>
+  <td style="font-size:0.75rem;">
+    {% if j.finished_at and j.started_at %}{{ j.duration }}{% else %}—{% endif %}
+  </td>
+  <td>
+    <a href="/ui/jobs/{{ j.id }}" class="btn btn-sm btn-outline">Logs</a>
+    <button class="btn btn-sm btn-secondary"
+      hx-post="/ui/jobs/{{ j.id }}/rerun"
+      hx-confirm="Re-run this job?"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">Re-run</button>
+    {% if j.state not in ('finished','error','timeout','cancelled') %}
+    <button class="btn btn-sm btn-danger"
+      hx-post="/ui/jobs/{{ j.id }}/cancel"
+      hx-target="#job-row-{{ j.id }}"
+      hx-swap="outerHTML">Cancel</button>
+    {% endif %}
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="8" style="color:#6c757d;text-align:center;padding:1.5rem;">No jobs yet.</td></tr>
+{% endfor %}

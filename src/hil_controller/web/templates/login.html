@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HIL Controller — Login</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+</head>
+<body style="background:#f0f2f5;">
+<div class="login-wrap">
+  <div class="card">
+    <h1>HIL Controller</h1>
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/ui/login">
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label for="token">Bearer Token</label>
+        <input type="text" id="token" name="token" placeholder="hil_… or static token" required autofocus>
+        <span class="form-hint">From HIL_STATIC_TOKEN or scripts/mint-token.py</span>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;">Login</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

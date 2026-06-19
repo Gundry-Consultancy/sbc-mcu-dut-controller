@@ -1,0 +1,27 @@
+# Project Memory Index
+
+- [User profile](user_profile.md) — tyeth@adafruit.com, Adafruit engineer; prefers TDD, terse responses, no emojis
+- [Project state](project_state.md) — M0–M4.5 + M1.5 + M2 (no OIDC) on main; 134 tests pass
+- [Working conventions](feedback_conventions.md) — commit style, TDD, no emojis, memories in repo
+- [Deployment](project_deployment.md) — Tachyon controller host, bench hosts, camera topology
+- [Camera integration](project_camera_integration.md) — plan to port protomq PR #1 camera tools into controller
+- [SSH via Windows OpenSSH](feedback_ssh_openssh.md) — use /c/Windows/System32/OpenSSH/ssh.exe, not Git Bash ssh
+- [Commit and push always](../../../.claude/projects/C--dev-python-cpython-usbip-hil-controller/memory/feedback_commit_and_push.md) — always commit and push after completing work, don't ask
+- [PK design](feedback_pk_design.md) — surrogate integer PKs + UNIQUE; never composite PKs of attribute columns (esp. not iSerial)
+- [Bench repo & deploy](reference_bench_host.md) — repo path, controller.env, topology.yaml is git-TRACKED + must be committed/synced upstream on every change (controller host = id `localhost` transport:local), deploy via git pull + restart
+- [rpi-displays power/USB](reference_rpi_displays_power.md) — uhubctl only toggles root port (Genesys hubs ganged); no per-port power; absent DUT = operator blocker
+- [rpi-displays compute limits](reference_rpi_displays_compute.md) — 415MB RAM (swaps under compile) + /tmp is 208MB tmpfs; too weak to build WipperSnapper; bind-mount /tmp/hil to disk
+- [Exec-location feature](project_exec_location_feature.md) — planned: per-phase build/flash/test/protomq on controller vs DUT host; near-term build+protomq on .169
+- [No secrets in docs](feedback_no_secrets_in_docs.md) — never paste hardcoded secret values into repo docs/commit messages, even when describing a cleanup
+- [CircuitPython targets broader than WS](feedback_circuitpython_targets_broader_than_ws.md) — this platform is general HIL, not WS-specific; keep STM32/nRF/dfu-util as planned-future, not dropped
+- [Skip upnp tests](feedback_skip_upnp_tests.md) — test_upnp.py self-skips via importorskip when miniupnpc absent; just run `python -m pytest`, no --ignore needed
+- [Grep via temp file](feedback_grep_via_temp_file.md) — never pipe output into grep; redirect to `$env:TEMP\*.log` then grep the file (no rm — removal denied)
+- [Never filter USB by VID/PID](feedback_never_filter_usb_by_vid.md) — always dump full unfiltered lsusb/lsusb -t; grepping by VID hides devices that changed mode (bootloader/CP210x) → false "nothing here"
+- [HIL bench USB topology](reference_hil_bench_usb_topology.md) — authoritative rpi-displays solenoid ch↔USB-port map (2026-06-12 probe) + how to re-derive via turn_off.sh + sysfs diff; DB wins over topology
+- [Firmware-bench sessions](project_firmware_bench.md) — interactive flash + protomq hold (`script:firmware-bench`); composable stages, never edit protomq, two serial ports, filter-based locators
+- [dwc_otg wedge hides bench → reboot](project_qtpy_dut_down.md) — when DUTs vanish + won't re-enumerate via power-cycling, the rpi-displays dwc_otg stack is wedged; reboot the Pi (not runtime-rebindable), don't declare the device dead; channel/by-path maps taken during a wedge are unreliable
+- [Push/deploy authorized](feedback_push_deploy_authorized.md) — standing OK to push git + SSH-deploy to the bench without per-action confirmation
+- [HIL CI pipeline state + resume](project_hil_pipeline_state.md) — PR #930 HIL pipeline works (proven); deployed commits + HIL_AUTO_HOST_REBOOT; resume from docs/HANDOFF.md (held next steps: CI maintenance-reboot tolerance, fully-down-host recovery, dmesg probe, full-suite hang)
+- [rpi-hil006 bench](reference_rpi_hil006_bench.md) — 2nd Pi4 microcontroller bench: solenoid MCP23017 @0x20 (same as rpi-displays, NOT different), imx708 CSI camera on :8080, ch0=QT Py S3 / ch5=Feather HUZZAH ESP8266 (the 2nd DUT); build_target is operator-set not topology-seeded
+- [MSC mount + USB-stability host config](reference_msc_mount.md) — udisksctl NotAuthorized is a polkit misconfig (NOT benign), fixed by a polkit rule for plugdev; the real rpi-displays parity gap was missing udev rules — esp. 99-usb-no-autosuspend (root of the serial-disappear / S3-recovery traumas)
+- [WS-Python display HIL pipeline](project_ws_python_display_hil.md) — real ILI9341 on tachyon-ili9341 via pytest-suite (real broker+client+Blinka), proven green 2026-06-19; topology+camera+ROI+collect_artifacts+CI+skills; broker launched by the test fixture (PROTOMQ_PATH), venv-python entry, particle github credential helper

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Hosts</h1>
+
+<div id="form-panel">{% if form_html %}{{ form_html | safe }}{% endif %}</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>All Hosts <span class="tbl-count">{{ hosts|length }}</span></h2>
+    <button class="btn btn-primary"
+      hx-get="/ui/hosts/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">+ Add Host</button>
+  </div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Role</th><th>Addr</th><th>Model</th><th>Cores · RAM</th>
+      <th>Load</th><th>Speed</th><th>Max Jobs</th><th>Capabilities</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody id="hosts-body">
+      {% include "hosts_body.html" %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

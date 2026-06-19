@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="ap" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .t{fill:#0f172a;font-size:12.5px;}
+      .b{fill:#0f172a;font-size:13px;font-weight:700;}
+      .s{fill:#475569;font-size:11px;}
+      .edge{stroke:#475569;stroke-width:1.7;fill:none;}
+      .shared{fill:#475569;font-size:11px;}
+    </style>
+  </defs>
+
+  <text x="500" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Reusing the Platform for Wippersnapper Python</text>
+  <text x="500" y="50" text-anchor="middle" class="s">Same job-submission shape, same controller spine — only the payload kind and the deploy/runner adapter differ</text>
+
+  <!-- Arduino track -->
+  <rect x="30" y="74" width="430" height="120" rx="12" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+  <text x="245" y="96" text-anchor="middle" class="b" fill="#b45309">Arduino firmware (microcontroller) — today</text>
+  <rect x="44" y="108" width="180" height="74" rx="8" fill="#fff" stroke="#fcd34d"/>
+  <text x="134" y="127" text-anchor="middle" class="t" font-weight="600">payload: firmware-binary</text>
+  <text x="134" y="145" text-anchor="middle" class="s">esptool / picotool / uf2-msc</text>
+  <text x="134" y="161" text-anchor="middle" class="s">target: ESP32 / SAMD51 / RP2040</text>
+  <text x="134" y="177" text-anchor="middle" class="s">on rpi-displays solenoid hub</text>
+  <rect x="236" y="108" width="212" height="74" rx="8" fill="#fff" stroke="#fcd34d"/>
+  <text x="342" y="127" text-anchor="middle" class="t" font-weight="600">script: firmware-bench / smoke</text>
+  <text x="342" y="145" text-anchor="middle" class="s">flash → secrets.json → power-cycle</text>
+  <text x="342" y="161" text-anchor="middle" class="s">→ checkin / inject signal</text>
+  <text x="342" y="177" text-anchor="middle" class="s">speaks ProtoMQ to pi5 broker</text>
+
+  <!-- Python track -->
+  <rect x="540" y="74" width="430" height="120" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="755" y="96" text-anchor="middle" class="b" fill="#15803d">Python client (SBC) — planned extension</text>
+  <rect x="554" y="108" width="180" height="74" rx="8" fill="#fff" stroke="#86efac"/>
+  <text x="644" y="127" text-anchor="middle" class="t" font-weight="600">payload: git-source</text>
+  <text x="644" y="145" text-anchor="middle" class="s">GitDeploy: clone ref + submodules</text>
+  <text x="644" y="161" text-anchor="middle" class="s">target: Pi 5 on rpi-hil00N</text>
+  <text x="644" y="177" text-anchor="middle" class="s">or LocalTransport (no hardware)</text>
+  <rect x="746" y="108" width="212" height="74" rx="8" fill="#fff" stroke="#86efac"/>
+  <text x="852" y="127" text-anchor="middle" class="t" font-weight="600">script: git-clone-and-run</text>
+  <text x="852" y="145" text-anchor="middle" class="s">render .env / secrets → pip install -e .</text>
+  <text x="852" y="161" text-anchor="middle" class="s">pytest -m markers via tests/runner.py</text>
+  <text x="852" y="177" text-anchor="middle" class="s">exit code → pass/fail; same broker</text>
+
+  <!-- converge arrows -->
+  <path class="edge" d="M245 194 V230 H500 V250" marker-end="url(#ap)"/>
+  <path class="edge" d="M755 194 V230 H500" marker-end="url(#ap)"/>
+
+  <!-- shared spine -->
+  <rect x="150" y="252" width="700" height="210" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="500" y="276" text-anchor="middle" class="b" fill="#4338ca">Shared controller spine — unchanged between the two</text>
+
+  <rect x="168" y="290" width="200" height="74" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="268" y="309" text-anchor="middle" class="t" font-weight="600">Auth + policy</text>
+  <text x="268" y="326" text-anchor="middle" class="s">bearer token / GitHub OIDC</text>
+  <text x="268" y="342" text-anchor="middle" class="s">pool + secrets-profile</text>
+  <text x="268" y="358" text-anchor="middle" class="s">allow-list per repo</text>
+
+  <rect x="400" y="290" width="200" height="74" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="500" y="309" text-anchor="middle" class="t" font-weight="600">Scheduler + transport</text>
+  <text x="500" y="326" text-anchor="middle" class="s">resolver · device/host locks</text>
+  <text x="500" y="342" text-anchor="middle" class="s">SSH or LocalTransport</text>
+  <text x="500" y="358" text-anchor="middle" class="s">secret-profile materialise</text>
+
+  <rect x="632" y="290" width="200" height="74" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="732" y="309" text-anchor="middle" class="t" font-weight="600">Availability + targets</text>
+  <text x="732" y="326" text-anchor="middle" class="s">GET /v1/targets matrix</text>
+  <text x="732" y="342" text-anchor="middle" class="s">self-rectifying skips</text>
+  <text x="732" y="358" text-anchor="middle" class="s">build_target enrolment</text>
+
+  <rect x="168" y="378" width="664" height="68" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="500" y="398" text-anchor="middle" class="t" font-weight="600">Capture · long-poll · report</text>
+  <text x="500" y="416" text-anchor="middle" class="s">serial / pytest log · camera frames · assets API · /wait events</text>
+  <text x="500" y="433" text-anchor="middle" class="s">→ per-run PR comment + uploaded artifacts (identical reporting path)</text>
+
+  <text x="500" y="488" text-anchor="middle" class="s">The hil-detection pytest conftest (SSH into a HIL host, toggle USB, flash, mount CIRCUITPY) is the prototype this formalises —</text>
+  <text x="500" y="508" text-anchor="middle" class="s">tests/runner.py shells pytest on the target host and streams the report back as the job result. The Python client speaks the same ProtoMQ.</text>
+  <text x="500" y="534" text-anchor="middle" class="s" font-style="italic" fill="#475569">Net: adding Python WS testing is a new payload kind + a deploy/runner adapter — auth, scheduling, secrets, capture and reporting are reused as-is.</text>
+</svg>

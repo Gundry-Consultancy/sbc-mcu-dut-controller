@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Test Jobs</h1>
+
+{% if disk.pct_used > 70 %}
+<div class="alert {% if disk.pct_used > 85 %}alert-error{% else %}alert-info{% endif %}" style="margin-bottom:1rem;">
+  Disk: {{ disk.free_fmt }} free ({{ disk.pct_used }}% used)
+  {% if disk.pct_used > 85 %} — <a href="/ui/assets">purge assets</a>{% endif %}
+</div>
+{% endif %}
+
+<div id="form-panel"></div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>Recent Jobs <span class="tbl-count">{{ jobs|length }}</span></h2>
+    <div style="display:flex;gap:0.5rem;">
+      <a href="/ui/jobs/new" class="btn btn-primary">+ Python</a>
+      <a href="/ui/jobs/new-arduino" class="btn btn-secondary">+ Arduino Flash</a>
+      <a href="/ui/jobs/new-arduino-ws" class="btn btn-secondary">+ Arduino WS Test</a>
+      <a href="/ui/jobs/new-firmware-bench" class="btn btn-secondary">+ Firmware Bench</a>
+    </div>
+  </div>
+  <table>
+    <thead><tr>
+      <th>Job ID</th><th>State</th><th>Device</th><th>Repo</th><th>Ref</th>
+      <th>Created</th><th>Duration</th><th></th>
+    </tr></thead>
+    <tbody id="jobs-body"
+           hx-get="/ui/jobs/list"
+           hx-trigger="every 5s"
+           hx-swap="innerHTML">
+      {% include "jobs_body.html" %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

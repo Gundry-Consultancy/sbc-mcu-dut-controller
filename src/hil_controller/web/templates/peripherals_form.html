@@ -1,0 +1,61 @@
+<div class="form-panel">
+  <h2>{% if peripheral %}Edit Peripheral — {{ peripheral.id }}{% else %}New Peripheral{% endif %}</h2>
+  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+  <form hx-post="/ui/peripherals{% if peripheral %}/{{ peripheral.id }}{% endif %}"
+        hx-target="#form-panel"
+        hx-swap="innerHTML">
+    <div class="form-grid">
+      {% if not peripheral %}
+      <div class="form-group">
+        <label for="f-periph-id">ID *</label>
+        <input type="text" id="f-periph-id" name="id" value="" required placeholder="periph-eink-37-mono">
+      </div>
+      {% endif %}
+      <div class="form-group">
+        <label for="f-periph-kind">Kind</label>
+        <select id="f-periph-kind" name="kind">
+          {% for k in ['display','sensor','actuator','other'] %}
+          <option value="{{ k }}" {% if peripheral and peripheral.kind == k %}selected{% elif not peripheral and k == 'display' %}selected{% endif %}>{{ k }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="f-periph-model">Model</label>
+        <input type="text" id="f-periph-model" name="model" value="{{ peripheral.model if peripheral else '' }}" placeholder="3.7in Monochrome eInk Bare Display (416x240)">
+      </div>
+      <div class="form-group">
+        <label for="f-periph-url">Product URL</label>
+        <input type="url" id="f-periph-url" name="product_url" value="{{ peripheral.product_url or '' if peripheral else '' }}" placeholder="https://adafru.it/6395">
+        <span class="form-hint">Adafruit or manufacturer product page</span>
+      </div>
+      <div class="form-group">
+        <label for="f-periph-res">Resolution</label>
+        <input type="text" id="f-periph-res" name="resolution" value="{{ peripheral.specs.resolution if peripheral and peripheral.specs else '' }}" placeholder="416x240">
+      </div>
+      <div class="form-group">
+        <label for="f-periph-ctrl">Controller / driver chip</label>
+        <input type="text" id="f-periph-ctrl" name="controller" value="{{ peripheral.specs.controller if peripheral and peripheral.specs else '' }}" placeholder="UC8253">
+      </div>
+      <div class="form-group">
+        <label for="f-periph-iface">Interface</label>
+        <input type="text" id="f-periph-iface" name="interface" value="{{ peripheral.specs.interface if peripheral and peripheral.specs else '' }}" placeholder="SPI">
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="f-periph-notes">Notes</label>
+        <input type="text" id="f-periph-notes" name="notes" value="{{ peripheral.notes or '' if peripheral else '' }}" placeholder="Bare flexible eInk panel; needs a breakout/driver to connect">
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="f-periph-devices">Attached to devices</label>
+        <select id="f-periph-devices" name="device_ids" multiple size="6" style="width:100%;">
+          {% for d in devices %}
+          <option value="{{ d.id }}" {% if d.id in selected_device_ids %}selected{% endif %}>{{ d.id }}{% if d.host_id %} ({{ d.host_id }}{% if d.model %} · {{ d.model }}{% endif %}){% endif %}</option>
+          {% endfor %}
+        </select>
+        <span class="form-hint">Ctrl/⌘-click to select the DUT(s) this peripheral is wired to.</span>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">{% if peripheral %}Save{% else %}Create{% endif %}</button>
+    </div>
+  </form>
+</div>

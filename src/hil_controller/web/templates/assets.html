@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Assets</h1>
+
+<div class="cards" style="margin-bottom:1.5rem;">
+  <div class="card">
+    <div class="num" style="font-size:1.4rem;">{{ total_size }}</div>
+    <div class="lbl">Total asset storage</div>
+  </div>
+  <div class="card">
+    <div class="num" style="font-size:1.4rem;{% if disk.pct_used > 85 %}color:#dc3545;{% elif disk.pct_used > 70 %}color:#ffc107;{% endif %}">
+      {{ disk.free_fmt }}
+    </div>
+    <div class="lbl">Free on disk ({{ disk.pct_used }}% used)</div>
+  </div>
+  <div class="card">
+    <div class="num" style="font-size:1.4rem;">{{ assets|length }}</div>
+    <div class="lbl">Asset files</div>
+  </div>
+  <div class="card">
+    <div class="num" style="font-size:1.4rem;">{{ purge_eligible }}</div>
+    <div class="lbl">Eligible for purge</div>
+  </div>
+</div>
+
+{% if disk.pct_used > 85 %}
+<div class="alert alert-error" style="margin-bottom:1rem;">
+  Disk is {{ disk.pct_used }}% full ({{ disk.free_fmt }} free). Consider purging old assets.
+</div>
+{% endif %}
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>All Assets</h2>
+    <div style="display:flex;gap:0.5rem;">
+      <button class="btn btn-danger btn-sm"
+        hx-post="/ui/assets/purge-eligible"
+        hx-confirm="Purge all {{ purge_eligible }} eligible assets? This deletes files."
+        hx-target="#assets-body"
+        hx-swap="innerHTML">Purge Eligible</button>
+    </div>
+  </div>
+  <table>
+    <thead><tr>
+      <th>Filename</th><th>Kind</th><th>Size</th><th>Job</th>
+      <th>Created</th><th>Purge After</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody id="assets-body">
+      {% include "assets_body.html" %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

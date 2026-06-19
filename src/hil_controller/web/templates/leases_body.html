@@ -1,0 +1,45 @@
+{% for l in leases %}
+<tr id="lease-row-{{ l.id }}">
+  <td class="mono">{{ l.id }}</td>
+  <td>
+    {% if l.kind == 'exclusive_device' %}
+      <span class="badge badge-info">device</span>
+    {% elif l.kind == 'exclusive_hub' %}
+      <span class="badge badge-warn">hub</span>
+    {% else %}
+      <span class="badge badge-gray">{{ l.kind }}</span>
+    {% endif %}
+  </td>
+  <td class="mono">
+    {% if l.device_id %}
+      <a href="/ui/devices/{{ l.device_id }}/form">{{ l.device_id }}</a>
+      {% if l.device_model %}<span style="color:#6c757d;font-size:0.78rem;"> {{ l.device_model }}</span>{% endif %}
+    {% else %}<span style="color:#6c757d;">—</span>{% endif %}
+  </td>
+  <td class="mono">
+    {% if l.host_id %}
+      <a href="/ui/hosts">{{ l.host_id }}</a>
+      {% if l.host_addr %}<span style="color:#6c757d;font-size:0.78rem;"> {{ l.host_addr }}</span>{% endif %}
+    {% else %}<span style="color:#6c757d;">—</span>{% endif %}
+  </td>
+  <td class="mono">
+    {% if l.job_id %}
+      <a href="/ui/jobs/{{ l.job_id }}">{{ l.job_id[:8] }}…</a>
+      {% if l.job_state %}<span class="badge badge-gray" style="margin-left:0.3rem;">{{ l.job_state }}</span>{% endif %}
+    {% else %}<span style="color:#6c757d;">—</span>{% endif %}
+  </td>
+  <td class="mono" style="font-size:0.78rem;">{{ l.acquired_at }}</td>
+  <td class="mono" style="font-size:0.78rem;">{{ l.expires_at or '—' }}</td>
+  <td>
+    <button class="btn btn-sm btn-danger"
+      hx-delete="/ui/leases/{{ l.id }}"
+      hx-target="#lease-row-{{ l.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="Force-release lease {{ l.id }}? This will let other jobs claim the device — make sure nothing is mid-flash.">
+      Force release
+    </button>
+  </td>
+</tr>
+{% else %}
+<tr id="leases-empty"><td colspan="8" style="color:#6c757d;text-align:center;padding:1.5rem;">No active leases — everything is free.</td></tr>
+{% endfor %}

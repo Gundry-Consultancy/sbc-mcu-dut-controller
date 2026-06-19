@@ -1,0 +1,29 @@
+{% for d in devices %}
+<tr id="device-row-{{ d.id }}">
+  <td class="mono">{{ d.id }}</td>
+  <td>
+    <span class="badge {% if d.kind == 'microcontroller' %}badge-mcu{% else %}badge-sbc{% endif %}">{{ d.kind }}</span>
+  </td>
+  <td>{{ d.model }}</td>
+  <td class="mono">{{ d.host_id }}</td>
+  <td class="mono">{{ d.hub_port_path or '-' }}</td>
+  <td>{{ d.pool }}</td>
+  <td><div class="caps">{% for c in d.capabilities %}<span class="badge badge-gray">{{ c }}</span>{% endfor %}</div></td>
+  <td class="mono" style="font-size:0.73rem;">{{ d.serial_port or '—' }}</td>
+  <td>{{ d.flasher or '—' }}</td>
+  <td><span class="badge {% if d.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ d.status }}</span></td>
+  <td>
+    <button class="btn btn-sm btn-outline"
+      hx-get="/ui/devices/{{ d.id }}/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">Edit</button>
+    <button class="btn btn-sm btn-danger"
+      hx-delete="/ui/devices/{{ d.id }}"
+      hx-target="#device-row-{{ d.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="Delete device {{ d.id }}?">Del</button>
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="11" style="color:#6c757d;text-align:center;padding:1.5rem;">No devices — click + Add Device to create one.</td></tr>
+{% endfor %}

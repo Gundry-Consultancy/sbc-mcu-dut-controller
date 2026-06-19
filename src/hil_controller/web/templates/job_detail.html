@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.25rem;">
+  <div>
+    <h1 style="margin-bottom:0.25rem;">Job
+      <span class="mono" style="font-size:1rem;color:#6c757d;">{{ job.id }}</span>
+    </h1>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.4rem;">
+      <span class="badge
+        {% if job.state == 'finished' %}badge-ok
+        {% elif job.state in ('error','timeout','cancelled') %}badge-err
+        {% elif job.state in ('running','flashing','preparing') %}badge-info
+        {% else %}badge-gray{% endif %}" style="font-size:0.85rem;">{{ job.state }}</span>
+      {% if job.result %}
+      <span class="badge {% if job.result == 'pass' %}badge-ok{% else %}badge-err{% endif %}" style="font-size:0.85rem;">{{ job.result }}</span>
+      {% endif %}
+    </div>
+  </div>
+  <div style="display:flex;gap:0.5rem;">
+    <form method="post" action="/ui/jobs/{{ job.id }}/rerun"
+          onsubmit="return confirm('Re-run this job?')">
+      <button class="btn btn-secondary">Re-run</button>
+    </form>
+    {% if job.state not in ('finished','error','timeout','cancelled') %}
+    <form method="post" action="/ui/jobs/{{ job.id }}/extend" style="display:flex;gap:0.25rem;align-items:center;"
+          title="Extend an interactive hold window">
+      <input type="number" name="minutes" value="30" min="1" max="600" style="width:5rem;">
+      <button class="btn btn-secondary">+ Extend window</button>
+    </form>
+    <form method="post" action="/ui/jobs/{{ job.id }}/cancel">
+      <button class="btn btn-danger">Cancel</button>
+    </form>
+    {% endif %}
+    <a href="/ui/jobs" class="btn btn-outline">← All Jobs</a>
+  </div>
+</div>
+
+{% if job.rerun_of or reruns %}
+<div class="alert alert-info" style="margin-bottom:1rem;font-size:0.85rem;">
+  {% if job.rerun_of %}
+  ↻ Re-run of <a href="/ui/jobs/{{ job.rerun_of }}" class="mono">{{ job.rerun_of[:18] }}…</a>
+  {% endif %}
+  {% if reruns %}
+  {% if job.rerun_of %}&nbsp;·&nbsp;{% endif %}
+  Re-runs of this job:
+  {% for r in reruns %}
+  <a href="/ui/jobs/{{ r.id }}" class="mono" title="{{ r.created_at }} — {{ r.state }}{% if r.result %}/{{ r.result }}{% endif %}">{{ r.id[:8] }}…</a>{% if not loop.last %}, {% endif %}
+  {% endfor %}
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-bottom:1.25rem;">
+  <div class="card">
+    <div class="lbl">Device</div>
+    <div class="num" style="font-size:1rem;font-family:monospace;">{{ job.assigned_device or '—' }}</div>
+  </div>
+  <div class="card">
+    <div class="lbl">Repository</div>
+    <div style="font-size:0.75rem;font-family:monospace;word-break:break-all;">{{ job.repo_url or '—' }}</div>
+    {% if job.ref %}<div class="badge badge-info" style="margin-top:0.35rem;">{{ job.ref }}</div>{% endif %}
+  </div>
+  <div class="card">
+    <div class="lbl">Created</div>
+    <div style="font-size:0.8rem;">{{ job.created_at[:19] if job.created_at else '—' }}</div>
+  </div>
+  <div class="card">
+    <div class="lbl">Duration</div>
+    <div style="font-size:0.9rem;">{{ job.duration or '—' }}</div>
+  </div>
+</div>
+
+{% if job.summary %}
+<div class="alert {% if job.result == 'pass' %}alert-success{% elif job.result %}alert-error{% else %}alert-info{% endif %}" style="margin-bottom:1rem;">
+  {{ job.summary }}
+</div>
+{% endif %}
+
+{% if assets %}
+<div class="tbl-wrap" style="margin-bottom:1.25rem;">
+  <div class="tbl-header"><h2>Assets</h2></div>
+  <table class="tbl">
+    <thead><tr><th>File</th><th>Kind</th><th>Size</th><th></th></tr></thead>
+    <tbody>
+    {% for a in assets %}
+      <tr>
+        <td class="mono" style="font-size:0.8rem;">{{ a.filename }}</td>
+        <td><span class="badge badge-info">{{ a.kind }}</span></td>
+        <td style="font-size:0.8rem;">{{ a.size_fmt }}</td>
+        <td>
+          <a class="btn btn-sm btn-outline" href="/ui/assets/{{ a.id }}/view"
+             target="_blank" rel="noopener">View</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>Log Output</h2>
+    <div style="display:flex;gap:0.5rem;align-items:center;">
+      {% if job.state not in ('finished','error','timeout','cancelled') %}
+      <span class="badge badge-info" id="live-indicator">● live</span>
+      {% endif %}
+      <label style="font-size:0.8rem;display:flex;align-items:center;gap:0.3rem;">
+        <input type="checkbox" id="auto-scroll" checked> Auto-scroll
+      </label>
+    </div>
+  </div>
+  <div id="log-wrap" style="background:#1a1a2e;border-radius:8px;padding:1rem;max-height:60vh;overflow-y:auto;">
+    <div id="job-log"
+         hx-get="/ui/jobs/{{ job.id }}/log"
+         hx-trigger="{% if job.state not in ('finished','error','timeout','cancelled') %}every 3s{% else %}load{% endif %}"
+         hx-swap="innerHTML"
+         hx-on::after-settle="if(document.getElementById('auto-scroll')?.checked){document.getElementById('log-wrap').scrollTop=99999}">
+      {% if log_html %}{{ log_html | safe }}{% else %}<em style="color:#6c757d;">Loading…</em>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

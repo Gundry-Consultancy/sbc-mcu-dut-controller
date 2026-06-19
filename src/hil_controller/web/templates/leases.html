@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Leases</h1>
+
+<p style="color:#6c757d;">
+  Active device/hub exclusivity locks. A device with an
+  <code>exclusive_device</code> lease can't be claimed by another job; an
+  <code>exclusive_hub</code> lease blocks every device sharing that hub
+  (USB-IP-server host). Stuck leases — usually from a crashed worker — can
+  be force-released from the per-row button.
+</p>
+
+<div class="tbl-wrap"
+     hx-get="/ui/leases/body"
+     hx-trigger="load, every 3s"
+     hx-target="#leases-body"
+     hx-swap="innerHTML">
+  <div class="tbl-header">
+    <h2>Active leases <span class="tbl-count">{{ leases|length }}</span></h2>
+  </div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Kind</th><th>Device</th><th>Hub host</th>
+      <th>Held by job</th><th>Acquired</th><th>Expires</th><th></th>
+    </tr></thead>
+    <tbody id="leases-body">
+      {% include "leases_body.html" %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

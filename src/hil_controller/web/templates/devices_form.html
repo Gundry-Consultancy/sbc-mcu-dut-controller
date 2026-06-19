@@ -1,0 +1,736 @@
+<div class="form-panel">
+  <h2>{% if device %}Edit Device — {{ device.id }}{% else %}New Device{% endif %}</h2>
+  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+  <form hx-post="/ui/devices{% if device %}/{{ device.id }}{% endif %}"
+        hx-target="#form-panel"
+        hx-swap="innerHTML">
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="f-dev-id">ID *</label>
+        <input type="text" id="f-dev-id" name="id" value="{{ device.id if device else '' }}" required placeholder="qtpy-s3-01">
+        {% if device %}<span class="form-hint">Editing this <strong>renames</strong> the device and repoints its USB-ids, leases &amp; job history.</span>{% endif %}
+      </div>
+      <div class="form-group">
+        <label for="f-dev-host">Host *</label>
+        <select id="f-dev-host" name="host_id" required>
+          <option value="">— select host —</option>
+          {% for h in hosts %}
+          <option value="{{ h.id }}" {% if device and device.host_id == h.id %}selected{% endif %}>{{ h.id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-kind">Kind *</label>
+        <select id="f-dev-kind" name="kind">
+          {% for k in ['microcontroller','sbc'] %}
+          <option value="{{ k }}" {% if device and device.kind == k %}selected{% elif not device and k == 'microcontroller' %}selected{% endif %}>{{ k }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-model">Model</label>
+        <input type="text" id="f-dev-model" name="model" value="{{ device.model if device else '' }}" placeholder="esp32-s3, pi5, …">
+      </div>
+      <div class="form-group">
+        <label for="f-dev-pool">Pool</label>
+        <input type="text" id="f-dev-pool" name="pool" value="{{ device.pool if device else 'public' }}" placeholder="public, wippersnapper-python, …">
+      </div>
+      <div class="form-group">
+        <label for="f-dev-caps">Capabilities</label>
+        <input type="text" id="f-dev-caps" name="capabilities" value="{{ (device.capabilities | join(', ')) if device else '' }}" placeholder="spi, i2c, linux, …">
+        <span class="form-hint">Comma-separated</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-serial">Serial Port</label>
+        <input type="text" id="f-dev-serial" name="serial_port" value="{{ device.serial_port or '' if device else '' }}" placeholder="/dev/ttyACM0">
+      </div>
+      <div class="form-group">
+        <label for="f-dev-flasher">Flasher</label>
+        <input type="text" id="f-dev-flasher" name="flasher" value="{{ device.flasher or '' if device else '' }}" placeholder="esptool, uf2-msc, …">
+      </div>
+      <div class="form-group">
+        <label for="f-dev-usb-vid">USB VID (primary, legacy)</label>
+        <input type="text" id="f-dev-usb-vid" name="usb_vid" value="{{ device.usb_vid or '' if device else '' }}" placeholder="239a">
+        <span class="form-hint">Use the multi-ID table below for additional VIDs/PIDs (bootloader, runtime, ...).</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-usb-pid">USB PID (primary, legacy)</label>
+        <input type="text" id="f-dev-usb-pid" name="usb_pid" value="{{ device.usb_pid or '' if device else '' }}" placeholder="8143">
+      </div>
+      <div class="form-group">
+        <label for="f-dev-hub-host">Hub host</label>
+        <select id="f-dev-hub-host" name="hub_host_id">
+          <option value="">— defaults to device host —</option>
+          {% for h in hosts %}
+          <option value="{{ h.id }}" {% if device and device.hub_host_id == h.id %}selected{% endif %}>{{ h.id }}</option>
+          {% endfor %}
+        </select>
+        <span class="form-hint">usbip server hosting this device (defaults to the device's host).</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-hub-port">Hub port path</label>
+        <input type="text" id="f-dev-hub-port" name="hub_port_path" value="{{ device.hub_port_path or '' if device else '' }}" placeholder="1-1.1.3">
+        <span class="form-hint">sysfs / usbip bus-id (stable identity across resets).</span>
+        <button type="button" class="btn btn-sm btn-outline" style="margin-top:0.35rem;"
+                onclick="discoverBusids('{{ device.id if device else 'new' }}', '{{ token }}')">
+          Discover busids on hub host
+        </button>
+        <span id="busid-status-{{ device.id if device else 'new' }}" class="form-hint" style="margin-left:0.5rem;"></span>
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <div id="busid-list-{{ device.id if device else 'new' }}"></div>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-solenoid">Solenoid channel</label>
+        <input type="number" id="f-dev-solenoid" name="solenoid_channel" min="0" max="7" step="1"
+               value="{{ device.solenoid_channel if device and device.solenoid_channel is not none else '' }}"
+               placeholder="0–7">
+        <span class="form-hint">MCP23017 channel driving this port's power button.</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-usb-serial">USB iSerial</label>
+        <input type="text" id="f-dev-usb-serial" name="usb_serial" value="{{ device.usb_serial or '' if device else '' }}" placeholder="optional">
+        <span class="form-hint">Used to disambiguate identical boards.</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-status">Status</label>
+        <select id="f-dev-status" name="status">
+          {% for s in ['available','offline','maintenance','busy'] %}
+          <option value="{{ s }}" {% if device and device.status == s %}selected{% elif not device and s == 'available' %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-camera">Camera</label>
+        <select id="f-dev-camera" name="camera_id">
+          <option value="">— none —</option>
+          {% for cam in cameras %}
+          <option value="{{ cam.id }}" {% if device and device.camera_id == cam.id %}selected{% endif %}>
+            {{ cam.id }}{% if cam.model %} — {{ cam.model }}{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        <span class="form-hint">Camera that monitors this device (for ROI calibration)</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-qr">QR Identifier</label>
+        <input type="text" id="f-dev-qr" name="qr_identifier" value="{{ device.qr_identifier or '' if device else '' }}" placeholder="https://adafru.it/5300">
+        <span class="form-hint">QR code URL printed on the board (for auto-ROI detection)</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-focus">Manual focus (dioptres)</label>
+        <input type="number" id="f-dev-focus" name="manual_focus_dioptres" min="0" max="32" step="0.1"
+               value="{{ device.manual_focus_dioptres if device and device.manual_focus_dioptres is not none else '' }}"
+               placeholder="leave blank for auto">
+        <span class="form-hint">Override continuous autofocus with a fixed lens position (0–32). Blank = use camera auto. Across devices sharing a camera, the server applies the midpoint of min/max.</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-brightness">Illuminator brightness</label>
+        <input type="number" id="f-dev-brightness" name="illuminator_brightness" min="0" max="255" step="1"
+               value="{{ device.illuminator_brightness if device and device.illuminator_brightness is not none else '' }}"
+               placeholder="leave blank for off">
+        <span class="form-hint">NeoPixel ring brightness (0–255). Blank = no contribution. Across devices sharing a camera, the server applies the max.</span>
+      </div>
+      {% if device and device.camera_id %}
+      <div class="form-group" style="grid-column: 1 / -1;">
+        <button type="button" class="btn btn-sm btn-outline"
+                onclick="previewCameraSettings('{{ device.id }}')">
+          Preview on camera
+        </button>
+        <span id="preview-status-{{ device.id }}" class="form-hint" style="margin-left:0.75rem;"></span>
+        <span class="form-hint">Pushes the values above directly to the camera, bypassing the multi-device compromise — for calibration without needing a running job.</span>
+      </div>
+      <script>
+      async function previewCameraSettings(deviceId) {
+        const focus = document.getElementById('f-dev-focus').value;
+        const brightness = document.getElementById('f-dev-brightness').value;
+        const status = document.getElementById('preview-status-' + deviceId);
+        status.textContent = 'pushing…';
+        try {
+          const r = await fetch('/ui/devices/' + deviceId + '/camera/preview', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              focus: focus === '' ? null : parseFloat(focus),
+              brightness: brightness === '' ? null : parseInt(brightness, 10),
+            }),
+          });
+          const j = await r.json();
+          if (j.ok) {
+            status.textContent = 'pushed: focus=' + (j.focus ?? 'auto') + ', brightness=' + (j.brightness ?? 'off');
+            status.style.color = '#2d7a2d';
+          } else {
+            status.textContent = 'error: ' + (j.error || 'unknown');
+            status.style.color = '#b94a48';
+          }
+        } catch (e) {
+          status.textContent = 'request failed: ' + e;
+          status.style.color = '#b94a48';
+        }
+      }
+      </script>
+      {% endif %}
+    </div>
+
+    {% if device and device.camera_id %}
+    <hr class="section-sep">
+    <h2>Camera Panel</h2>
+    <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-start;margin-bottom:1rem;">
+
+      <!-- Small canvas (drag to draw ROI) -->
+      <div style="flex-shrink:0;">
+        <p style="margin:0 0 0.4rem;font-size:0.85rem;color:#555;">Drag to draw ROI &middot; blue&nbsp;=&nbsp;saved &middot; orange&nbsp;=&nbsp;pending &middot; auto-refreshes&nbsp;10&nbsp;s</p>
+        <canvas id="roi-canvas-{{ device.id }}" width="320" height="240"
+                style="display:block;border-radius:6px;border:1px solid #ddd;cursor:crosshair;"></canvas>
+        <div style="margin-top:0.4rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button type="button" class="btn btn-sm btn-outline"
+                  onclick="openRoiModal('{{ device.id }}')">Large Preview</button>
+          <button type="button" class="btn btn-sm btn-outline"
+                  onclick="refreshSnap('{{ device.id }}')">Refresh</button>
+          <button type="button" class="btn btn-sm btn-outline" id="crop-toggle-{{ device.id }}"
+                  onclick="toggleCrop('{{ device.id }}')" title="Show ROI-cropped image instead of full frame">Crop to ROI</button>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div style="min-width:200px;">
+        <p style="margin:0 0 0.5rem;font-size:0.85rem;color:#555;">
+          Camera: <strong>{{ device.camera_id }}</strong><br>
+          {% if device.qr_identifier %}QR: <code style="font-size:0.75rem;">{{ device.qr_identifier }}</code>{% endif %}
+        </p>
+        <div id="cam-roi-status-{{ device.id }}">
+          {% if roi %}ROI: x={{ roi.x }} y={{ roi.y }} w={{ roi.w }} h={{ roi.h }} ({{ roi.source }}){% if roi.roi_frame_width and roi.roi_frame_height %} &mdash; calibrated at {{ roi.roi_frame_width }}&times;{{ roi.roi_frame_height }}{% endif %}
+          {% else %}No ROI set{% endif %}
+        </div>
+        <div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+          {% if roi %}
+          <a class="btn btn-sm btn-outline" target="_blank"
+            href="/ui/devices/{{ device.id }}/snapshot?crop=1&res=full">View full-res crop</a>
+          {% endif %}
+          {% if device.qr_identifier %}
+          <button type="button" class="btn btn-sm btn-outline"
+            onclick="detectQr('{{ device.id }}', '{{ token }}')">Re-detect QR</button>
+          {% endif %}
+          <button type="button" class="btn btn-sm btn-outline"
+            onclick="undoRoi('{{ device.id }}')">Undo</button>
+          <button type="button" class="btn btn-sm btn-danger"
+            onclick="clearRoi('{{ device.id }}', '{{ token }}')">Clear ROI</button>
+        </div>
+
+        <hr style="margin:0.75rem 0;border-color:#eee;">
+        <p style="font-size:0.8rem;color:#555;margin:0 0 0.4rem;">ROI (pixels in camera frame):</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem 0.5rem;margin-bottom:0.5rem;">
+          <label style="font-size:0.8rem;">x
+            <input type="number" id="roi-x-{{ device.id }}" min="0" style="width:4rem;font-size:0.8rem;" placeholder="0"
+                   oninput="onRoiInputChange('{{ device.id }}')"
+                   value="{{ roi.x if roi else '' }}"></label>
+          <label style="font-size:0.8rem;">y
+            <input type="number" id="roi-y-{{ device.id }}" min="0" style="width:4rem;font-size:0.8rem;" placeholder="0"
+                   oninput="onRoiInputChange('{{ device.id }}')"
+                   value="{{ roi.y if roi else '' }}"></label>
+          <label style="font-size:0.8rem;">w
+            <input type="number" id="roi-w-{{ device.id }}" min="1" style="width:4rem;font-size:0.8rem;" placeholder="320"
+                   oninput="onRoiInputChange('{{ device.id }}')"
+                   value="{{ roi.w if roi else '' }}"></label>
+          <label style="font-size:0.8rem;">h
+            <input type="number" id="roi-h-{{ device.id }}" min="1" style="width:4rem;font-size:0.8rem;" placeholder="240"
+                   oninput="onRoiInputChange('{{ device.id }}')"
+                   value="{{ roi.h if roi else '' }}"></label>
+        </div>
+        <button type="button" class="btn btn-sm btn-primary"
+          onclick="saveRoi('{{ device.id }}', '{{ token }}')">Save ROI</button>
+      </div>
+    </div>
+
+    <!-- Large preview modal -->
+    <div id="roi-modal-{{ device.id }}"
+         style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:1000;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:8px;padding:1rem;max-width:95vw;max-height:95vh;overflow:auto;position:relative;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+          <h3 style="margin:0;font-size:1rem;">ROI Selection &mdash; {{ device.id }}</h3>
+          <button type="button" class="btn btn-sm btn-secondary"
+                  onclick="closeRoiModal('{{ device.id }}')">Close</button>
+        </div>
+        <p style="font-size:0.8rem;color:#666;margin:0 0 0.5rem;">Drag to draw ROI &middot; blue&nbsp;=&nbsp;saved &middot; orange&nbsp;=&nbsp;pending (unsaved)</p>
+        <canvas id="roi-modal-canvas-{{ device.id }}"
+                style="display:block;cursor:crosshair;border-radius:4px;border:1px solid #ddd;max-width:100%;"></canvas>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">{% if device %}Save Changes{% else %}Create Device{% endif %}</button>
+      <button type="button" class="btn btn-secondary"
+        hx-get="/ui/empty" hx-target="#form-panel" hx-swap="innerHTML">Cancel</button>
+    </div>
+  </form>
+
+  {% if device %}
+  <hr class="section-sep">
+  <h2>Bench actions</h2>
+  <p class="form-hint" style="margin-bottom:0.5rem;">
+    Drive the DUT directly via its hub-host transport. These bypass the
+    job queue — useful for one-off recovery / provisioning.
+  </p>
+
+  <div id="bench-action-result-{{ device.id }}"></div>
+
+  <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:0.5rem;">
+    <form hx-post="/ui/devices/{{ device.id }}/reset"
+          hx-target="#bench-action-result-{{ device.id }}"
+          hx-swap="innerHTML"
+          hx-confirm="Power-cycle channel {{ device.solenoid_channel if device.solenoid_channel is not none else '?' }} on {{ device.hub_host_id or device.host_id }}?">
+      <button type="submit" class="btn btn-sm btn-outline"
+              {% if device.solenoid_channel is none %}disabled title="Set solenoid_channel first"{% endif %}>
+        Power-cycle (reset)
+      </button>
+    </form>
+  </div>
+
+  <form hx-post="/ui/devices/{{ device.id }}/install-tinyuf2"
+        hx-target="#bench-action-result-{{ device.id }}"
+        hx-swap="innerHTML"
+        hx-indicator="#tinyuf2-spinner-{{ device.id }}"
+        hx-confirm="Erase the chip and install TinyUF2? This will wipe whatever firmware is on it."
+        style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end;">
+    <div class="form-group" style="margin:0;flex:1;min-width:12rem;">
+      <label>TinyUF2 board name *</label>
+      <input type="text" name="board_name" required
+             placeholder="feather_esp32s3_reverse_tft, metro_esp32s2, …"
+             value="{{ device.model or '' }}">
+      <span class="form-hint">Must match an asset name in the adafruit/tinyuf2 release.</span>
+    </div>
+    <div class="form-group" style="margin:0;">
+      <label>Fallback board</label>
+      <input type="text" name="fallback_board" placeholder="optional" style="width:11rem;">
+    </div>
+    <div class="form-group" style="margin:0;">
+      <label>Tag</label>
+      <input type="text" name="tag" value="latest" style="width:6rem;">
+    </div>
+    <div class="form-group" style="margin:0;">
+      <label>Chip</label>
+      <select name="chip">
+        {% for c in ['auto','esp32','esp32s2','esp32s3','esp32c3','esp32c6'] %}
+        <option value="{{ c }}" {% if c == 'auto' %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-sm btn-primary"
+            {% if not device.hub_port_path %}disabled title="Set hub_port_path first"{% endif %}>
+      Install TinyUF2
+    </button>
+    <span id="tinyuf2-spinner-{{ device.id }}" class="htmx-indicator">installing…</span>
+  </form>
+  {% endif %}
+
+  {% if device %}
+  <hr class="section-sep">
+  <h2>USB IDs</h2>
+  <p class="form-hint" style="margin-bottom:0.5rem;">
+    Each row is one VID/PID this device presents — bootloader, runtime, DFU, MSC, etc.
+    Add manually below, or run a Learn pass to capture by depower/repower.
+  </p>
+
+  <div style="margin-bottom:0.5rem;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+    <button type="button" class="btn btn-sm btn-primary"
+            hx-post="/ui/devices/{{ device.id }}/learn-usb"
+            hx-target="#usb-ids-panel-{{ device.id }}"
+            hx-swap="innerHTML"
+            hx-indicator="#learn-spinner-{{ device.id }}"
+            hx-confirm="Run an active USB learn pass? This will depower the hub briefly.">
+      Learn USB IDs
+    </button>
+    <label style="font-size:0.85rem;">
+      <input type="checkbox" id="learn-reset-{{ device.id }}"
+             hx-include="this"
+             onchange="window._learnResetCycle_{{ device.id }} = this.checked;">
+      include reset cycle (bootloader + runtime)
+    </label>
+    <span id="learn-spinner-{{ device.id }}" class="htmx-indicator">running…</span>
+    <span class="form-hint">Requires hub_port_path + solenoid_channel; acquires an exclusive_hub lease.</span>
+  </div>
+
+  <div id="usb-ids-panel-{{ device.id }}"
+       hx-get="/ui/devices/{{ device.id }}/usb-ids"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    Loading USB IDs…
+  </div>
+
+  <form class="usb-id-add-form"
+        hx-post="/ui/devices/{{ device.id }}/usb-ids"
+        hx-target="#usb-ids-panel-{{ device.id }}"
+        hx-swap="innerHTML"
+        style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end;">
+    <div class="form-group" style="margin:0;">
+      <label>VID</label>
+      <input type="text" name="vid" required placeholder="239a" style="width:5rem;">
+    </div>
+    <div class="form-group" style="margin:0;">
+      <label>PID</label>
+      <input type="text" name="pid" required placeholder="8053" style="width:5rem;">
+    </div>
+    <div class="form-group" style="margin:0;">
+      <label>Role</label>
+      <select name="role">
+        {% for r in ['runtime','bootloader','dfu','msc','cdc','unknown'] %}
+        <option value="{{ r }}" {% if r == 'unknown' %}selected{% endif %}>{{ r }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin:0;flex:1;min-width:8rem;">
+      <label>Description</label>
+      <input type="text" name="description" placeholder="optional">
+    </div>
+    <div class="form-group" style="margin:0;">
+      <label>iSerial</label>
+      <input type="text" name="iserial" placeholder="optional" style="width:9rem;">
+    </div>
+    <button type="submit" class="btn btn-sm btn-primary">Add USB ID</button>
+  </form>
+  {% endif %}
+</div>
+
+<script>
+(function() {
+  var deviceId = '{{ device.id if device else "" }}';
+  if (!deviceId) return;
+  var smallCanvas = document.getElementById('roi-canvas-' + deviceId);
+  if (!smallCanvas) return;  // no camera assigned
+
+  var sctx = smallCanvas.getContext('2d');
+  var modalCanvas = document.getElementById('roi-modal-canvas-' + deviceId);
+  var mctx = modalCanvas ? modalCanvas.getContext('2d') : null;
+
+  var snapUrl = '/ui/devices/' + deviceId + '/snapshot';
+  var cropEnabled = false;
+  var img = new Image();
+  var imgLoaded = false;
+  var imgW = 0, imgH = 0;
+  var dragging = false;
+
+  var savedRoi = {% if roi %}{"x":{{ roi.x }},"y":{{ roi.y }},"w":{{ roi.w }},"h":{{ roi.h }}}{% else %}null{% endif %};
+  var pendingRoi = null;
+
+  function redraw(canvas, ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (imgLoaded) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    else {
+      ctx.fillStyle = '#f0f0f0';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#aaa';
+      ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Loading…', canvas.width / 2, canvas.height / 2);
+    }
+    if (savedRoi) _drawBox(ctx, canvas, savedRoi, 'rgba(74,158,255,0.2)', '#4a9eff');
+    if (pendingRoi) _drawBox(ctx, canvas, pendingRoi, 'rgba(255,140,0,0.2)', '#ff8c00');
+  }
+
+  function _drawBox(ctx, canvas, roi, fill, stroke) {
+    if (!imgLoaded || !imgW || !imgH) return;
+    var sx = canvas.width / imgW, sy = canvas.height / imgH;
+    ctx.save();
+    ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 2;
+    ctx.fillRect(roi.x*sx, roi.y*sy, roi.w*sx, roi.h*sy);
+    ctx.strokeRect(roi.x*sx, roi.y*sy, roi.w*sx, roi.h*sy);
+    ctx.restore();
+  }
+
+  function toImg(e, canvas) {
+    var rect = canvas.getBoundingClientRect();
+    var px = (e.clientX - rect.left) * canvas.width / rect.width;
+    var py = (e.clientY - rect.top) * canvas.height / rect.height;
+    return {
+      x: Math.max(0, Math.min(imgW, Math.round(px * imgW / canvas.width))),
+      y: Math.max(0, Math.min(imgH, Math.round(py * imgH / canvas.height)))
+    };
+  }
+
+  function attachDrag(canvas, ctx_) {
+    if (!canvas) return;
+    var ds = null;
+    canvas.addEventListener('mousedown', function(e) {
+      if (!imgLoaded) return;
+      dragging = true; ds = toImg(e, canvas);
+    });
+    canvas.addEventListener('mousemove', function(e) {
+      if (!dragging || !ds) return;
+      var dc = toImg(e, canvas);
+      pendingRoi = {x:Math.min(ds.x,dc.x), y:Math.min(ds.y,dc.y),
+                    w:Math.abs(dc.x-ds.x), h:Math.abs(dc.y-ds.y)};
+      redraw(canvas, ctx_);
+      updateInputs(pendingRoi);
+    });
+    canvas.addEventListener('mouseup', function(e) {
+      if (!dragging) return;
+      dragging = false;
+      var dc = toImg(e, canvas);
+      var w = Math.abs(dc.x - ds.x), h = Math.abs(dc.y - ds.y);
+      if (w >= 5 && h >= 5) {
+        pendingRoi = {x:Math.min(ds.x,dc.x), y:Math.min(ds.y,dc.y), w:w, h:h};
+      }
+      ds = null;
+      if (sctx) redraw(smallCanvas, sctx);
+      if (mctx) redraw(modalCanvas, mctx);
+      updateInputs(pendingRoi !== null ? pendingRoi : savedRoi);
+    });
+    canvas.addEventListener('mouseleave', function() {
+      if (dragging) { dragging = false; ds = null; redraw(canvas, ctx_); }
+    });
+  }
+
+  attachDrag(smallCanvas, sctx);
+  attachDrag(modalCanvas, mctx);
+
+  function updateInputs(roi) {
+    if (!roi) return;
+    document.getElementById('roi-x-'+deviceId).value = roi.x;
+    document.getElementById('roi-y-'+deviceId).value = roi.y;
+    document.getElementById('roi-w-'+deviceId).value = roi.w;
+    document.getElementById('roi-h-'+deviceId).value = roi.h;
+  }
+
+  function loadSnap() {
+    img.src = snapUrl + '?_t=' + Date.now() + (cropEnabled ? '&crop=1' : '');
+  }
+
+  img.onload = function() {
+    imgLoaded = true; imgW = img.naturalWidth; imgH = img.naturalHeight;
+    // Remember the (uncropped) frame the ROI is drawn against, so saveRoi can
+    // record roi_frame_width/height and the ROI stays scalable to any resolution.
+    if (!cropEnabled && imgW && imgH) {
+      window._camFrameDims = window._camFrameDims || {};
+      window._camFrameDims[deviceId] = {w: imgW, h: imgH};
+    }
+    if (imgH) smallCanvas.height = Math.round(smallCanvas.width * imgH / imgW);
+    redraw(smallCanvas, sctx);
+    var modal = document.getElementById('roi-modal-' + deviceId);
+    if (modal && modal.style.display !== 'none' && mctx) redraw(modalCanvas, mctx);
+  };
+  img.onerror = function() {
+    sctx.fillStyle = '#f0f0f0'; sctx.fillRect(0, 0, smallCanvas.width, smallCanvas.height);
+    sctx.fillStyle = '#999'; sctx.font = '13px sans-serif'; sctx.textAlign = 'center';
+    sctx.fillText('Snapshot unavailable', smallCanvas.width/2, smallCanvas.height/2);
+  };
+
+  loadSnap();
+  setInterval(function() { if (!dragging) loadSnap(); }, 10000);
+
+  // Globals used from HTML onclick / external async functions
+  window.refreshSnap = function(devId) { if (devId === deviceId) loadSnap(); };
+
+  window.toggleCrop = function(devId) {
+    if (devId !== deviceId) return;
+    cropEnabled = !cropEnabled;
+    var btn = document.getElementById('crop-toggle-' + deviceId);
+    if (btn) {
+      btn.textContent = cropEnabled ? 'Full Frame' : 'Crop to ROI';
+      btn.style.fontWeight = cropEnabled ? 'bold' : '';
+    }
+    loadSnap();
+  };
+
+  window.undoRoi = function(devId) {
+    if (devId !== deviceId) return;
+    pendingRoi = null;
+    if (savedRoi) updateInputs(savedRoi);
+    else ['roi-x-','roi-y-','roi-w-','roi-h-'].forEach(function(p) {
+      document.getElementById(p+deviceId).value = '';
+    });
+    redraw(smallCanvas, sctx);
+    if (mctx) redraw(modalCanvas, mctx);
+  };
+
+  window.onRoiInputChange = function(devId) {
+    if (devId !== deviceId || dragging) return;
+    var g = function(id) { return parseInt(document.getElementById(id).value, 10); };
+    var x=g('roi-x-'+deviceId), y=g('roi-y-'+deviceId), w=g('roi-w-'+deviceId), h=g('roi-h-'+deviceId);
+    pendingRoi = (!isNaN(x)&&!isNaN(y)&&w>0&&h>0) ? {x:x,y:y,w:w,h:h} : null;
+    redraw(smallCanvas, sctx);
+    if (mctx) redraw(modalCanvas, mctx);
+  };
+
+  window._camUpdateSavedRoi = function(devId, roi) {
+    if (devId !== deviceId) return;
+    savedRoi = roi; pendingRoi = null;
+    if (roi) updateInputs(roi);
+    else ['roi-x-','roi-y-','roi-w-','roi-h-'].forEach(function(p) {
+      document.getElementById(p+deviceId).value = '';
+    });
+    redraw(smallCanvas, sctx);
+    if (mctx) redraw(modalCanvas, mctx);
+  };
+
+  window.openRoiModal = function(devId) {
+    if (devId !== deviceId || !modalCanvas) return;
+    var modal = document.getElementById('roi-modal-' + deviceId);
+    modal.style.display = 'flex';
+    var maxW = Math.min(window.innerWidth * 0.88, 900);
+    modalCanvas.width = Math.round(maxW);
+    modalCanvas.height = imgH && imgW ? Math.round(maxW * imgH / imgW) : Math.round(maxW * 0.75);
+    if (mctx) redraw(modalCanvas, mctx);
+  };
+
+  window.closeRoiModal = function(devId) {
+    if (devId !== deviceId) return;
+    var modal = document.getElementById('roi-modal-' + deviceId);
+    if (modal) modal.style.display = 'none';
+  };
+
+})();
+
+function _roiEl(deviceId) { return document.getElementById('cam-roi-status-' + deviceId); }
+function _roiText(d) {
+  var t = 'ROI: x='+d.x+' y='+d.y+' w='+d.w+' h='+d.h+' ('+(d.source||'manual')+')';
+  if (d.roi_frame_width && d.roi_frame_height) {
+    t += ' — calibrated at ' + d.roi_frame_width + '×' + d.roi_frame_height;
+  }
+  return t;
+}
+
+async function saveRoi(deviceId, token) {
+  const g = id => parseInt(document.getElementById(id).value, 10);
+  const x = g('roi-x-'+deviceId), y = g('roi-y-'+deviceId);
+  const w = g('roi-w-'+deviceId), h = g('roi-h-'+deviceId);
+  if ([x,y,w,h].some(isNaN) || w < 1 || h < 1) {
+    alert('Enter valid x, y, w, h values (w and h must be ≥ 1).');
+    return;
+  }
+  const body = {x, y, w, h};
+  const fd = (window._camFrameDims || {})[deviceId];
+  if (fd && fd.w && fd.h) { body.frame_width = fd.w; body.frame_height = fd.h; }
+  const r = await fetch('/v1/devices/'+deviceId+'/camera/roi', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer '+token},
+    body: JSON.stringify(body),
+  });
+  const el = _roiEl(deviceId);
+  if (r.ok) {
+    const d = await r.json();
+    el.textContent = _roiText(d);
+    if (window._camUpdateSavedRoi) window._camUpdateSavedRoi(deviceId, {x:d.x,y:d.y,w:d.w,h:d.h});
+  } else { el.textContent = 'Error: ' + (await r.text()); }
+}
+
+async function detectQr(deviceId, token) {
+  const el = _roiEl(deviceId);
+  el.textContent = 'Detecting QR…';
+  const r = await fetch('/v1/devices/'+deviceId+'/camera/calibrate/save', {
+    method: 'POST', headers: {'Authorization': 'Bearer '+token},
+  });
+  if (r.ok) {
+    const d = await r.json();
+    el.textContent = _roiText(d);
+    if (window._camUpdateSavedRoi) window._camUpdateSavedRoi(deviceId, {x:d.x,y:d.y,w:d.w,h:d.h});
+  } else { el.textContent = 'Error: ' + (await r.text()); }
+}
+
+async function clearRoi(deviceId, token) {
+  if (!confirm('Clear ROI for '+deviceId+'?')) return;
+  const r = await fetch('/v1/devices/'+deviceId+'/camera/roi', {
+    method: 'DELETE', headers: {'Authorization': 'Bearer '+token},
+  });
+  const el = _roiEl(deviceId);
+  if (r.ok) {
+    el.textContent = 'No ROI set';
+    if (window._camUpdateSavedRoi) window._camUpdateSavedRoi(deviceId, null);
+  } else { el.textContent = 'Error: ' + (await r.text()); }
+}
+
+// --- busid discovery: M3.5 ---
+// Calls /v1/hosts/{hub_host_id}/usbip/exportable and renders a click-to-assign
+// list. Falls back to the device's host_id if hub_host_id is blank in the form.
+async function discoverBusids(deviceId, token) {
+  const statusEl = document.getElementById('busid-status-' + deviceId);
+  const listEl = document.getElementById('busid-list-' + deviceId);
+  const hubSel = document.getElementById('f-dev-hub-host');
+  const hostSel = document.getElementById('f-dev-host');
+  const hubId = (hubSel && hubSel.value) || (hostSel && hostSel.value) || '';
+  if (!hubId) {
+    statusEl.textContent = 'Pick a hub host (or device host) first.';
+    statusEl.style.color = '#b94a48';
+    return;
+  }
+  statusEl.style.color = '#6c757d';
+  statusEl.textContent = 'querying ' + hubId + '…';
+  listEl.innerHTML = '';
+  let resp;
+  try {
+    resp = await fetch('/v1/hosts/' + encodeURIComponent(hubId) + '/usbip/exportable', {
+      headers: {'Authorization': 'Bearer ' + token},
+    });
+  } catch (e) {
+    statusEl.textContent = 'request failed: ' + e;
+    statusEl.style.color = '#b94a48';
+    return;
+  }
+  if (!resp.ok) {
+    statusEl.textContent = 'failed: HTTP ' + resp.status + ' (' + (await resp.text()).slice(0, 200) + ')';
+    statusEl.style.color = '#b94a48';
+    return;
+  }
+  const data = await resp.json();
+  if (!data.daemon_listening) {
+    statusEl.textContent = 'usbipd not running on ' + hubId + ': ' + (data.error || 'no detail');
+    statusEl.style.color = '#b94a48';
+    return;
+  }
+  if (!data.busids.length) {
+    statusEl.textContent = 'no busids exportable on ' + hubId + ' — nothing plugged in?';
+    return;
+  }
+  statusEl.textContent = data.busids.length + ' busid(s) on ' + hubId;
+  statusEl.style.color = '#2d7a2d';
+
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+  let html = '<table style="width:100%;font-size:0.82rem;border-collapse:collapse;margin-top:0.4rem;">';
+  html += '<thead><tr style="border-bottom:1px solid #ddd;">'
+       + '<th align="left">Busid</th>'
+       + '<th align="left">VID:PID</th>'
+       + '<th align="left">Description</th>'
+       + '<th align="left">Matched device</th>'
+       + '<th></th>'
+       + '</tr></thead><tbody>';
+  for (const b of data.busids) {
+    const matched = b.matched_device_id;
+    const sameDevice = matched && deviceId !== 'new' && matched === deviceId;
+    const conflict = matched && !sameDevice;
+    const rowStyle = conflict ? 'opacity:0.55;' : '';
+    let matchedCell;
+    if (sameDevice) matchedCell = '<em>(this device)</em>';
+    else if (matched) matchedCell = '<a href="/ui/devices/' + esc(matched) + '/form">' + esc(matched) + '</a>';
+    else matchedCell = '<em style="color:#888;">unassigned</em>';
+    const action = conflict
+      ? '<button type="button" class="btn btn-sm" disabled title="Already assigned to ' + esc(matched) + '">already used</button>'
+      : '<button type="button" class="btn btn-sm btn-primary" onclick="useBusid(\'' + esc(b.busid).replace(/'/g, "\\'") + '\')">Use this busid</button>';
+    html += '<tr style="' + rowStyle + 'border-bottom:1px solid #f0f0f0;">'
+         + '<td class="mono">' + esc(b.busid) + '</td>'
+         + '<td class="mono">' + esc(b.vid) + ':' + esc(b.pid) + '</td>'
+         + '<td>' + esc(b.description) + '</td>'
+         + '<td class="mono">' + matchedCell + '</td>'
+         + '<td>' + action + '</td>'
+         + '</tr>';
+  }
+  html += '</tbody></table>';
+  html += '<p class="form-hint" style="margin-top:0.4rem;">'
+       + 'Tip: DUT identity is hub+port (this column), not VID:PID — '
+       + 'application-mode VID:PID can change per firmware.'
+       + '</p>';
+  listEl.innerHTML = html;
+}
+
+function useBusid(busid) {
+  const input = document.getElementById('f-dev-hub-port');
+  if (!input) return;
+  input.value = busid;
+  input.focus();
+  // brief highlight so the operator sees what happened
+  input.style.transition = 'background-color 0.6s';
+  input.style.backgroundColor = '#d4edda';
+  setTimeout(() => { input.style.backgroundColor = ''; }, 700);
+}
+</script>

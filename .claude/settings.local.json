@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/c/Windows/System32/OpenSSH/ssh.exe -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new pi@192.168.1.234 \"hostname; uname -a; uptime\")",
+      "Bash(git log *)",
+      "Bash(python -m pytest tests/test_flasher_protocol.py -v)",
+      "Bash(python -m pytest tests/test_esptool_flasher.py -v)",
+      "Bash(python -m pytest tests/test_flasher_protocol.py tests/test_esptool_flasher.py)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(python -m pytest tests/test_flasher_protocol.py tests/test_esptool_flasher.py tests/test_flashers_small.py)",
+      "Bash(python -m pytest tests/test_tinyuf2_fetcher.py -v)",
+      "Bash(python -m pytest tests/test_serial_capture.py -v)",
+      "Bash(python -m pytest tests/test_solenoid_hub.py -v)",
+      "Bash(python -m pytest)",
+      "Bash(python -m pytest --ignore=tests/test_upnp.py)",
+      "Bash(python -m pytest tests/test_web_leases.py tests/test_usbip_exportable_api.py -v)",
+      "Bash(python -m pytest tests/test_web_leases.py::test_leases_page_redirects_without_cookie)",
+      "Bash(python -m pytest tests/test_web_leases.py::test_leases_page_redirects_without_cookie --tb=long)",
+      "Bash(python -m pytest tests/test_web_leases.py tests/test_usbip_exportable_api.py)",
+      "Bash(python -m pytest tests/test_tinyuf2_install.py -v)",
+      "Bash(python -m pytest tests/test_web_usbip_overview.py tests/test_usbip_exportable_api.py -v)",
+      "Bash(awk '{print $2}')",
+      "Bash(python /tmp/scan_tools.py)",
+      "Bash(/c/Windows/System32/OpenSSH/ssh.exe -o *)"
+    ]
+  }
+}

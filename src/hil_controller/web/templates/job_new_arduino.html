@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>New Arduino Test Job</h1>
+
+{% if disk.pct_used > 70 %}
+<div class="alert {% if disk.pct_used > 85 %}alert-error{% else %}alert-info{% endif %}" style="margin-bottom:1rem;">
+  Disk: {{ disk.free_fmt }} free ({{ disk.pct_used }}% used)
+  {% if disk.pct_used > 85 %} — consider <a href="/ui/assets">purging assets</a>{% endif %}
+</div>
+{% endif %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/ui/jobs/arduino" enctype="multipart/form-data" style="max-width:900px;">
+  <div class="form-panel">
+    <h2>Firmware</h2>
+    <p class="form-hint" style="margin-bottom:0.75rem;">Provide a URL <em>or</em> upload a file. Uploaded files are stored as assets and can be re-used or purged from <a href="/ui/assets">Assets</a>.</p>
+
+    <div id="source-tabs" style="display:flex;gap:1rem;margin-bottom:1rem;">
+      <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-weight:600;">
+        <input type="radio" name="firmware_source" value="url"
+          {% if not form or form.firmware_source != 'upload' %}checked{% endif %}
+          onchange="onSourceMode('url')"> URL
+      </label>
+      <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-weight:600;">
+        <input type="radio" name="firmware_source" value="upload"
+          {% if form and form.firmware_source == 'upload' %}checked{% endif %}
+          onchange="onSourceMode('upload')"> Upload file
+      </label>
+    </div>
+
+    <div id="url-section">
+      <div class="form-group">
+        <label for="firmware_url">Firmware URL</label>
+        <input type="text" id="firmware_url" name="firmware_url"
+          value="{{ form.firmware_url if form else '' }}"
+          placeholder="https://github.com/.../releases/download/v1.0/firmware.bin">
+        <span class="form-hint">Direct link to .bin/.uf2/.hex file</span>
+      </div>
+    </div>
+
+    <div id="upload-section" style="display:none;">
+      <div class="form-group">
+        <label for="firmware_file">Firmware file</label>
+        <input type="file" id="firmware_file" name="firmware_file"
+          accept=".bin,.uf2,.hex,.elf">
+        <span class="form-hint">.bin / .uf2 / .hex / .elf — stored as an asset</span>
+      </div>
+      {% if recent_assets %}
+      <div style="margin-top:0.5rem;">
+        <label style="font-size:0.8rem;">Or reuse a previously uploaded firmware:</label>
+        <select name="reuse_asset_id" style="margin-top:0.25rem;">
+          <option value="">— upload new file above —</option>
+          {% for a in recent_assets %}
+          <option value="{{ a.id }}" {% if form and form.reuse_asset_id == a.id %}selected{% endif %}>
+            {{ a.filename }} ({{ a.size_fmt }}, {{ a.created_at[:10] }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="form-grid" style="margin-top:1rem;">
+      <div class="form-group">
+        <label for="flasher">Flasher</label>
+        <select id="flasher" name="flasher">
+          {% for f in ['esptool','uf2-msc','picotool','bossac','openocd'] %}
+          <option value="{{ f }}" {% if form and form.flasher == f %}selected{% elif not form and f == 'esptool' %}selected{% endif %}>{{ f }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="flash_args">Extra flash args</label>
+        <input type="text" id="flash_args" name="flash_args"
+          value="{{ form.flash_args if form else '' }}"
+          placeholder="--baud 921600  (optional)">
+      </div>
+      <div class="form-group">
+        <label for="purge_days">Purge asset after (days)</label>
+        <input type="number" id="purge_days" name="purge_days"
+          value="{{ form.purge_days if form else '30' }}" min="1" max="365">
+        <span class="form-hint">0 = keep forever</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Device</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="device_id">Target Device</label>
+        <select id="device_id" name="device_id">
+          <option value="">Auto (any microcontroller in pool)</option>
+          {% for d in mcu_devices %}
+          <option value="{{ d.id }}"
+            {% if form and form.device_id == d.id %}selected{% endif %}>
+            {{ d.id }} — {{ d.model }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="pool">Pool</label>
+        <input type="text" id="pool" name="pool"
+          value="{{ form.pool if form else 'public' }}">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Advanced</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="timeout_flash">Flash timeout (s)</label>
+        <input type="number" id="timeout_flash" name="timeout_flash"
+          value="{{ form.timeout_flash if form else '120' }}" min="30" max="600">
+      </div>
+      <div class="form-group">
+        <label for="timeout_total">Total timeout (s)</label>
+        <input type="number" id="timeout_total" name="timeout_total"
+          value="{{ form.timeout_total if form else '300' }}" min="60" max="3600">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary" style="padding:0.5rem 1.5rem;">Submit Job</button>
+    <a href="/ui/jobs" class="btn btn-secondary">Cancel</a>
+  </div>
+</form>
+
+<script>
+function onSourceMode(val) {
+  document.getElementById('url-section').style.display = val === 'url' ? '' : 'none';
+  document.getElementById('upload-section').style.display = val === 'upload' ? '' : 'none';
+  document.getElementById('firmware_url').required = val === 'url';
+  document.getElementById('firmware_file').required = false;
+}
+document.addEventListener('DOMContentLoaded', function() {
+  const checked = document.querySelector('input[name=firmware_source]:checked');
+  if (checked) onSourceMode(checked.value);
+});
+</script>
+{% endblock %}

@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 760" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="a2" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .t{fill:#0f172a;font-size:13px;}
+      .b{fill:#0f172a;font-size:13px;font-weight:600;}
+      .s{fill:#475569;font-size:11px;}
+      .num{fill:#fff;font-size:12px;font-weight:700;}
+      .edge{stroke:#475569;stroke-width:1.8;fill:none;}
+      .lane{fill:#f8fafc;stroke:#e2e8f0;stroke-width:1;}
+      .lh{font-size:13px;font-weight:700;}
+    </style>
+  </defs>
+
+  <text x="500" y="28" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">End-to-End Firmware Regression Pipeline</text>
+  <text x="500" y="48" text-anchor="middle" class="s">A GitHub PR drives a real-hardware A/B comparison — low_ref = published release, high_ref = this PR's build</text>
+
+  <!-- lanes -->
+  <rect class="lane" x="20"  y="64" width="310" height="668"/>
+  <rect class="lane" x="345" y="64" width="310" height="668"/>
+  <rect class="lane" x="670" y="64" width="310" height="668"/>
+  <rect x="20"  y="64" width="310" height="30" fill="#334155"/>
+  <rect x="345" y="64" width="310" height="30" fill="#4f46e5"/>
+  <rect x="670" y="64" width="310" height="30" fill="#0d9488"/>
+  <text x="175" y="84" text-anchor="middle" class="lh" fill="#fff">GitHub Actions CI</text>
+  <text x="500" y="84" text-anchor="middle" class="lh" fill="#fff">Controller (tachyon)</text>
+  <text x="825" y="84" text-anchor="middle" class="lh" fill="#fff">Bench / DUT host</text>
+
+  <!-- step helper boxes -->
+  <!-- 1 -->
+  <circle cx="42" cy="124" r="11" fill="#334155"/><text x="42" y="128" text-anchor="middle" class="num">1</text>
+  <rect x="60" y="106" width="258" height="48" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="125" class="b">Build CI produces per-target artifacts</text>
+  <text x="70" y="143" class="s">"WipperSnapper Build CI" → combined.bin per board</text>
+
+  <!-- 2 -->
+  <circle cx="42" cy="194" r="11" fill="#334155"/><text x="42" y="198" text-anchor="middle" class="num">2</text>
+  <rect x="60" y="170" width="258" height="64" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="189" class="b">hil-test-suite.yml fires</text>
+  <text x="70" y="206" class="s">pull_request / workflow_run / dispatch</text>
+  <text x="70" y="222" class="s">joins Tailscale → reaches controller</text>
+
+  <!-- 3 GET targets -->
+  <circle cx="42" cy="272" r="11" fill="#334155"/><text x="42" y="276" text-anchor="middle" class="num">3</text>
+  <rect x="60" y="252" width="258" height="42" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="271" class="b">GET /v1/targets</text>
+  <text x="70" y="287" class="s">which boards are available right now?</text>
+  <path class="edge" d="M318 273 H500 V300" marker-end="url(#a2)"/>
+
+  <!-- controller availability -->
+  <rect x="360" y="306" width="280" height="44" rx="8" fill="#eef2ff" stroke="#a5b4fc"/>
+  <text x="370" y="325" class="b">Availability + self-rectification</text>
+  <text x="370" y="341" class="s">runs the available subset · reports skipped + why</text>
+  <path class="edge" d="M500 350 V366 H318 V310" marker-end="url(#a2)"/>
+
+  <!-- 4 fetch + upload firmware -->
+  <circle cx="42" cy="392" r="11" fill="#334155"/><text x="42" y="396" text-anchor="middle" class="num">4</text>
+  <rect x="60" y="372" width="258" height="60" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="391" class="b">Fetch firmware → POST /v1/firmware</text>
+  <text x="70" y="408" class="s">gh release/run download → unzip →</text>
+  <text x="70" y="424" class="s">combined.bin uploaded (sha256-tracked)</text>
+  <path class="edge" d="M318 402 H500 V440" marker-end="url(#a2)"/>
+
+  <!-- 5 POST jobs x2 -->
+  <circle cx="42" cy="476" r="11" fill="#334155"/><text x="42" y="480" text-anchor="middle" class="num">5</text>
+  <rect x="60" y="452" width="258" height="62" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="471" class="b">POST /v1/jobs  (test array)</text>
+  <text x="70" y="488" class="s">hil-checkin-run.sh — default gate</text>
+  <text x="70" y="504" class="s">hil-pixelwrite-run.sh — A/B ×2 (low, high)</text>
+  <path class="edge" d="M318 483 H500 V522" marker-end="url(#a2)"/>
+
+  <!-- controller orchestrator -->
+  <rect x="360" y="446" width="280" height="62" rx="8" fill="#eef2ff" stroke="#a5b4fc"/>
+  <text x="370" y="466" class="b">Scheduler assigns device + lock</text>
+  <text x="370" y="483" class="s">resolves (host, device, aux, mux)</text>
+  <text x="370" y="499" class="s">renders secrets profile → /tmp/hil/&lt;job&gt;</text>
+
+  <rect x="360" y="528" width="280" height="70" rx="8" fill="#eef2ff" stroke="#7c3aed"/>
+  <text x="370" y="548" class="b" fill="#6d28d9">firmware-bench orchestrator</text>
+  <text x="370" y="565" class="s">enter_bootloader → erase → flash →</text>
+  <text x="370" y="581" class="s">launch_protomq → write_secrets_msc →</text>
+  <text x="370" y="595" class="s">power_cycle → inject_pixelwrite</text>
+  <path class="edge" d="M640 563 H825 V598" marker-end="url(#a2)"/>
+
+  <!-- bench DUT -->
+  <rect x="688" y="604" width="274" height="66" rx="8" fill="#ccfbf1" stroke="#0d9488"/>
+  <text x="698" y="624" class="b">DUT runs on solenoid hub</text>
+  <text x="698" y="641" class="s">esptool over USB-Serial/JTAG</text>
+  <text x="698" y="657" class="s">per-session protomq broker · serial capture</text>
+
+  <!-- verdict -->
+  <rect x="688" y="682" width="274" height="40" rx="8" fill="#fef3c7" stroke="#d97706"/>
+  <text x="698" y="700" class="b">PIXELWRITE_VERDICT rebooted=…</text>
+  <text x="698" y="715" class="s">CHECKIN_VERDICT ok=true</text>
+  <path class="edge" d="M825 670 V680" marker-end="url(#a2)"/>
+
+  <!-- verdict back to controller assets -->
+  <rect x="360" y="618" width="280" height="44" rx="8" fill="#eef2ff" stroke="#a5b4fc"/>
+  <text x="370" y="637" class="b">Capture assets</text>
+  <text x="370" y="653" class="s">serial.log · protomq.log · flash.log</text>
+  <path class="edge" d="M688 700 C660 700 660 640 644 640" marker-end="url(#a2)"/>
+
+  <!-- 6 PR comment -->
+  <circle cx="42" cy="650" r="11" fill="#334155"/><text x="42" y="654" text-anchor="middle" class="num">6</text>
+  <rect x="60" y="618" width="258" height="80" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="637" class="b">Collect results → PR comment</text>
+  <text x="70" y="654" class="s">GET /v1/jobs/{id}/wait (long-poll)</text>
+  <text x="70" y="670" class="s">+ /assets  → per-target table + excerpts</text>
+  <text x="70" y="686" class="s">new comment per run · uploads artifacts</text>
+  <path class="edge" d="M360 640 H330 V659 H318" marker-end="url(#a2)"/>
+
+  <text x="500" y="752" text-anchor="middle" class="s">Verdict contract — release beta.127: rebooted=true (crash) · PR fix: rebooted=false (survives) · check-in: ok=true</text>
+</svg>

@@ -1,0 +1,104 @@
+# /etc/hil/topology.yaml — copy and adjust for your bench.
+# The controller reads this at startup (HIL_TOPOLOGY_FILE env var).
+
+hosts:
+  - id: rpi-displays
+    role: microcontroller-fleet
+    addr: 192.168.1.234
+    transport: ssh
+    ssh_user: pi
+    ssh_key_path: /etc/hil/keys/rpi-displays
+    max_concurrent_jobs: null      # unbounded; per-device locks are the real constraint
+    capabilities: [power-control, mcp23017, usbip-server, cameras]
+
+  - id: rpi-hil001
+    role: sbc-fleet
+    addr: rpi-hil001.local
+    transport: ssh
+    ssh_user: pi
+    ssh_key_path: /etc/hil/keys/rpi-hil-fleet
+    max_concurrent_jobs: 1
+    capabilities: []
+
+  - id: rpi-hil003
+    role: sbc-fleet
+    addr: rpi-hil003.local
+    transport: ssh
+    ssh_user: pi
+    ssh_key_path: /etc/hil/keys/rpi-hil-fleet
+    max_concurrent_jobs: 1
+    capabilities: []
+
+  - id: localhost
+    kind: local
+    role: sbc-fleet
+    max_concurrent_jobs: 2
+    capabilities: [linux, python-snapper]
+
+  # The controller host itself (Tachyon), informational. arduino-ws jobs use
+  # LocalTransport for the "controller" phases directly (no topology lookup),
+  # so this entry is NOT required for build/flash-on-controller — it documents
+  # the controller's role + capabilities. The DUT reaches the controller's
+  # protomq broker at `config.controller_ip` (HIL_CONTROLLER_IP), not `addr`.
+  - id: tachyon
+    kind: local
+    role: controller
+    addr: 192.168.1.169
+    max_concurrent_jobs: 2
+    capabilities: [linux, platformio, node, usbip-client, vhci]
+
+  - id: pi5-protomq
+    role: protomq-broker
+    addr: 192.168.1.210
+    transport: none
+    mqtt_port: 1884
+
+devices:
+  - id: rpi-hil001-pi5-a
+    host_id: rpi-hil001
+    kind: sbc
+    model: pi5
+    capabilities: [linux, python-snapper]
+    pool: wippersnapper-python
+    status: available
+
+  - id: rpi-hil003-pi5-a
+    host_id: rpi-hil003
+    kind: sbc
+    model: pi5
+    capabilities: [linux, python-snapper]
+    pool: wippersnapper-python
+    status: available
+
+  - id: localhost-runner-a
+    host_id: localhost
+    kind: sbc
+    model: local
+    capabilities: [linux, python-snapper]
+    pool: wippersnapper-python
+    status: available
+
+  - id: qtpy-s3-01
+    host_id: rpi-displays
+    kind: microcontroller
+    model: esp32-s3
+    capabilities: [native-cdc, spi, i2c]
+    usb: { vid: "239a", pid: "8143" }
+    pool: public
+    status: available
+
+  # Per-phase execution-location wiring (model A / usbip). The device's USB
+  # physically lives on rpi-displays (host_id) at busid 1-1.1.1.4. With the
+  # arduino-ws exec plan build_host=controller / flash_mode=usbip, the build
+  # runs on the controller (LocalTransport — "controller" always means the
+  # hil-controller box, no topology host needed for it), and flashing binds
+  # that busid on rpi-displays and attaches it onto the controller. Only
+  # hub_port_path is required here; host_id stays the USB-server host.
+  - id: mcu-feather-esp32s3-revtft
+    host_id: rpi-displays       # USB-server host that physically holds the DUT
+    hub_port_path: "1-1.1.1.4"  # usbip busid on rpi-displays
+    kind: microcontroller
+    model: Feather ESP32-S3 Reverse TFT
+    capabilities: [arduino, wippersnapper, tft-display]
+    pool: public
+    status: available

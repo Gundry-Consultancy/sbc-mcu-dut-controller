@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>ProtoMQ Scripts</h1>
+
+{% if not scripts_dir %}
+<div class="alert alert-info">
+  Set <code>HIL_SCRIPTS_DIR</code> to the <code>vendor/protomq/scripts/</code> path to browse scripts here.
+</div>
+{% elif not scripts %}
+<div class="alert alert-info">No <code>.json</code> scripts found in <code>{{ scripts_dir }}</code>.</div>
+{% else %}
+
+<p style="color:#6c757d;font-size:0.8rem;margin-bottom:1rem;">
+  {{ scripts|length }} scripts in <code class="mono">{{ scripts_dir }}</code>
+</p>
+
+<div id="script-list">
+  {% for s in scripts %}
+  <div class="script-card"
+    hx-get="/ui/scripts/{{ s.filename }}"
+    hx-target="#script-detail"
+    hx-swap="innerHTML">
+    <h3>{{ s.name or s.filename }}</h3>
+    {% if s.description %}<p>{{ s.description }}</p>{% endif %}
+    <div style="margin-top:0.5rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <span class="badge badge-gray mono">{{ s.filename }}</span>
+      {% if s.proto_version %}<span class="badge badge-info">{{ s.proto_version }}</span>{% endif %}
+      {% if s.step_count %}<span class="badge badge-gray">{{ s.step_count }} steps</span>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div id="script-detail" style="margin-top:1.5rem;"></div>
+
+{% endif %}
+{% endblock %}

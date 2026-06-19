@@ -1,0 +1,39 @@
+{% for p in peripherals %}
+<tr id="periph-row-{{ p.id }}">
+  <td class="mono">{{ p.id }}</td>
+  <td><span class="badge badge-info">{{ p.kind }}</span></td>
+  <td>{{ p.model }}
+    {% if p.specs %}
+    <div style="font-size:0.75rem;color:#777;">
+      {{ [p.specs.resolution, p.specs.controller, p.specs.interface] | select | join(' · ') }}
+    </div>
+    {% endif %}
+  </td>
+  <td>
+    {% if p.product_url %}
+    <a href="{{ p.product_url }}" target="_blank" rel="noopener" class="mono" style="font-size:0.8rem;">{{ p.product_url }}</a>
+    {% else %}—{% endif %}
+  </td>
+  <td style="max-width:18rem;font-size:0.82rem;color:#555;">{{ p.notes or '—' }}</td>
+  <td>
+    <div class="caps">
+    {% for dev_id in p.device_ids %}
+      <span class="badge badge-sbc">{{ dev_id }}</span>
+    {% endfor %}
+    </div>
+  </td>
+  <td>
+    <button class="btn btn-sm btn-outline"
+      hx-get="/ui/peripherals/{{ p.id }}/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">Edit</button>
+    <button class="btn btn-sm btn-danger"
+      hx-delete="/ui/peripherals/{{ p.id }}"
+      hx-target="#periph-row-{{ p.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="Delete peripheral {{ p.id }}?">Del</button>
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="7" style="color:#6c757d;text-align:center;padding:1.5rem;">No peripherals — click + Add Peripheral to create one.</td></tr>
+{% endfor %}

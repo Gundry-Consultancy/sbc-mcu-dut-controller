@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Hardware</h1>
+
+<div id="form-panel"></div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>Aux Devices <span class="tbl-count">{{ hardware|length }}</span></h2>
+    <button class="btn btn-primary"
+      hx-get="/ui/hardware/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">+ Add Aux</button>
+  </div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Kind</th><th>Model</th><th>Interface</th><th>Observability</th>
+      <th>Capabilities</th><th>Pool</th><th>Connected Devices</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody id="hardware-body">
+      {% include "hardware_body.html" %}
+    </tbody>
+  </table>
+</div>
+
+<div class="tbl-wrap" style="margin-top:2rem;">
+  <div class="tbl-header">
+    <h2>Peripherals <span class="tbl-count">{{ peripherals|length }}</span></h2>
+    <button class="btn btn-primary"
+      hx-get="/ui/peripherals/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">+ Add Peripheral</button>
+  </div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Kind</th><th>Model</th><th>Product URL</th><th>Notes</th><th>DUT Devices</th><th></th>
+    </tr></thead>
+    <tbody id="peripherals-body">
+      {% include "peripherals_body.html" %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

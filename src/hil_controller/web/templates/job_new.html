@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>New Python Test Job</h1>
+
+{% if disk.pct_used > 70 %}
+<div class="alert {% if disk.pct_used > 85 %}alert-error{% else %}alert-info{% endif %}" style="margin-bottom:1rem;">
+  Disk: {{ disk.free_fmt }} free ({{ disk.pct_used }}% used)
+  {% if disk.pct_used > 85 %} — consider <a href="/ui/assets">purging assets</a>{% endif %}
+</div>
+{% endif %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/ui/jobs" style="max-width:900px;">
+  <div class="form-panel">
+    <h2>Source</h2>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:span 2;">
+        <label for="repo">Repository URL *</label>
+        <input type="text" id="repo" name="repo"
+          value="{{ form.repo if form else 'https://github.com/adafruit/Adafruit_Wippersnapper_Python.git' }}"
+          required placeholder="https://github.com/adafruit/Adafruit_Wippersnapper_Python.git">
+      </div>
+      <div class="form-group">
+        <label for="ref">Branch / Ref *</label>
+        <input type="text" id="ref" name="ref"
+          value="{{ form.ref if form else 'main' }}" required placeholder="main">
+      </div>
+      <div class="form-group">
+        <label for="pat">PAT (clone token)</label>
+        <input type="password" id="pat" name="pat"
+          value="{{ form.pat if form else '' }}" placeholder="ghp_… short-lived token">
+        <span class="form-hint">Only needed for private repos or authenticated submodule access</span>
+      </div>
+      <div class="form-group" style="grid-column:span 2;">
+        <label for="setup">Setup command</label>
+        <textarea id="setup" name="setup" rows="4"
+          placeholder="pip install -e .[test]">{{ form.setup if form else 'sudo apt install -y python3-venv &&\npython3 -m venv .venv &&\n. ./.venv/bin/activate &&\npip install -e .' }}</textarea>
+        <span class="form-hint">Shell command run in repo root after clone. Supports <code>&&</code>, pipes, multi-step.</span>
+      </div>
+      <div class="form-group" style="align-self:end;">
+        <label>
+          <input type="checkbox" name="submodules" value="1"
+            {% if form and form.submodules %}checked{% endif %}> Recurse submodules
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Device</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="device_id">Target Device</label>
+        <select id="device_id" name="device_id">
+          <option value="">Auto (any wippersnapper-python pool device)</option>
+          {% for d in sbc_devices %}
+          <option value="{{ d.id }}"
+            {% if form and form.device_id == d.id %}selected{% endif %}>
+            {{ d.id }} — {{ d.model }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="requires_aux">Required Aux (optional)</label>
+        <input type="text" id="requires_aux" name="requires_aux"
+          value="{{ form.requires_aux if form else '' }}"
+          placeholder="tachyon-ili9341">
+        <span class="form-hint">Aux ID that must be connected to the chosen device</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Test Configuration</h2>
+    <div style="margin-bottom:1rem;">
+      <label style="font-weight:600;display:block;margin-bottom:0.5rem;">Hardware mode</label>
+      <label style="display:inline-flex;align-items:center;gap:0.4rem;margin-right:1.5rem;cursor:pointer;">
+        <input type="radio" name="hw_mode" value="no_hardware"
+          {% if not form or form.hw_mode != 'hardware' %}checked{% endif %}
+          onchange="onHwMode(this.value)">
+        No hardware <span class="badge badge-gray" style="font-size:0.7rem;">BLINKA_OS_AGNOSTIC=1</span>
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:0.4rem;cursor:pointer;">
+        <input type="radio" name="hw_mode" value="hardware"
+          {% if form and form.hw_mode == 'hardware' %}checked{% endif %}
+          onchange="onHwMode(this.value)">
+        Hardware — real display attached
+      </label>
+    </div>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:span 2;">
+        <label for="test_cmd">Test command</label>
+        <textarea id="test_cmd" name="test_cmd" rows="2"
+          placeholder=".venv/bin/python -m pytest -m 'not hardware' -v --tb=short">{{ form.test_cmd if form else defaults.no_hw_cmd }}</textarea>
+        <span class="form-hint">Full shell command run in repo root. Use <code>.venv/bin/python</code> to run inside the venv created by setup.</span>
+      </div>
+      <div class="form-group" id="protomq-row">
+        <label for="protomq_script">ProtoMQ Script (hardware tests)</label>
+        <select id="protomq_script" name="protomq_script">
+          <option value="">None / not needed</option>
+          {% for s in scripts %}
+          <option value="{{ s.stem }}"
+            {% if form and form.protomq_script == s.stem %}selected{% endif %}>
+            {{ s.stem }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>MQTT / Secrets</h2>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;">
+      <button type="button" class="btn btn-sm btn-outline" onclick="applyPreset('local-anon')">Local ProtoMQ (anon)</button>
+      <button type="button" class="btn btn-sm btn-outline" onclick="applyPreset('local-auth')">Local ProtoMQ (auth)</button>
+      <button type="button" class="btn btn-sm btn-outline" onclick="applyPreset('production')">io.adafruit.com</button>
+      <button type="button" class="btn btn-sm btn-outline" onclick="applyPreset('staging')">io.adafruit.us (staging)</button>
+    </div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="mqtt_host">MQTT Host</label>
+        <input type="text" id="mqtt_host" name="mqtt_host"
+          value="{{ form.mqtt_host if form else '127.0.0.1' }}" placeholder="127.0.0.1">
+      </div>
+      <div class="form-group">
+        <label for="mqtt_port">MQTT Port</label>
+        <input type="number" id="mqtt_port" name="mqtt_port"
+          value="{{ form.mqtt_port if form else '1884' }}" placeholder="1884" min="1" max="65535">
+      </div>
+      <div class="form-group">
+        <label for="io_username">IO Username</label>
+        <input type="text" id="io_username" name="io_username"
+          value="{{ form.io_username if form else '' }}" placeholder="leave blank for anonymous">
+      </div>
+      <div class="form-group">
+        <label for="io_key">IO Key</label>
+        <input type="password" id="io_key" name="io_key"
+          value="{{ form.io_key if form else '' }}" placeholder="aio_… or blank for anonymous">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Advanced</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="secrets_profile">Secrets profile label</label>
+        <input type="text" id="secrets_profile" name="secrets_profile"
+          value="{{ form.secrets_profile if form else 'bench-protomq' }}">
+        <span class="form-hint">Used for token authorization gating only</span>
+      </div>
+      <div class="form-group">
+        <label for="timeout_total">Total timeout (s)</label>
+        <input type="number" id="timeout_total" name="timeout_total"
+          value="{{ form.timeout_total if form else '600' }}" min="60" max="3600">
+      </div>
+      <div class="form-group">
+        <label for="timeout_run">Run timeout (s)</label>
+        <input type="number" id="timeout_run" name="timeout_run"
+          value="{{ form.timeout_run if form else '300' }}" min="30" max="1800">
+      </div>
+      <div class="form-group">
+        <label for="timeout_deploy">Deploy timeout (s)</label>
+        <input type="number" id="timeout_deploy" name="timeout_deploy"
+          value="{{ form.timeout_deploy if form else '180' }}" min="30" max="600">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary" style="padding:0.5rem 1.5rem;">Submit Job</button>
+    <a href="/ui/jobs" class="btn btn-secondary">Cancel</a>
+  </div>
+</form>
+
+<script>
+const HW_CMD = {{ defaults.hw_cmd | tojson | safe }};
+const SW_CMD = {{ defaults.no_hw_cmd | tojson | safe }};
+
+const PRESETS = {
+  'local-anon':  {host: '127.0.0.1', port: '1884', user: '', key: ''},
+  'local-auth':  {host: '127.0.0.1', port: '1884', user: '', key: ''},
+  'production':  {host: 'io.adafruit.com', port: '1883', user: '', key: ''},
+  'staging':     {host: 'io.adafruit.us',  port: '1883', user: '', key: ''},
+};
+function applyPreset(name) {
+  const p = PRESETS[name];
+  if (!p) return;
+  document.getElementById('mqtt_host').value = p.host;
+  document.getElementById('mqtt_port').value = p.port;
+  // only clear credentials for anon; leave existing values for auth presets
+  if (name === 'local-anon') {
+    document.getElementById('io_username').value = '';
+    document.getElementById('io_key').value = '';
+  }
+}
+
+function onHwMode(val) {
+  const cmdEl = document.getElementById('test_cmd');
+  const protomqRow = document.getElementById('protomq-row');
+  if (val === 'hardware') {
+    if (!cmdEl.value.trim() || cmdEl.value === SW_CMD) cmdEl.value = HW_CMD;
+    protomqRow.style.display = '';
+  } else {
+    if (!cmdEl.value.trim() || cmdEl.value === HW_CMD) cmdEl.value = SW_CMD;
+    protomqRow.style.display = 'none';
+  }
+}
+document.addEventListener('DOMContentLoaded', function() {
+  const checked = document.querySelector('input[name=hw_mode]:checked');
+  if (checked) onHwMode(checked.value);
+});
+</script>
+{% endblock %}

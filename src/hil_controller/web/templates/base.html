@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HIL Controller{% if title %} — {{ title }}{% endif %}</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
+</head>
+<body hx-headers='{"Authorization": "Bearer {{ token }}"}'>
+<nav>
+  <span class="brand">HIL Controller</span>
+  <a href="/ui/" {% if active == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
+  <a href="/ui/jobs" {% if active == 'jobs' %}class="active"{% endif %}>Jobs</a>
+  <a href="/ui/hosts" {% if active == 'hosts' %}class="active"{% endif %}>Hosts</a>
+  <a href="/ui/devices" {% if active == 'devices' %}class="active"{% endif %}>Devices</a>
+  <a href="/ui/leases" {% if active == 'leases' %}class="active"{% endif %}>Leases</a>
+  <a href="/ui/usbip" {% if active == 'usbip' %}class="active"{% endif %}>USB-IP</a>
+  <a href="/ui/hardware" {% if active == 'hardware' %}class="active"{% endif %}>Hardware</a>
+  <a href="/ui/cameras" {% if active == 'cameras' %}class="active"{% endif %}>Cameras</a>
+  <a href="/ui/scripts" {% if active == 'scripts' %}class="active"{% endif %}>Scripts</a>
+  <a href="/ui/assets" {% if active == 'assets' %}class="active"{% endif %}>Assets</a>
+  <a href="/ui/logout" class="nav-end">Logout</a>
+</nav>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

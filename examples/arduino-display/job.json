@@ -1,0 +1,72 @@
+{
+  "_comment": "HIL job: build WipperSnapper Arduino with PlatformIO, flash to device, run protoMQ display test. Target: Feather ESP32-S3 + FeatherWing OLED 128x32 (SSD1306, Adafruit #2900). Replace __placeholders__ before submitting, or use scripts/submit-arduino-display-test.sh.",
+
+  "target": {
+    "device": {"id": "__DEVICE_ID__"},
+    "pool": "public"
+  },
+
+  "script": "pytest-suite",
+
+  "payload": {
+    "kind": "git-source",
+    "source": {
+      "repo": "__WIPPERSNAPPER_ARDUINO_REPO__",
+      "ref": "__WIPPERSNAPPER_REF__",
+      "shallow": true,
+      "submodules": false,
+      "pat": "__GH_PAT__",
+      "setup": [
+        "bash", "-c",
+        "git clone --depth 1 --branch __PROTOMQ_REF__ __PROTOMQ_REPO__ protomq && pip install platformio && pio run -e adafruit_feather_esp32s3 && pio run -e adafruit_feather_esp32s3 --target upload --upload-port __SERIAL_PORT__ && pip install -e . && pip install -e protomq/ && envsubst < examples/wippersnapper-arduino/secrets.example.json > .pio/build/adafruit_feather_esp32s3/secrets.json"
+      ]
+    }
+  },
+
+  "params": {
+    "entry": "bash",
+    "args": [
+      "-c",
+      "python -m pytest tests/display/ -v --tb=short -m 'ssd1306 or oled or display' 2>&1 | tee /tmp/hil-display-test.log; exit ${PIPESTATUS[0]}"
+    ],
+    "secrets_format": "dotenv",
+    "protomq": {
+      "broker_host": "__MQTT_HOST__",
+      "mqtt_port": 1884,
+      "api_port": 5173,
+      "script": "feather-s3-ssd1306-128x32-demo"
+    }
+  },
+
+  "secrets": {
+    "MQTT_HOST": "__MQTT_HOST__",
+    "MQTT_PORT": "1884",
+    "IO_USERNAME": "__IO_USERNAME__",
+    "IO_KEY": "__IO_KEY__",
+    "HIL_IO_USERNAME": "__IO_USERNAME__",
+    "HIL_IO_KEY": "__IO_KEY__",
+    "HIL_PROTOMQ_HOST": "__MQTT_HOST__",
+    "HIL_PROTOMQ_PORT": "1884",
+    "HIL_WIFI_SSID": "__WIFI_SSID__",
+    "HIL_WIFI_PASSWORD": "__WIFI_PASSWORD__"
+  },
+
+  "secrets_profile": "bench-protomq",
+
+  "metadata": {
+    "product": "Adafruit FeatherWing OLED 128x32",
+    "product_id": "2900",
+    "driver": "SSD1306",
+    "mcu": "Feather ESP32-S3",
+    "pio_env": "adafruit_feather_esp32s3",
+    "wippersnapper_ref": "__WIPPERSNAPPER_REF__",
+    "protomq_ref": "__PROTOMQ_REF__"
+  },
+
+  "timeouts": {
+    "total_s": 1200,
+    "deploy_s": 900,
+    "run_s": 300,
+    "flash_s": 300
+  }
+}

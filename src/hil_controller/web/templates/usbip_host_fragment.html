@@ -1,0 +1,202 @@
+{% if not daemon_listening %}
+<div class="alert alert-error" style="margin:0.5rem;">
+  <strong>usbipd not reachable on {{ host_id }}</strong>
+  {% if error %}<br><code style="font-size:0.8rem;">{{ error }}</code>{% endif %}
+  <br><span class="form-hint">
+    Start it via <code>scripts/setup-hil-host.sh</code> on the bench, or
+    <code>sudo systemctl start hil-usbipd</code> if already installed.
+  </span>
+</div>
+{% elif not busids %}
+<p style="color:#6c757d;padding:1rem;text-align:center;">
+  No busids exportable on {{ host_id }} - nothing plugged in?
+</p>
+{% else %}
+<table style="width:100%;font-size:0.85rem;border-collapse:collapse;">
+  <thead><tr style="border-bottom:1px solid #ddd;">
+    <th align="left" style="padding:0.4rem;">Busid</th>
+    <th align="left" style="padding:0.4rem;">VID:PID</th>
+    <th align="left" style="padding:0.4rem;">USB details</th>
+    <th align="left" style="padding:0.4rem;">Matched device</th>
+    <th align="left" style="padding:0.4rem;width:18rem;">Assign / actions</th>
+  </tr></thead>
+  <tbody>
+  {% for b in busids %}
+    {% set primary_name = b.product or b.lsusb_description or b.description %}
+    {% set summary_bits = [] %}
+    {% if b.manufacturer %}{% set _ = summary_bits.append(b.manufacturer) %}{% endif %}
+    {% if b.serial %}{% set _ = summary_bits.append("SN " ~ b.serial) %}{% endif %}
+    {% if b.speed %}{% set _ = summary_bits.append(b.speed) %}{% endif %}
+    {% set has_details = b.manufacturer or b.product or b.serial or b.max_power or b.num_interfaces or b.device_class or b.driver or b.port_status_text %}
+    <tr style="border-bottom:1px solid #f0f0f0;{% if b.matched_device_id %}background:#f8f9fa;{% endif %}">
+      <td class="mono" style="padding:0.4rem;">{{ b.busid }}</td>
+      <td class="mono" style="padding:0.4rem;">{{ b.vid }}:{{ b.pid }}</td>
+      <td style="padding:0.4rem;">
+        <div style="font-size:0.82rem;font-weight:600;">{{ primary_name or "Unknown USB device" }}</div>
+        {% if summary_bits %}
+        <div class="form-hint" style="margin-top:0.15rem;">{{ summary_bits|join(" | ") }}</div>
+        {% elif b.description and b.description != primary_name %}
+        <div class="form-hint" style="margin-top:0.15rem;">{{ b.description }}</div>
+        {% endif %}
+      </td>
+      <td class="mono" style="padding:0.4rem;">
+        {% if b.matched_device_id %}
+          <a href="/ui/devices/{{ b.matched_device_id }}/form">{{ b.matched_device_id }}</a>
+        {% else %}
+          <em style="color:#888;">unassigned</em>
+        {% endif %}
+      </td>
+      <td style="padding:0.4rem;">
+        {% if b.matched_device_id %}
+          <a href="/ui/devices/{{ b.matched_device_id }}/form"
+             class="btn btn-sm btn-outline">Edit device</a>
+        {% elif assignable_devices %}
+          <form hx-post="/ui/usbip/assign"
+                hx-target="#usbip-section-{{ host_id }}"
+                hx-swap="innerHTML"
+                style="display:flex;gap:0.3rem;align-items:center;">
+            <input type="hidden" name="host_id" value="{{ host_id }}">
+            <input type="hidden" name="busid" value="{{ b.busid }}">
+            <select name="device_id" required style="font-size:0.8rem;flex:1;">
+              <option value="">- pick device -</option>
+              {% for d in assignable_devices %}
+              <option value="{{ d.id }}">{{ d.id }}{% if d.model %} ({{ d.model }}){% endif %}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-sm btn-primary">Assign</button>
+          </form>
+        {% else %}
+          <span class="form-hint">
+            No unassigned device on this hub -
+            <a href="/ui/devices/form">create one</a>
+          </span>
+        {% endif %}
+      </td>
+    </tr>
+    {% if has_details %}
+    <tr style="background:#fcfcfd;">
+      <td colspan="5" style="padding:0.3rem 0.75rem 0.8rem 0.75rem;">
+        <details>
+          <summary style="cursor:pointer;font-size:0.78rem;color:#0d6efd;">USB details for {{ b.busid }}</summary>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0.6rem;margin-top:0.55rem;font-size:0.78rem;">
+            <div><strong>Manufacturer</strong><br>{{ b.manufacturer or "-" }}</div>
+            <div><strong>Product</strong><br>{{ b.product or b.lsusb_description or "-" }}</div>
+            <div><strong>Serial</strong><br><span class="mono">{{ b.serial or "-" }}</span></div>
+            <div><strong>Speed</strong><br>{{ b.speed or "-" }}</div>
+            <div><strong>MaxPower</strong><br>{{ b.max_power or "-" }}</div>
+            <div><strong>Interfaces</strong><br>{{ b.num_interfaces if b.num_interfaces is not none else "-" }}</div>
+            <div><strong>Device class</strong><br>{{ b.device_class or "-" }}</div>
+            <div><strong>Driver</strong><br>{{ b.driver or "-" }}</div>
+          </div>
+          {% if b.port_status_text %}
+          <div class="form-hint" style="margin-top:0.55rem;">
+            Hub port status:
+            {{ b.port_status_text }}
+            {% if b.port_power_status or b.port_connect_status %}
+              (power={{ b.port_power_status or "unknown" }}, connect={{ b.port_connect_status or "unknown" }})
+            {% endif %}
+          </div>
+          {% endif %}
+          {% if b.description and b.description != primary_name %}
+          <div class="form-hint" style="margin-top:0.4rem;">usbip description: {{ b.description }}</div>
+          {% endif %}
+        </details>
+      </td>
+    </tr>
+    {% endif %}
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if hub_info %}
+<div class="form-panel" style="margin-top:0.85rem;">
+  <h2 style="margin-bottom:0.6rem;">Hub power status</h2>
+  {% for hub in hub_info %}
+  <div {% if not loop.first %}style="border-top:1px solid #e9ecef;padding-top:0.65rem;margin-top:0.65rem;"{% endif %}>
+    <div style="display:flex;flex-wrap:wrap;gap:0.45rem;align-items:center;">
+      <span class="mono">{{ hub.location }}</span>
+      {% if hub.hub_vid_pid %}<span class="badge badge-gray">{{ hub.hub_vid_pid }}</span>{% endif %}
+      {% if hub.hub_description %}<span class="form-hint">{{ hub.hub_description }}</span>{% endif %}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.45rem;margin-top:0.55rem;">
+      {% for port in hub.ports %}
+      <div style="border:1px solid #e9ecef;border-radius:6px;padding:0.45rem 0.55rem;background:#fff;">
+        <div class="mono" style="font-size:0.76rem;">Port {{ port.port_number }}</div>
+        <div class="form-hint" style="margin-top:0.2rem;">{{ port.status }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<p class="form-hint" style="margin:0.5rem;font-size:0.75rem;">
+  Identity is hub + busid (not VID:PID - application-mode VID:PID can
+  change per firmware).
+  {{ busids|length }} busid(s) on {{ host_id }}.
+</p>
+{% endif %}
+
+{% set has_dev_links = dev_links and (dev_links.serial_by_id or dev_links.serial_by_path or dev_links.disk_by_id or dev_links.disk_by_label or dev_links.disk_by_path) %}
+{% if has_dev_links %}
+<div class="form-panel" style="margin-top:0.85rem;">
+  <details open>
+    <summary style="cursor:pointer;font-weight:600;">
+      Serial &amp; flashing paths on {{ host_id }}
+    </summary>
+    <p class="form-hint" style="margin:0.4rem 0 0.7rem 0;font-size:0.75rem;">
+      Stable <code>/dev</code> symlinks for serial-capture and UF2/MSC
+      flashing. Prefer these over raw <code>/dev/ttyACM*</code> /
+      <code>/dev/sd*</code> - the numbering shuffles across reboots and
+      re-plugs; the by-id / by-label names don't.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.85rem;">
+      {% set groups = [
+        ("Serial - by-id", dev_links.serial_by_id),
+        ("Serial - by-path", dev_links.serial_by_path),
+        ("Disk - by-id", dev_links.disk_by_id),
+        ("Disk - by-label (bootloader drives)", dev_links.disk_by_label),
+      ] %}
+      {% for title, entries in groups %}
+      {% if entries %}
+      <div style="min-width:0;">
+        <div style="font-size:0.78rem;font-weight:600;margin-bottom:0.3rem;">{{ title }}</div>
+        <table style="width:100%;table-layout:fixed;font-size:0.76rem;border-collapse:collapse;">
+          <tbody>
+          {% for e in entries %}
+            <tr style="border-bottom:1px solid #f0f0f0;">
+              <td class="mono" style="padding:0.25rem 0.4rem;word-break:break-all;">{{ e.name }}</td>
+              <td class="mono" style="padding:0.25rem 0.4rem;color:#6c757d;word-break:break-all;">&rarr; {{ e.target }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+
+    {# by-path names are huge (full USB/PCI topology) - keep them out of the
+       grid (they blow out the columns) and collapsed by default; only useful
+       when nothing else disambiguates. #}
+    {% if dev_links.disk_by_path %}
+    <details style="margin-top:0.7rem;">
+      <summary style="cursor:pointer;font-size:0.78rem;color:#6c757d;">
+        Disk - by-path (full USB/PCI topology; last resort) -
+        {{ dev_links.disk_by_path|length }} entr{{ "y" if dev_links.disk_by_path|length == 1 else "ies" }}
+      </summary>
+      <div style="margin:0.4rem 0 0 0;font-size:0.74rem;">
+        {% for e in dev_links.disk_by_path %}
+        <div style="margin-top:0.45rem;">
+          {% for seg in e.name | dev_path_segments %}
+          <div class="mono" style="padding-left:{{ loop.index0 * 1.2 }}rem;word-break:break-all;">{{ seg }}{% if loop.last %}  <span style="color:#6c757d;">&rarr; {{ e.target }}</span>{% endif %}</div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </details>
+</div>
+{% endif %}

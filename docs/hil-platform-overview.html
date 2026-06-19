@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>USB-IP HIL Controller — Architecture &amp; Process Flow</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0; --bg:#f8fafc; --card:#ffffff;
+    --indigo:#4f46e5; --teal:#0d9488; --amber:#d97706; --purple:#7c3aed; --rose:#db2777; --green:#16a34a; --slate:#334155;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;line-height:1.6;}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 22px 80px;}
+  header.hero{background:linear-gradient(135deg,#1e1b4b,#312e81 55%,#0f766e);color:#fff;padding:54px 22px 46px;margin-bottom:8px;}
+  header.hero .inner{max-width:1040px;margin:0 auto;}
+  header.hero h1{margin:0 0 10px;font-size:30px;letter-spacing:-.4px;}
+  header.hero p{margin:0;font-size:16px;color:#e0e7ff;max-width:760px;}
+  .tags{margin-top:18px;display:flex;flex-wrap:wrap;gap:8px;}
+  .tag{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);color:#fff;
+    font-size:12px;padding:4px 11px;border-radius:999px;}
+  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:26px 0;
+    display:flex;flex-wrap:wrap;gap:6px 20px;font-size:13.5px;}
+  nav.toc a{color:var(--indigo);text-decoration:none;font-weight:600;}
+  nav.toc a:hover{text-decoration:underline;}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 30px;margin:20px 0;}
+  h2{font-size:22px;margin:0 0 4px;letter-spacing:-.3px;display:flex;align-items:center;gap:10px;}
+  h2 .dot{width:11px;height:11px;border-radius:3px;display:inline-block;}
+  h2 + .lead{color:var(--muted);margin:0 0 18px;font-size:14.5px;}
+  h3{font-size:16px;margin:24px 0 6px;}
+  p{margin:10px 0;}
+  .diagram{width:100%;height:auto;display:block;margin:18px auto;max-width:980px;
+    border:1px solid var(--line);border-radius:10px;background:#fff;padding:8px;}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:14px 0;}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top;}
+  th{background:#f1f5f9;font-weight:700;}
+  code{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:5px;padding:1px 5px;font-size:12.5px;
+    font-family:ui-monospace,'Cascadia Code',Consolas,monospace;}
+  .pills{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:16px 0;}
+  .pill{padding:6px 12px;border-radius:999px;font-size:12.5px;font-weight:600;border:1px solid;}
+  .pill.norm{background:#eef2ff;border-color:#a5b4fc;color:#3730a3;}
+  .pill.term{background:#dcfce7;border-color:#86efac;color:#166534;}
+  .pill.err{background:#fee2e2;border-color:#fca5a5;color:#991b1b;}
+  .arrow{color:var(--muted);font-weight:700;}
+  .callout{border-left:4px solid var(--indigo);background:#eef2ff;padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:14px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:14px 0;}
+  .mini{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fcfcfd;}
+  .mini h4{margin:0 0 6px;font-size:14.5px;}
+  .mini.amber{border-top:3px solid var(--amber);}
+  .mini.green{border-top:3px solid var(--green);}
+  .mini.rose{border-top:3px solid var(--rose);}
+  .mini.teal{border-top:3px solid var(--teal);}
+  footer{color:var(--muted);font-size:13px;text-align:center;margin-top:30px;}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}header.hero h1{font-size:24px}}
+</style>
+</head>
+<body>
+<header class="hero"><div class="inner">
+  <h1>USB-IP HIL Controller</h1>
+  <p>Architecture, setup and process flow for the hardware-in-the-loop test platform — the system behind the
+     check-in and pixelWrite regression runs in <a style="color:#c7d2fe" href="https://github.com/adafruit/Adafruit_Wippersnapper_Arduino/pull/930">Wippersnapper PR #930</a>,
+     and how the same machinery extends to Wippersnapper Python testing and manual bench work.</p>
+  <div class="tags">
+    <span class="tag">FastAPI + HTMX</span><span class="tag">SQLite</span><span class="tag">asyncio workers</span>
+    <span class="tag">SSH transport</span><span class="tag">ProtoMQ</span><span class="tag">GitHub OIDC</span>
+    <span class="tag">Tailscale</span><span class="tag">esptool · picotool · uf2-msc</span>
+  </div>
+</div></header>
+
+<div class="wrap">
+<nav class="toc">
+  <a href="#overview">Overview</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#services">Services &amp; keys</a>
+  <a href="#topology">Topology &amp; model</a>
+  <a href="#setup">Setup &amp; deployment</a>
+  <a href="#flow">Process flow</a>
+  <a href="#state">Job lifecycle</a>
+  <a href="#manual">Manual operation</a>
+  <a href="#python">Wippersnapper Python</a>
+</nav>
+
+<section id="overview">
+  <h2><span class="dot" style="background:var(--indigo)"></span>What it is</h2>
+  <p class="lead">A small HTTP service that lets CI run a test against real hardware and get structured pass/fail + logs back — without the calling repo hosting a self-hosted runner.</p>
+  <p>The controller is the seam between four parties. A <strong>caller</strong> (a GitHub Actions job, or any client) submits a job and waits for the result on a long-poll. The <strong>controller host</strong> runs this repository: it owns the HTTP API, the HTMX dashboard, the SQLite job store and the scheduler, and it has <em>no</em> devices attached to it. The <strong>HIL host fleet</strong> is a set of bench Raspberry Pis the controller fans work out to over SSH; each host owns a slice of the devices under test. The <strong>ProtoMQ broker</strong> is what firmware talks to as an MQTT client during a test. It is <strong>per-session, not a fixed host</strong>: the controller can launch it on itself (<code>tachyon</code>, <code>192.168.1.169</code>), on a DUT host (e.g. <code>rpi-hil004</code>), or point the firmware at any other reachable broker — a staging server such as <code>io.adafruit.us</code>, or live <code>io.adafruit.com</code>. The controller writes the chosen host:port into the DUT's secrets at flash time and observes the broker rather than mandating one.</p>
+  <p>The defining choice is that <strong>the work happens on the HIL host, not the controller</strong>. Each worker holds an SSH session to the host that owns its assigned device and drives flashing, power control, serial capture and camera grabs <em>there</em>. The controller only orchestrates. One process, one SQLite file, an asyncio worker pool — no Redis, no Celery, no external job broker.</p>
+</section>
+
+<section id="architecture">
+  <h2><span class="dot" style="background:var(--indigo)"></span>Architecture</h2>
+  <p class="lead">One orchestrator, a fleet of bench hosts, a read-only-by-default dashboard over the same API.</p>
+  <svg class="diagram" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .box{rx:10;ry:10;stroke-width:1.5;}
+      .t{fill:#0f172a;font-size:14px;}
+      .ti{fill:#fff;font-weight:600;font-size:15px;}
+      .s{fill:#475569;font-size:11.5px;}
+      .si{fill:#e2e8f0;font-size:11.5px;}
+      .lbl{fill:#475569;font-size:11px;font-style:italic;}
+      .edge{stroke:#475569;stroke-width:1.6;fill:none;}
+      .edged{stroke:#94a3b8;stroke-width:1.6;fill:none;stroke-dasharray:5 4;}
+      .zone{fill:none;stroke:#cbd5e1;stroke-width:1.2;stroke-dasharray:3 3;rx:14;ry:14;}
+    </style>
+  </defs>
+
+  <text x="500" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">USB-IP HIL Controller — System Architecture</text>
+  <text x="500" y="50" text-anchor="middle" class="s">One orchestrator fans hardware-in-the-loop work out to a fleet of bench Pis over SSH</text>
+
+  <!-- CI -->
+  <rect x="40" y="90" width="190" height="92" rx="10" fill="#334155"/>
+  <text x="135" y="118" text-anchor="middle" class="ti">GitHub Actions CI</text>
+  <text x="135" y="140" text-anchor="middle" class="si">hil-test-suite.yml</text>
+  <text x="135" y="158" text-anchor="middle" class="si">POST job · long-poll result</text>
+  <text x="135" y="174" text-anchor="middle" class="si">joins Tailscale to reach ctrl</text>
+
+  <!-- Tailscale link label -->
+  <path class="edge" d="M230 136 H300" marker-end="url(#arr)"/>
+  <text x="265" y="128" text-anchor="middle" class="lbl">Tailscale</text>
+
+  <!-- Controller -->
+  <rect x="300" y="78" width="270" height="200" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="435" y="100" text-anchor="middle" font-size="15" font-weight="700" fill="#4338ca">Controller host (this repo)</text>
+  <text x="435" y="117" text-anchor="middle" class="s">independent Linux box · no DUTs attached</text>
+
+  <rect x="318" y="128" width="234" height="40" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="435" y="146" text-anchor="middle" class="t" font-weight="600" font-size="12.5">FastAPI · /v1 API + HTMX dashboard</text>
+  <text x="435" y="161" text-anchor="middle" class="s">jobs · targets · topology · cameras · auth</text>
+
+  <rect x="318" y="176" width="113" height="44" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="374" y="195" text-anchor="middle" class="t" font-weight="600">Scheduler +</text>
+  <text x="374" y="210" text-anchor="middle" class="t" font-weight="600">async workers</text>
+
+  <rect x="439" y="176" width="113" height="44" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="495" y="195" text-anchor="middle" class="t" font-weight="600">SQLite store</text>
+  <text x="495" y="210" text-anchor="middle" class="s">jobs · events · audit</text>
+
+  <rect x="318" y="228" width="234" height="36" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="435" y="251" text-anchor="middle" class="t">Device adapters over per-host SSH transport</text>
+
+  <!-- SSH fan-out -->
+  <path class="edge" d="M570 200 H640 V120 H700" marker-end="url(#arr)"/>
+  <path class="edge" d="M570 240 H660 V300 H700" marker-end="url(#arr)"/>
+  <text x="648" y="180" text-anchor="middle" class="lbl">SSH (key auth)</text>
+
+  <!-- HIL fleet zone -->
+  <rect x="690" y="78" width="290" height="300" class="zone"/>
+  <text x="835" y="98" text-anchor="middle" font-size="13" font-weight="700" fill="#0f766e">HIL host fleet — each owns its DUTs</text>
+
+  <!-- rpi-displays -->
+  <rect x="700" y="108" width="270" height="120" rx="10" fill="#ccfbf1" stroke="#0d9488" stroke-width="2"/>
+  <text x="835" y="128" text-anchor="middle" class="t" font-weight="700">rpi-displays (Pi Zero 2W)  ·  rpi-hil006</text>
+  <text x="835" y="145" text-anchor="middle" class="s">microcontroller fleet</text>
+  <rect x="712" y="156" width="120" height="58" rx="7" fill="#fff" stroke="#5eead4"/>
+  <text x="772" y="175" text-anchor="middle" class="s">Genesys USB hub</text>
+  <text x="772" y="191" text-anchor="middle" class="s">MCP23017 solenoid</text>
+  <text x="772" y="207" text-anchor="middle" class="s">power/reset 0x20</text>
+  <rect x="840" y="156" width="120" height="58" rx="7" fill="#fff" stroke="#5eead4"/>
+  <text x="900" y="175" text-anchor="middle" class="s">esptool/picotool</text>
+  <text x="900" y="191" text-anchor="middle" class="s">usbip-autobind</text>
+  <text x="900" y="207" text-anchor="middle" class="s">CSI camera + serial</text>
+
+  <!-- sbc fleet -->
+  <rect x="700" y="240" width="270" height="60" rx="10" fill="#ccfbf1" stroke="#0d9488" stroke-width="2"/>
+  <text x="835" y="263" text-anchor="middle" class="t" font-weight="700">rpi-hil001 … rpi-hil007</text>
+  <text x="835" y="282" text-anchor="middle" class="s">single-board-computer DUTs (per-port power planned)</text>
+
+  <!-- DUTs -->
+  <rect x="700" y="318" width="270" height="50" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+  <text x="835" y="338" text-anchor="middle" class="t" font-weight="700">DUTs — units under test, wired to a port</text>
+  <text x="835" y="356" text-anchor="middle" class="s">ESP32-S2/S3 · SAMD51 · RP2040 · Pi 5</text>
+  <path class="edge" d="M835 228 V236" marker-end="url(#arr)"/>
+  <path class="edge" d="M835 300 V314" marker-end="url(#arr)"/>
+
+  <!-- ProtoMQ broker -->
+  <rect x="300" y="320" width="270" height="80" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="435" y="344" text-anchor="middle" class="t" font-weight="700" fill="#6d28d9">ProtoMQ broker (per-session)</text>
+  <text x="435" y="363" text-anchor="middle" class="s">MQTT 1884 (live IO 8883) · web UI 5173</text>
+  <text x="435" y="382" text-anchor="middle" class="s">on controller / DUT host / external; observed</text>
+
+  <!-- DUT to broker MQTT -->
+  <path class="edged" d="M700 343 C620 360 600 360 570 360" marker-end="url(#arr)"/>
+  <text x="635" y="332" text-anchor="middle" class="lbl">DUT ⇄ MQTT</text>
+
+  <!-- controller observes broker -->
+  <path class="edged" d="M435 278 V318" marker-end="url(#arr)"/>
+  <text x="470" y="300" text-anchor="middle" class="lbl">observe</text>
+
+  <!-- Legend -->
+  <text x="40" y="470" font-size="13" font-weight="700" fill="#0f172a">Key properties</text>
+  <text x="40" y="492" class="s">• Single controller process, single SQLite file, asyncio worker pool — no Redis/Celery/external broker in v1.</text>
+  <text x="40" y="512" class="s">• Work runs ON the HIL host that owns the device; the controller only orchestrates over SSH (LocalTransport variant runs on-box).</text>
+  <text x="40" y="532" class="s">• Per-device asyncio locks + per-host concurrency semaphore (SBC hosts = 1 job at a time); optional exclusive-host lock for dmesg/usbmon capture.</text>
+  <text x="40" y="552" class="s">• Read-only dashboard pages are public on the LAN; every write (job submit, config) needs a bearer token or GitHub OIDC.</text>
+  <text x="40" y="572" class="s">• Topology (hosts, devices, auxes, muxes, cameras, connections) is seeded from /etc/hil/*.yaml and hydrated into the DB on startup.</text>
+
+  <rect x="40" y="590" width="16" height="14" rx="3" fill="#eef2ff" stroke="#4f46e5"/><text x="62" y="601" class="s">controller</text>
+  <rect x="150" y="590" width="16" height="14" rx="3" fill="#ccfbf1" stroke="#0d9488"/><text x="172" y="601" class="s">HIL host</text>
+  <rect x="250" y="590" width="16" height="14" rx="3" fill="#fef3c7" stroke="#d97706"/><text x="272" y="601" class="s">DUT</text>
+  <rect x="330" y="590" width="16" height="14" rx="3" fill="#f5f3ff" stroke="#7c3aed"/><text x="352" y="601" class="s">broker</text>
+  <rect x="420" y="590" width="16" height="14" rx="3" fill="#334155"/><text x="442" y="601" class="s">CI caller</text>
+</svg>
+  <p>A thin HTMX dashboard sits in front of the same <code>/v1</code> API for human inspection of queue state, device availability, the wiring graph and per-job logs. Read-only pages are public on the LAN; every write — submitting a job, editing topology, toggling power — requires a bearer token or a verified GitHub Actions OIDC token. The topology endpoints are also available to CI, so a job can ask <em>"is there a seat for me?"</em> via <code>POST /v1/topology/resolve</code> before submitting, instead of finding out by failing mid-flash.</p>
+  <div class="callout"><strong>Concurrency model:</strong> per-device <code>asyncio.Lock</code> (a job holds its device until terminal) plus a per-host semaphore — SBC hosts default to one job at a time, microcontroller hosts are bounded by their per-device locks. An optional <em>exclusive-host</em> lock lets a hard-to-trace job take a whole host alone and capture unambiguous <code>dmesg</code> / <code>usbmon</code>.</p>
+</section>
+
+<section id="services">
+  <h2><span class="dot" style="background:var(--amber)"></span>Services, ports, keys &amp; endpoints</h2>
+  <p class="lead">Where each service listens, what guards every hop, and why the network layer is interchangeable.</p>
+  <svg class="diagram" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 720" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="as" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .b{fill:#0f172a;font-size:13px;font-weight:700;}
+      .t{fill:#0f172a;font-size:11.5px;}
+      .s{fill:#475569;font-size:11px;}
+      .si{fill:#e2e8f0;font-size:11px;}
+      .mono{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;fill:#334155;}
+      .monw{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;fill:#e2e8f0;}
+      .port{font-family:ui-monospace,Consolas,monospace;font-size:11px;font-weight:700;fill:#b45309;}
+      .edge{stroke:#475569;stroke-width:1.7;fill:none;}
+      .obs{stroke:#7c3aed;stroke-width:1.6;fill:none;stroke-dasharray:5 4;}
+      .key{font-family:ui-monospace,Consolas,monospace;font-size:10px;fill:#0f766e;}
+    </style>
+  </defs>
+
+  <text x="530" y="28" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Services, Ports, Keys &amp; Endpoints</text>
+  <text x="530" y="48" text-anchor="middle" class="s">Who listens where, what guards each hop, and why the network layer is interchangeable</text>
+
+  <!-- CI -->
+  <rect x="24" y="74" width="232" height="186" rx="11" fill="#334155"/>
+  <text x="140" y="96" text-anchor="middle" class="b" fill="#fff">GitHub Actions runner</text>
+  <text x="38" y="118" class="si" font-weight="600">Repo secrets it carries:</text>
+  <text x="38" y="137" class="monw">TAILSCALE_AUTHKEY_*</text>
+  <text x="38" y="154" class="monw">HIL_API_KEY_*  (Bearer)</text>
+  <text x="38" y="171" class="monw">HIL_IO_USERNAME / _KEY</text>
+  <text x="38" y="188" class="monw">HIL_WIFI_SSID / _PASSWORD</text>
+  <text x="38" y="210" class="si" font-weight="600">Vars:</text>
+  <text x="38" y="228" class="monw">HIL_API_BASE</text>
+  <text x="38" y="245" class="monw">HIL_LOW_REF · HIL_TARGETS</text>
+
+  <!-- Network seam -->
+  <rect x="276" y="74" width="118" height="186" rx="11" fill="#fff7ed" stroke="#fb923c" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="335" y="96" text-anchor="middle" class="b" fill="#c2410c">Network seam</text>
+  <text x="335" y="112" text-anchor="middle" class="s" font-style="italic">swappable</text>
+  <text x="335" y="134" text-anchor="middle" class="s">Tailscale MagicDNS</text>
+  <text x="335" y="150" text-anchor="middle" class="s">— or —</text>
+  <text x="335" y="166" text-anchor="middle" class="mono">LAN 192.168.1.169</text>
+  <text x="335" y="182" text-anchor="middle" class="mono">WAN wan.gdenu.fi</text>
+  <text x="335" y="198" text-anchor="middle" class="s">any VPN / port-fwd</text>
+  <text x="335" y="222" text-anchor="middle" class="s">CI only needs reach</text>
+  <text x="335" y="238" text-anchor="middle" class="s">+ HIL_API_BASE</text>
+
+  <path class="edge" d="M256 150 H276" marker-end="url(#as)"/>
+  <path class="edge" d="M394 150 H430" marker-end="url(#as)"/>
+  <text x="412" y="142" text-anchor="middle" class="port">:8080</text>
+
+  <!-- Controller -->
+  <rect x="430" y="74" width="300" height="252" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="580" y="95" text-anchor="middle" class="b" fill="#4338ca">Controller host</text>
+  <text x="580" y="111" text-anchor="middle" class="s">no DUTs · orchestrates only</text>
+  <line x1="444" y1="120" x2="716" y2="120" stroke="#c7d2fe"/>
+  <text x="444" y="137" class="t" font-weight="700">Services</text>
+  <text x="444" y="155" class="t">Caddy/nginx — TLS reverse proxy</text>
+  <text x="444" y="172" class="t">uvicorn · FastAPI <tspan class="port">:8080</tspan></text>
+  <text x="458" y="188" class="mono">/v1 API · /ui (HTMX) · /healthz · /metrics</text>
+  <text x="444" y="205" class="t">SQLite — jobs · events · audit (WAL)</text>
+  <line x1="444" y1="216" x2="716" y2="216" stroke="#c7d2fe"/>
+  <text x="444" y="233" class="t" font-weight="700">Secrets at rest (mode 0400, user hil)</text>
+  <text x="444" y="251" class="key">/etc/hil/keys/*  — per-host SSH private keys</text>
+  <text x="444" y="267" class="key">/etc/hil/secrets.env  — AIO + Wi-Fi creds</text>
+  <text x="444" y="283" class="mono">bearer tokens (argon2id) · mint-token.py</text>
+  <text x="444" y="299" class="mono">OIDC verifier — JWKS, aud=hil-controller</text>
+  <text x="444" y="317" class="s">Bearer / OIDC required for every write</text>
+
+  <!-- DUT host -->
+  <rect x="748" y="74" width="288" height="196" rx="12" fill="#ccfbf1" stroke="#0d9488" stroke-width="2"/>
+  <text x="892" y="95" text-anchor="middle" class="b" fill="#0f766e">DUT host — rpi-displays / rpi-hil006</text>
+  <text x="892" y="111" text-anchor="middle" class="s">microcontroller fleet · USB-server host</text>
+  <line x1="762" y1="120" x2="1022" y2="120" stroke="#5eead4"/>
+  <text x="762" y="138" class="t">sshd <tspan class="port">:22</tspan> — pi user, controller key authorised</text>
+  <text x="762" y="156" class="t">hil-usbipd <tspan class="port">:3240</tspan> — usbip attach target</text>
+  <text x="762" y="174" class="t">usbip-autobind (udev) — DUT stays bound</text>
+  <text x="762" y="192" class="t" font-weight="700" fill="#b45309">solenoid control — USB power plane</text>
+  <text x="776" y="208" class="mono">MCP23017 @ I²C 0x20 (bus 1) · usb_hub.py</text>
+  <text x="776" y="224" class="mono">HID solenoid hub · per-board timing profiles</text>
+  <text x="762" y="244" class="t">CSI camera v4l2:0 · esptool/picotool/uf2-msc</text>
+  <text x="762" y="261" class="mono">/dev/serial/by-id/… (stable serial node)</text>
+
+  <!-- SBC fleet -->
+  <rect x="748" y="284" width="288" height="92" rx="12" fill="#ccfbf1" stroke="#0d9488" stroke-width="2"/>
+  <text x="892" y="305" text-anchor="middle" class="b" fill="#0f766e">SBC fleet — rpi-hil001 … rpi-hil007</text>
+  <text x="762" y="325" class="t">sshd <tspan class="port">:22</tspan> — one shared fleet key:</text>
+  <text x="776" y="342" class="key">/etc/hil/keys/rpi-hil-fleet</text>
+  <text x="762" y="359" class="s">per-host known_hosts pinning · power control planned</text>
+
+  <!-- Broker -->
+  <rect x="430" y="404" width="300" height="120" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="580" y="425" text-anchor="middle" class="b" fill="#6d28d9">ProtoMQ broker (per-session)</text>
+  <text x="580" y="441" text-anchor="middle" class="s">on the controller, a DUT host, or external</text>
+  <text x="444" y="463" class="t">MQTT <tspan class="port">:1884</tspan> — DUT connects (or live IO <tspan class="port">:8883</tspan>)</text>
+  <text x="444" y="482" class="t">HTTP control <tspan class="mono">api_port</tspan> — /api/echo · /api/autoresponse</text>
+  <text x="444" y="501" class="t">web UI <tspan class="port">:5173</tspan></text>
+  <text x="444" y="518" class="s">host:port injected into DUT secrets at flash time</text>
+
+  <!-- Cameras -->
+  <rect x="748" y="404" width="288" height="78" rx="12" fill="#fdf2f8" stroke="#db2777" stroke-width="2"/>
+  <text x="892" y="425" text-anchor="middle" class="b" fill="#be185d">Cameras</text>
+  <text x="762" y="445" class="t">CSI v4l2:0 — on the DUT host, read over SSH</text>
+  <text x="762" y="463" class="t">IP webcam (Android) <tspan class="port">:8080</tspan> <tspan class="mono">/video</tspan> — direct HTTP</text>
+  <text x="762" y="479" class="s">per-device ROI; QR-assisted calibration</text>
+
+  <!-- Edges controller -> DUT host: SSH + usbip -->
+  <path class="edge" d="M730 140 H748" marker-end="url(#as)"/>
+  <text x="739" y="132" text-anchor="middle" class="port">:22</text>
+  <path class="edge" d="M730 162 H748" marker-end="url(#as)"/>
+  <text x="739" y="178" text-anchor="middle" class="port">:3240</text>
+
+  <!-- controller -> SBC fleet -->
+  <path class="edge" d="M730 300 H748" marker-end="url(#as)"/>
+  <text x="739" y="293" text-anchor="middle" class="port">:22</text>
+
+  <!-- controller -> broker -->
+  <path class="obs" d="M560 326 V404" marker-end="url(#as)"/>
+  <text x="528" y="368" text-anchor="middle" class="s" fill="#6d28d9">observe :1884</text>
+  <text x="528" y="383" text-anchor="middle" class="s" fill="#6d28d9">+ HTTP api_port</text>
+
+  <!-- DUT -> broker MQTT -->
+  <path class="obs" d="M748 250 C700 470 700 462 730 462" marker-end="url(#as)"/>
+  <text x="690" y="430" text-anchor="middle" class="port">MQTT :1884</text>
+
+  <!-- camera -> controller -->
+  <path class="edge" d="M748 443 C700 443 720 360 730 320" marker-end="url(#as)"/>
+
+  <!-- legend / note -->
+  <text x="24" y="560" class="b">Why "swappable"</text>
+  <text x="24" y="580" class="s">The controller is just an HTTP service on :8080. CI reaches it however the network allows — Tailscale MagicDNS today,</text>
+  <text x="24" y="598" class="s">but a plain LAN address (192.168.1.169:8080), a WAN host (wan.gdenu.fi:8080), or any other VPN works identically.</text>
+  <text x="24" y="616" class="s">Only two CI inputs change with the path: HIL_API_BASE (where) and the join step (TAILSCALE_AUTHKEY, or a different VPN's).</text>
+  <text x="24" y="640" class="s">The bearer token (or GitHub OIDC) is what actually authorises a job — independent of the transport that carried it.</text>
+
+  <text x="24" y="676" class="b" fill="#b45309">USB power plane</text>
+  <text x="24" y="696" class="s">"Toggle USB" = pulse a solenoid channel on the Genesys hub via the MCP23017 GPIO expander (I²C 0x20). usb_hub.py drives it;</text>
+  <text x="24" y="714" class="s">timing profiles (standard, samd51_uf2, …) give the right power/reset pulse to enter a bootloader. usbip :3240 then re-attaches the DUT.</text>
+</svg>
+  <h3>The network seam is swappable</h3>
+  <p>The controller is just an HTTP service on <code>:8080</code>. CI reaches it however the network allows — over <strong>Tailscale</strong> MagicDNS today (<code>…ostrich-escalator.ts.net:8080</code>), but a plain LAN address (<code>192.168.1.169:8080</code>), a WAN host (<code>wan.gdenu.fi:8080</code>), or <em>any</em> other VPN works identically. Only two CI inputs change with the path: <code>HIL_API_BASE</code> (where the controller is) and the network-join step (<code>TAILSCALE_AUTHKEY</code>, or whatever a different VPN needs). The thing that actually <em>authorises</em> a job — a bearer token or GitHub OIDC — is independent of the transport that carried it.</p>
+
+  <h3>Service inventory — the microservices on each node</h3>
+  <table>
+    <tr><th>Node</th><th>Service / daemon</th><th>Port</th><th>Role</th></tr>
+    <tr><td rowspan="3"><strong>Controller host</strong></td><td>Caddy / nginx</td><td><code>443</code></td><td>TLS reverse proxy; serves the dashboard on the LAN</td></tr>
+    <tr><td>uvicorn · FastAPI</td><td><code>8080</code></td><td><code>/v1</code> API, <code>/ui</code> HTMX dashboard, <code>/healthz</code>, <code>/readyz</code>, <code>/metrics</code> (Prometheus)</td></tr>
+    <tr><td>SQLite (in-process)</td><td>—</td><td>jobs · events · audit (WAL mode); no external DB</td></tr>
+    <tr><td rowspan="5"><strong>DUT host</strong><br>(rpi-displays / rpi-hil006)</td><td>sshd</td><td><code>22</code></td><td>the <code>pi</code> user, with the controller's key authorised</td></tr>
+    <tr><td>hil-usbipd</td><td><code>3240</code></td><td>USB/IP attach target — if it's down, the flash phase fails outright</td></tr>
+    <tr><td>usbip-autobind (udev)</td><td>—</td><td>keeps the DUT bound to <code>usbip-host</code> across resets</td></tr>
+    <tr><td>solenoid control (<code>usb_hub.py</code>)</td><td>I²C <code>0x20</code></td><td>MCP23017 GPIO expander on bus 1 + HID solenoid hub — the USB power plane</td></tr>
+    <tr><td>CSI camera</td><td><code>v4l2:0</code></td><td>frames read over SSH; plus <code>esptool</code>/<code>picotool</code>/<code>uf2-msc</code> and <code>/dev/serial/by-id/…</code></td></tr>
+    <tr><td><strong>SBC fleet</strong> (rpi-hil001–007)</td><td>sshd</td><td><code>22</code></td><td>one shared fleet key; per-port power control planned</td></tr>
+    <tr><td rowspan="3"><strong>ProtoMQ broker</strong><br>(per-session: controller / DUT host / external)</td><td>MQTT</td><td><code>1884</code></td><td>DUT firmware connects as an MQTT client</td></tr>
+    <tr><td>HTTP control API</td><td><code>api_port</code></td><td><code>/api/echo</code>, <code>/api/autoresponse</code> — how signal injection fires</td></tr>
+    <tr><td>web UI</td><td><code>5173</code></td><td>human inspection of the broker</td></tr>
+    <tr><td><strong>IP webcam</strong> (Android)</td><td>HTTP MJPEG</td><td><code>8080</code></td><td><code>/video</code>, <code>/shot.jpg</code> — pulled directly by the controller, no SSH</td></tr>
+  </table>
+
+  <h3>Keys, tokens &amp; secrets</h3>
+  <table>
+    <tr><th>Credential</th><th>Where it lives</th><th>What it guards</th></tr>
+    <tr><td>Per-host SSH private keys</td><td>controller <code>/etc/hil/keys/*</code> (mode 0400, user <code>hil</code>)</td><td>the SSH hop to each HIL host</td></tr>
+    <tr><td>rpi-displays key</td><td><code>/etc/hil/keys/rpi-displays</code></td><td>the microcontroller host specifically</td></tr>
+    <tr><td><strong>Shared SBC fleet key</strong></td><td><code>/etc/hil/keys/rpi-hil-fleet</code></td><td>all of rpi-hil001–007 — one key, with per-host <code>known_hosts</code> pinning</td></tr>
+    <tr><td>Bearer tokens</td><td>argon2id hashes in SQLite; minted by <code>mint-token.py</code>, shown once as <code>hil_&lt;id&gt;_&lt;secret&gt;</code></td><td>every <code>/v1</code> write (header <code>Authorization: Bearer …</code>)</td></tr>
+    <tr><td>GitHub Actions OIDC</td><td>verified against <code>token.actions.githubusercontent.com</code> JWKS, <code>aud=hil-controller</code></td><td>CI writes with no long-lived secret; revoke via policy file</td></tr>
+    <tr><td><code>/etc/hil/secrets.env</code></td><td>systemd <code>EnvironmentFile</code> (0400)</td><td>AIO + Wi-Fi creds that secret profiles reference as <code>${env:…}</code> — never plaintext in YAML</td></tr>
+    <tr><td>CI repo secrets</td><td>on the calling repo</td><td><code>TAILSCALE_AUTHKEY_*</code>, <code>HIL_API_KEY_*</code>, <code>HIL_IO_USERNAME/_KEY</code>, <code>HIL_WIFI_SSID/_PASSWORD</code></td></tr>
+  </table>
+
+  <div class="callout"><strong>USB power plane (the solenoid):</strong> "toggle USB" is not a software port-disable — it's a physical solenoid pulse. The Genesys USB hub's per-port power is driven by an <strong>MCP23017 GPIO expander at I²C <code>0x20</code></strong> (bus 1); <code>usb_hub.py</code> / <code>solenoid_hub_control.py</code> pulse the channel mapped to each device, and a per-board <em>timing profile</em> (<code>standard</code>, <code>samd51_uf2</code>, …) shapes the power/reset pulse so the board lands in the right bootloader. After a power-cycle, <code>usbipd</code> (<code>:3240</code>) re-attaches the DUT. Manual equivalents: <code>turn_on.sh</code> / <code>turn_off.sh</code> / <code>solenoid_hub_cli.py</code>.</div>
+</section>
+
+<section id="topology">
+  <h2><span class="dot" style="background:var(--teal)"></span>Topology &amp; domain model</h2>
+  <p class="lead">Hosts, devices, auxiliaries, multiplexers and cameras are seeded from <code>/etc/hil/*.yaml</code> and hydrated into the DB on startup.</p>
+  <table>
+    <tr><th>Entity</th><th>What it is</th><th>Key fields</th></tr>
+    <tr><td><strong>Host</strong></td><td>A bench Pi the controller fans work to. The controller itself has no host row.</td><td><code>role</code> (microcontroller-fleet / sbc-fleet / protomq-broker), <code>addr</code>, <code>transport</code> (ssh / local / none), <code>capabilities</code>, <code>max_concurrent_jobs</code>, <code>status</code></td></tr>
+    <tr><td><strong>Device (DUT)</strong></td><td>The physical unit under test, wired to one host.</td><td><code>kind</code>, <code>model</code>, <code>usb_path</code>, <code>reset</code> {mux, channel, profile}, <code>flasher</code>, <code>serial_port</code>, <code>camera_id</code>, <code>pool</code>, <code>build_target</code>, <code>status</code></td></tr>
+    <tr><td><strong>Auxiliary</strong></td><td>Anything hung off a device a test asserts against — display, sensor, companion MCU.</td><td><code>kind</code>, <code>model</code>, <code>interface</code>, <code>signals</code>, <code>observability</code> (camera / serial-tap / i2c-sniffer)</td></tr>
+    <tr><td><strong>Mux</strong></td><td>A shared resource — today the Genesys USB hub with an MCP23017 solenoid driver at I²C <code>0x20</code> doing per-port power/reset.</td><td><code>kind</code> (usb-power), <code>control.adapter</code>, <code>i2c_addr</code>, <code>timing_profiles</code> (standard, samd51_uf2, …)</td></tr>
+    <tr><td><strong>Camera</strong></td><td>CSI ribbon camera on a host, or a network IP-webcam. Per-device ROI lives in the DB.</td><td><code>source</code> (<code>v4l2:0</code> or <code>http://…/video</code>), <code>host_id</code>, <code>resolution</code>, per-device <code>qr_identifier</code> + ROI</td></tr>
+    <tr><td><strong>Secret profile</strong></td><td>A named credential bundle materialised onto the host at flash time — bench broker vs live Adafruit IO.</td><td><code>io_url/io_port</code>, <code>io_username/io_key</code>, wifi creds, <code>requires_trusted</code>. Values are <code>${env:…}</code> refs only — never plaintext in YAML.</td></tr>
+  </table>
+  <p>The first <code>topology.yaml</code> is seeded from two existing artefacts: <code>hardware.md</code> (power/reset wiring — the 8-channel solenoid map, USB VID:PID, timing profiles) and the ProtoMQ <code>scripts/*.json</code> demos (device↔display wiring + display interface). An importer cross-references the two and flags anything unresolved; humans own the final file.</p>
+</section>
+
+<section id="setup">
+  <h2><span class="dot" style="background:var(--teal)"></span>Setup &amp; deployment</h2>
+  <p class="lead">Three tiers, installed via the Python package plus deploy scripts.</p>
+  <div class="grid2">
+    <div class="mini"><h4>1 · Controller host</h4><p style="font-size:13.5px;margin:6px 0">Any Linux box (Pi, NUC, VM) with network reach to the bench. <code>uvicorn hil_controller.main:app</code> behind Caddy/nginx for TLS. SQLite (WAL) + artifacts under <code>/var/lib/hil/</code>. YAML config in <code>/etc/hil/</code>, hot-reloaded. Per-host SSH keys in <code>/etc/hil/keys/</code> (mode 0400).</p></div>
+    <div class="mini"><h4>2 · HIL host fleet</h4><p style="font-size:13.5px;margin:6px 0"><code>scripts/setup-hil-host.sh</code> authorises the controller key, installs <code>usbip-autobind</code>, masks ModemManager, and (on Pi Zero) opts into the <code>dwc2</code> driver. On <code>rpi-displays</code> it installs the solenoid hub control + udev rules for the MCP23017 and stable serial symlinks.</p></div>
+    <div class="mini"><h4>3 · ProtoMQ broker</h4><p style="font-size:13.5px;margin:6px 0"><em>Per-session, not a dedicated box.</em> The controller launches a ProtoMQ broker on itself (<code>tachyon</code>), on a DUT host (e.g. <code>rpi-hil004</code>), or points the DUT at an external broker — a staging server (<code>io.adafruit.us</code>) or live <code>io.adafruit.com</code> (MQTT <code>8883</code>). Bench ProtoMQ uses MQTT <code>1884</code> + web UI <code>5173</code>; the host:port is filled into <code>secrets.json</code> at flash time, never a CI input.</p></div>
+    <div class="mini"><h4>Caller side (CI)</h4><p style="font-size:13.5px;margin:6px 0">A downstream repo copies the <code>examples/hil-call.sh</code> submit + long-poll flow and sets a handful of secrets. The broker host:port is <em>not</em> a CI input — the controller's <code>write_secrets_msc</code> stage fills <code>io_url</code>/<code>io_port</code> from the per-session broker it launches.</p></div>
+  </div>
+  <h3>CI secrets / variables (set on the calling repo)</h3>
+  <table>
+    <tr><th>Secret</th><th>Purpose</th></tr>
+    <tr><td><code>TAILSCALE_AUTHKEY_*</code></td><td>Join the tailnet to reach the controller</td></tr>
+    <tr><td><code>HIL_API_KEY_*</code></td><td>Controller bearer token</td></tr>
+    <tr><td><code>HIL_IO_USERNAME</code> / <code>HIL_IO_KEY</code></td><td>Adafruit IO creds rendered into <code>secrets.json</code></td></tr>
+    <tr><td><code>HIL_WIFI_SSID</code> / <code>HIL_WIFI_PASSWORD</code></td><td>DUT Wi-Fi to reach the broker</td></tr>
+    <tr><td><code>HIL_API_BASE</code> <span style="color:#64748b">(var)</span></td><td>Controller URL on the tailnet (default <code>…ts.net:8080</code>)</td></tr>
+    <tr><td><code>HIL_LOW_REF</code> / <code>HIL_TARGETS</code> <span style="color:#64748b">(var)</span></td><td>A/B baseline release + build-target matrix (default <code>1.0.0-beta.127</code> / <code>qtpy_esp32s3_n4r2</code>)</td></tr>
+  </table>
+</section>
+
+<section id="flow">
+  <h2><span class="dot" style="background:var(--purple)"></span>Process flow — the regression suite</h2>
+  <p class="lead">A GitHub PR drives a real-hardware A/B comparison: <strong>low_ref</strong> = a published release, <strong>high_ref</strong> = this PR's build.</p>
+  <svg class="diagram" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 760" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="a2" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .t{fill:#0f172a;font-size:13px;}
+      .b{fill:#0f172a;font-size:13px;font-weight:600;}
+      .s{fill:#475569;font-size:11px;}
+      .num{fill:#fff;font-size:12px;font-weight:700;}
+      .edge{stroke:#475569;stroke-width:1.8;fill:none;}
+      .lane{fill:#f8fafc;stroke:#e2e8f0;stroke-width:1;}
+      .lh{font-size:13px;font-weight:700;}
+    </style>
+  </defs>
+
+  <text x="500" y="28" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">End-to-End Firmware Regression Pipeline</text>
+  <text x="500" y="48" text-anchor="middle" class="s">A GitHub PR drives a real-hardware A/B comparison — low_ref = published release, high_ref = this PR's build</text>
+
+  <!-- lanes -->
+  <rect class="lane" x="20"  y="64" width="310" height="668"/>
+  <rect class="lane" x="345" y="64" width="310" height="668"/>
+  <rect class="lane" x="670" y="64" width="310" height="668"/>
+  <rect x="20"  y="64" width="310" height="30" fill="#334155"/>
+  <rect x="345" y="64" width="310" height="30" fill="#4f46e5"/>
+  <rect x="670" y="64" width="310" height="30" fill="#0d9488"/>
+  <text x="175" y="84" text-anchor="middle" class="lh" fill="#fff">GitHub Actions CI</text>
+  <text x="500" y="84" text-anchor="middle" class="lh" fill="#fff">Controller (tachyon)</text>
+  <text x="825" y="84" text-anchor="middle" class="lh" fill="#fff">Bench / DUT host</text>
+
+  <!-- step helper boxes -->
+  <!-- 1 -->
+  <circle cx="42" cy="124" r="11" fill="#334155"/><text x="42" y="128" text-anchor="middle" class="num">1</text>
+  <rect x="60" y="106" width="258" height="48" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="125" class="b">Build CI produces per-target artifacts</text>
+  <text x="70" y="143" class="s">"WipperSnapper Build CI" → combined.bin per board</text>
+
+  <!-- 2 -->
+  <circle cx="42" cy="194" r="11" fill="#334155"/><text x="42" y="198" text-anchor="middle" class="num">2</text>
+  <rect x="60" y="170" width="258" height="64" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="189" class="b">hil-test-suite.yml fires</text>
+  <text x="70" y="206" class="s">pull_request / workflow_run / dispatch</text>
+  <text x="70" y="222" class="s">joins Tailscale → reaches controller</text>
+
+  <!-- 3 GET targets -->
+  <circle cx="42" cy="272" r="11" fill="#334155"/><text x="42" y="276" text-anchor="middle" class="num">3</text>
+  <rect x="60" y="252" width="258" height="42" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="271" class="b">GET /v1/targets</text>
+  <text x="70" y="287" class="s">which boards are available right now?</text>
+  <path class="edge" d="M318 273 H500 V300" marker-end="url(#a2)"/>
+
+  <!-- controller availability -->
+  <rect x="360" y="306" width="280" height="44" rx="8" fill="#eef2ff" stroke="#a5b4fc"/>
+  <text x="370" y="325" class="b">Availability + self-rectification</text>
+  <text x="370" y="341" class="s">runs the available subset · reports skipped + why</text>
+  <path class="edge" d="M500 350 V366 H318 V310" marker-end="url(#a2)"/>
+
+  <!-- 4 fetch + upload firmware -->
+  <circle cx="42" cy="392" r="11" fill="#334155"/><text x="42" y="396" text-anchor="middle" class="num">4</text>
+  <rect x="60" y="372" width="258" height="60" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="391" class="b">Fetch firmware → POST /v1/firmware</text>
+  <text x="70" y="408" class="s">gh release/run download → unzip →</text>
+  <text x="70" y="424" class="s">combined.bin uploaded (sha256-tracked)</text>
+  <path class="edge" d="M318 402 H500 V440" marker-end="url(#a2)"/>
+
+  <!-- 5 POST jobs x2 -->
+  <circle cx="42" cy="476" r="11" fill="#334155"/><text x="42" y="480" text-anchor="middle" class="num">5</text>
+  <rect x="60" y="452" width="258" height="62" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="471" class="b">POST /v1/jobs  (test array)</text>
+  <text x="70" y="488" class="s">hil-checkin-run.sh — default gate</text>
+  <text x="70" y="504" class="s">hil-pixelwrite-run.sh — A/B ×2 (low, high)</text>
+  <path class="edge" d="M318 483 H500 V522" marker-end="url(#a2)"/>
+
+  <!-- controller orchestrator -->
+  <rect x="360" y="446" width="280" height="62" rx="8" fill="#eef2ff" stroke="#a5b4fc"/>
+  <text x="370" y="466" class="b">Scheduler assigns device + lock</text>
+  <text x="370" y="483" class="s">resolves (host, device, aux, mux)</text>
+  <text x="370" y="499" class="s">renders secrets profile → /tmp/hil/&lt;job&gt;</text>
+
+  <rect x="360" y="528" width="280" height="70" rx="8" fill="#eef2ff" stroke="#7c3aed"/>
+  <text x="370" y="548" class="b" fill="#6d28d9">firmware-bench orchestrator</text>
+  <text x="370" y="565" class="s">enter_bootloader → erase → flash →</text>
+  <text x="370" y="581" class="s">launch_protomq → write_secrets_msc →</text>
+  <text x="370" y="595" class="s">power_cycle → inject_pixelwrite</text>
+  <path class="edge" d="M640 563 H825 V598" marker-end="url(#a2)"/>
+
+  <!-- bench DUT -->
+  <rect x="688" y="604" width="274" height="66" rx="8" fill="#ccfbf1" stroke="#0d9488"/>
+  <text x="698" y="624" class="b">DUT runs on solenoid hub</text>
+  <text x="698" y="641" class="s">esptool over USB-Serial/JTAG</text>
+  <text x="698" y="657" class="s">per-session protomq broker · serial capture</text>
+
+  <!-- verdict -->
+  <rect x="688" y="682" width="274" height="40" rx="8" fill="#fef3c7" stroke="#d97706"/>
+  <text x="698" y="700" class="b">PIXELWRITE_VERDICT rebooted=…</text>
+  <text x="698" y="715" class="s">CHECKIN_VERDICT ok=true</text>
+  <path class="edge" d="M825 670 V680" marker-end="url(#a2)"/>
+
+  <!-- verdict back to controller assets -->
+  <rect x="360" y="618" width="280" height="44" rx="8" fill="#eef2ff" stroke="#a5b4fc"/>
+  <text x="370" y="637" class="b">Capture assets</text>
+  <text x="370" y="653" class="s">serial.log · protomq.log · flash.log</text>
+  <path class="edge" d="M688 700 C660 700 660 640 644 640" marker-end="url(#a2)"/>
+
+  <!-- 6 PR comment -->
+  <circle cx="42" cy="650" r="11" fill="#334155"/><text x="42" y="654" text-anchor="middle" class="num">6</text>
+  <rect x="60" y="618" width="258" height="80" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="70" y="637" class="b">Collect results → PR comment</text>
+  <text x="70" y="654" class="s">GET /v1/jobs/{id}/wait (long-poll)</text>
+  <text x="70" y="670" class="s">+ /assets  → per-target table + excerpts</text>
+  <text x="70" y="686" class="s">new comment per run · uploads artifacts</text>
+  <path class="edge" d="M360 640 H330 V659 H318" marker-end="url(#a2)"/>
+
+  <text x="500" y="752" text-anchor="middle" class="s">Verdict contract — release beta.127: rebooted=true (crash) · PR fix: rebooted=false (survives) · check-in: ok=true</text>
+</svg>
+  <p>After the build workflow produces per-target artifacts, <code>hil-test-suite.yml</code> joins Tailscale, asks <code>GET /v1/targets</code> which boards are live, downloads the release and PR firmware, uploads it via <code>POST /v1/firmware</code>, then submits a <strong>test array</strong> — each test is its own driver script reported individually. Tests run <code>if: always()</code> so one failure doesn't hide the others, and the workflow posts a fresh PR comment per run (not sticky) with a per-target table and inline serial-log excerpts.</p>
+  <div class="grid2">
+    <div class="mini teal"><h4>Test 1 — device check-in (the default gate)</h4><p style="font-size:13.5px;margin:6px 0"><code>hil-checkin-run.sh</code>: flash the PR build → write secrets → power-cycle → <code>verify_checkin</code>. Passes when the firmware connects to the broker and announces itself — verdict <code>CHECKIN_VERDICT ok=true</code>. This proves the board boots and provisions before any deeper test runs.</p></div>
+    <div class="mini amber"><h4>Tests 2 &amp; 3 — pixelWrite regression (#926, fixed by #927)</h4><p style="font-size:13.5px;margin:6px 0"><code>hil-pixelwrite-run.sh</code> runs the same firmware-bench pipeline twice (low vs high). A v1 <code>pixelWrite</code> to an uninitialised NeoPixel strand crashes release <code>beta.127</code> (<code>rebooted=true</code>) but is handled gracefully by the fix (<code>rebooted=false</code>). The harness compares the two builds; the stage itself doesn't pass/fail.</p></div>
+  </div>
+  <h3>Inside firmware-bench (per job)</h3>
+  <div class="pills">
+    <span class="pill norm">enter_bootloader</span><span class="arrow">→</span>
+    <span class="pill norm">erase</span><span class="arrow">→</span>
+    <span class="pill norm">flash</span><span class="arrow">→</span>
+    <span class="pill norm">verify</span><span class="arrow">→</span>
+    <span class="pill norm">launch_protomq</span><span class="arrow">→</span>
+    <span class="pill norm">write_secrets_msc</span><span class="arrow">→</span>
+    <span class="pill norm">power_cycle</span><span class="arrow">→</span>
+    <span class="pill norm">inject_pixelwrite</span><span class="arrow">→</span>
+    <span class="pill term">verdict</span>
+  </div>
+  <p>Signal injection is the crux: <code>ws_signal_inject</code> encodes the exact 11-byte nanopb <code>PixelsWriteRequest</code>, connects to the per-session broker, waits for <code>pinConfigComplete</code>, then fires the write via ProtoMQ's <code>POST /api/echo</code>. It then watches MQTT for a fresh re-checkin — a reboot inside the window means the firmware crashed; silence means it survived. Stages are pluggable (<code>STAGE_HANDLERS</code>), so a different regression is just a different stage list + assertion — no orchestrator edit.</p>
+</section>
+
+<section id="state">
+  <h2><span class="dot" style="background:var(--purple)"></span>Job lifecycle</h2>
+  <p class="lead">Every transition writes an append-only event; the same event log powers the long-poll wakeup, the live HTMX log view and the audit trail.</p>
+  <div class="pills">
+    <span class="pill norm">queued</span><span class="arrow">→</span>
+    <span class="pill norm">assigned</span><span class="arrow">→</span>
+    <span class="pill norm">preparing</span><span class="arrow">→</span>
+    <span class="pill norm">flashing</span><span class="arrow">→</span>
+    <span class="pill norm">running</span><span class="arrow">→</span>
+    <span class="pill term">finished</span>
+    <span style="width:18px"></span>
+    <span class="pill err">error</span>
+    <span class="pill err">timeout</span>
+    <span class="pill err">cancelled</span>
+  </div>
+  <p><code>finished</code> carries a <code>result</code> of <code>pass</code> / <code>fail</code> — the device ran the test and the test gave a verdict. That is deliberately distinct from <code>error</code> (infrastructure failure: flash failed, USB-IP gone) and <code>timeout</code> (a phase budget was exceeded). CI consumes this over <code>GET /v1/jobs/{id}/wait?since=…</code>, re-issuing on each timeout (300s default, 600s ceiling) until the job is terminal, then pulls the <code>serial.log</code> / <code>protomq.log</code> / <code>flash.log</code> assets.</p>
+</section>
+
+<section id="manual">
+  <h2><span class="dot" style="background:var(--rose)"></span>Manual operation</h2>
+  <p class="lead">Every automated action is also a hands-on control — for bring-up, debugging a wedged board, or just eyeballing a display.</p>
+  <svg class="diagram" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 580" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="am" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .t{fill:#0f172a;font-size:13px;}
+      .b{fill:#0f172a;font-size:13.5px;font-weight:700;}
+      .s{fill:#475569;font-size:11px;}
+      .si{fill:#e2e8f0;font-size:11px;}
+      .edge{stroke:#475569;stroke-width:1.7;fill:none;}
+      .feed{stroke:#db2777;stroke-width:1.8;fill:none;stroke-dasharray:5 4;}
+    </style>
+  </defs>
+
+  <text x="500" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Manual Operation — Interactive Bench Access</text>
+  <text x="500" y="50" text-anchor="middle" class="s">The same platform an operator drives by hand: log in to a device, toggle power, flash, watch serial + camera live</text>
+
+  <!-- operator -->
+  <rect x="34" y="92" width="200" height="150" rx="12" fill="#334155"/>
+  <text x="134" y="118" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">Operator</text>
+  <rect x="50" y="132" width="168" height="46" rx="8" fill="#475569"/>
+  <text x="134" y="151" text-anchor="middle" class="si" font-weight="600">HTMX dashboard /ui</text>
+  <text x="134" y="168" text-anchor="middle" class="si">hosts · devices · cameras</text>
+  <rect x="50" y="186" width="168" height="46" rx="8" fill="#475569"/>
+  <text x="134" y="205" text-anchor="middle" class="si" font-weight="600">CLI / SSH helpers</text>
+  <text x="134" y="222" text-anchor="middle" class="si">solenoid_hub_cli · turn_on/off.sh</text>
+
+  <path class="edge" d="M234 167 H300" marker-end="url(#am)"/>
+
+  <!-- controller actions -->
+  <rect x="300" y="78" width="320" height="320" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="460" y="100" text-anchor="middle" class="b" fill="#4338ca">Controller — manual actions</text>
+
+  <rect x="316" y="114" width="288" height="48" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="133" class="b" font-size="12.5">Log in to a device</text>
+  <text x="326" y="150" class="s">SSH to owning HIL host · open serial console · device detail page</text>
+
+  <rect x="316" y="170" width="288" height="48" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="189" class="b" font-size="12.5">Toggle USB power / reset</text>
+  <text x="326" y="206" class="s">MCP23017 solenoid per channel · timing profiles · usb-ids learn</text>
+
+  <rect x="316" y="226" width="288" height="48" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="245" class="b" font-size="12.5">Flash / deploy on demand</text>
+  <text x="326" y="262" class="s">esptool · picotool · uf2-msc · git-source — same adapters</text>
+
+  <rect x="316" y="282" width="288" height="48" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="301" class="b" font-size="12.5">Camera control</text>
+  <text x="326" y="318" class="s">snapshot · set ROI · calibrate (QR auto-hint) · preview focus</text>
+
+  <rect x="316" y="338" width="288" height="46" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="326" y="357" class="b" font-size="12.5">Submit an ad-hoc job</text>
+  <text x="326" y="374" class="s">raw-firmware-smoke / git-clone-and-run (trusted-firmware gate)</text>
+
+  <!-- bench -->
+  <rect x="690" y="92" width="278" height="150" rx="12" fill="#ccfbf1" stroke="#0d9488" stroke-width="2"/>
+  <text x="829" y="116" text-anchor="middle" class="b" fill="#0f766e">Bench hardware</text>
+  <text x="829" y="138" text-anchor="middle" class="s">HIL host · solenoid hub · DUT</text>
+  <text x="829" y="160" text-anchor="middle" class="s">CSI camera + IP webcam</text>
+  <text x="829" y="182" text-anchor="middle" class="s">/dev/serial/by-id/… (stable)</text>
+  <text x="829" y="204" text-anchor="middle" class="s">per-session ProtoMQ broker</text>
+  <text x="829" y="226" text-anchor="middle" class="s">power/reset solenoid channels</text>
+
+  <path class="edge" d="M620 200 H690" marker-end="url(#am)"/>
+  <text x="655" y="192" text-anchor="middle" class="s" font-style="italic">over SSH</text>
+
+  <!-- feedback panel -->
+  <rect x="690" y="270" width="278" height="128" rx="12" fill="#fdf2f8" stroke="#db2777" stroke-width="2"/>
+  <text x="829" y="294" text-anchor="middle" class="b" fill="#be185d">Live feedback</text>
+  <text x="829" y="316" text-anchor="middle" class="s">serial log — live tail (HTMX SSE)</text>
+  <text x="829" y="336" text-anchor="middle" class="s">camera frame / ROI snapshot</text>
+  <text x="829" y="356" text-anchor="middle" class="s">flash + protomq logs as assets</text>
+  <text x="829" y="376" text-anchor="middle" class="s">dmesg / usbmon (exclusive host)</text>
+
+  <path class="feed" d="M829 242 V270" marker-end="url(#am)"/>
+  <path class="feed" d="M690 306 C662 318 650 344 624 354" marker-end="url(#am)"/>
+  <text x="654" y="300" text-anchor="middle" class="s" fill="#be185d" font-style="italic">streamed live</text>
+
+  <text x="500" y="468" text-anchor="middle" class="s">Everything an automated job does is also exposed as a manual control — useful for bring-up, debugging a wedged board, or eyeballing a display.</text>
+  <text x="500" y="488" text-anchor="middle" class="s">Read-only pages are public on the LAN; power/flash/job actions require a bearer token.</text>
+</svg>
+  <p>From the dashboard (or the CLI helpers — <code>solenoid_hub_cli.py</code>, <code>turn_on.sh</code>/<code>turn_off.sh</code>) an operator can log in to a device's owning host and open a serial console, toggle USB power and reset per solenoid channel, flash or deploy on demand through the same adapters a job uses, drive the cameras (snapshot, set ROI, QR-assisted calibration, focus preview), and submit ad-hoc jobs with the permissive <code>raw-firmware-smoke</code> / <code>git-clone-and-run</code> built-ins behind the <code>trusted-firmware</code> gate. Feedback streams straight back: live serial tail over HTMX SSE, camera frames and ROI snapshots, and the captured flash/protomq logs — plus <code>dmesg</code>/<code>usbmon</code> when a job holds the host exclusively.</p>
+</section>
+
+<section id="python">
+  <h2><span class="dot" style="background:var(--green)"></span>Extending to Wippersnapper Python</h2>
+  <p class="lead">The same job-submission shape and the same controller spine — only the payload kind and the deploy/runner adapter change.</p>
+  <svg class="diagram" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="ap" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .t{fill:#0f172a;font-size:12.5px;}
+      .b{fill:#0f172a;font-size:13px;font-weight:700;}
+      .s{fill:#475569;font-size:11px;}
+      .edge{stroke:#475569;stroke-width:1.7;fill:none;}
+      .shared{fill:#475569;font-size:11px;}
+    </style>
+  </defs>
+
+  <text x="500" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Reusing the Platform for Wippersnapper Python</text>
+  <text x="500" y="50" text-anchor="middle" class="s">Same job-submission shape, same controller spine — only the payload kind and the deploy/runner adapter differ</text>
+
+  <!-- Arduino track -->
+  <rect x="30" y="74" width="430" height="120" rx="12" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+  <text x="245" y="96" text-anchor="middle" class="b" fill="#b45309">Arduino firmware (microcontroller) — today</text>
+  <rect x="44" y="108" width="180" height="74" rx="8" fill="#fff" stroke="#fcd34d"/>
+  <text x="134" y="127" text-anchor="middle" class="t" font-weight="600">payload: firmware-binary</text>
+  <text x="134" y="145" text-anchor="middle" class="s">esptool / picotool / uf2-msc</text>
+  <text x="134" y="161" text-anchor="middle" class="s">target: ESP32 / SAMD51 / RP2040</text>
+  <text x="134" y="177" text-anchor="middle" class="s">on rpi-displays solenoid hub</text>
+  <rect x="236" y="108" width="212" height="74" rx="8" fill="#fff" stroke="#fcd34d"/>
+  <text x="342" y="127" text-anchor="middle" class="t" font-weight="600">script: firmware-bench / smoke</text>
+  <text x="342" y="145" text-anchor="middle" class="s">flash → secrets.json → power-cycle</text>
+  <text x="342" y="161" text-anchor="middle" class="s">→ checkin / inject signal</text>
+  <text x="342" y="177" text-anchor="middle" class="s">speaks ProtoMQ to pi5 broker</text>
+
+  <!-- Python track -->
+  <rect x="540" y="74" width="430" height="120" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="755" y="96" text-anchor="middle" class="b" fill="#15803d">Python client (SBC) — planned extension</text>
+  <rect x="554" y="108" width="180" height="74" rx="8" fill="#fff" stroke="#86efac"/>
+  <text x="644" y="127" text-anchor="middle" class="t" font-weight="600">payload: git-source</text>
+  <text x="644" y="145" text-anchor="middle" class="s">GitDeploy: clone ref + submodules</text>
+  <text x="644" y="161" text-anchor="middle" class="s">target: Pi 5 on rpi-hil00N</text>
+  <text x="644" y="177" text-anchor="middle" class="s">or LocalTransport (no hardware)</text>
+  <rect x="746" y="108" width="212" height="74" rx="8" fill="#fff" stroke="#86efac"/>
+  <text x="852" y="127" text-anchor="middle" class="t" font-weight="600">script: git-clone-and-run</text>
+  <text x="852" y="145" text-anchor="middle" class="s">render .env / secrets → pip install -e .</text>
+  <text x="852" y="161" text-anchor="middle" class="s">pytest -m markers via tests/runner.py</text>
+  <text x="852" y="177" text-anchor="middle" class="s">exit code → pass/fail; same broker</text>
+
+  <!-- converge arrows -->
+  <path class="edge" d="M245 194 V230 H500 V250" marker-end="url(#ap)"/>
+  <path class="edge" d="M755 194 V230 H500" marker-end="url(#ap)"/>
+
+  <!-- shared spine -->
+  <rect x="150" y="252" width="700" height="210" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="500" y="276" text-anchor="middle" class="b" fill="#4338ca">Shared controller spine — unchanged between the two</text>
+
+  <rect x="168" y="290" width="200" height="74" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="268" y="309" text-anchor="middle" class="t" font-weight="600">Auth + policy</text>
+  <text x="268" y="326" text-anchor="middle" class="s">bearer token / GitHub OIDC</text>
+  <text x="268" y="342" text-anchor="middle" class="s">pool + secrets-profile</text>
+  <text x="268" y="358" text-anchor="middle" class="s">allow-list per repo</text>
+
+  <rect x="400" y="290" width="200" height="74" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="500" y="309" text-anchor="middle" class="t" font-weight="600">Scheduler + transport</text>
+  <text x="500" y="326" text-anchor="middle" class="s">resolver · device/host locks</text>
+  <text x="500" y="342" text-anchor="middle" class="s">SSH or LocalTransport</text>
+  <text x="500" y="358" text-anchor="middle" class="s">secret-profile materialise</text>
+
+  <rect x="632" y="290" width="200" height="74" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="732" y="309" text-anchor="middle" class="t" font-weight="600">Availability + targets</text>
+  <text x="732" y="326" text-anchor="middle" class="s">GET /v1/targets matrix</text>
+  <text x="732" y="342" text-anchor="middle" class="s">self-rectifying skips</text>
+  <text x="732" y="358" text-anchor="middle" class="s">build_target enrolment</text>
+
+  <rect x="168" y="378" width="664" height="68" rx="8" fill="#fff" stroke="#a5b4fc"/>
+  <text x="500" y="398" text-anchor="middle" class="t" font-weight="600">Capture · long-poll · report</text>
+  <text x="500" y="416" text-anchor="middle" class="s">serial / pytest log · camera frames · assets API · /wait events</text>
+  <text x="500" y="433" text-anchor="middle" class="s">→ per-run PR comment + uploaded artifacts (identical reporting path)</text>
+
+  <text x="500" y="488" text-anchor="middle" class="s">The hil-detection pytest conftest (SSH into a HIL host, toggle USB, flash, mount CIRCUITPY) is the prototype this formalises —</text>
+  <text x="500" y="508" text-anchor="middle" class="s">tests/runner.py shells pytest on the target host and streams the report back as the job result. The Python client speaks the same ProtoMQ.</text>
+  <text x="500" y="534" text-anchor="middle" class="s" font-style="italic" fill="#475569">Net: adding Python WS testing is a new payload kind + a deploy/runner adapter — auth, scheduling, secrets, capture and reporting are reused as-is.</text>
+</svg>
+  <p>The Arduino firmware path uses a <code>firmware-binary</code> payload flashed onto a microcontroller. The Python single-board-computer client (currently private/unreleased) uses a <code>git-source</code> payload instead: the <code>GitDeploy</code> adapter clones the ref with submodules onto an SBC host (<code>rpi-hil00N</code>) — or onto the controller itself via <code>LocalTransport</code> for pytest runs with no real hardware — renders the chosen secret profile into <code>.env</code>/<code>secrets.json</code>, runs an optional <code>pip install -e .</code>, then hands off to <code>tests/runner.py</code>, which shells <code>pytest -m &lt;marker&gt;</code> on the target host and streams the report back as the job result.</p>
+  <p>Everything else is reused unchanged: auth and policy, the scheduler and host transport, availability and the <code>/v1/targets</code> matrix, secret-profile materialisation, log/camera capture, the long-poll and the per-run PR comment. The existing <code>hil-detection</code> pytest conftest — which already SSHes into a HIL host, toggles the USB hub, flashes and mounts CIRCUITPY — is the working prototype this architecture formalises. The Python client speaks the same ProtoMQ to whichever broker the secret profile selects, so adding it is essentially a new payload kind plus a deploy/runner adapter.</p>
+  <div class="callout"><strong>Net:</strong> Wippersnapper Python testing drops in as an additional payload + adapter on top of a platform that already handles auth, scheduling, secrets, capture and reporting — and the same platform doubles as a manual bench for interactive work.</div>
+</section>
+
+<footer>
+  Generated from the <code>usbip-hil-controller</code> design docs (ARCHITECTURE.md, hil-regression-pipeline.md, CAMERA_INTEGRATION.md) and the live API surface.
+  <br>Companion to Wippersnapper Arduino PR&nbsp;#930. Diagrams authored as SVG.
+</footer>
+</div>
+</body>
+</html>

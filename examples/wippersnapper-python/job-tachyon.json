@@ -1,0 +1,43 @@
+{
+  "target": {
+    "device": {"kind": "sbc", "capabilities": ["python-snapper", "display-ili9341"]},
+    "requires": [{"id": "tachyon-ili9341"}],
+    "pool": "wippersnapper-python"
+  },
+  "script": "pytest-suite",
+  "payload": {
+    "kind": "git-source",
+    "source": {
+      "repo": "https://github.com/adafruit/Adafruit_Wippersnapper_Python.git",
+      "ref": "main",
+      "shallow": true,
+      "submodules": false,
+      "setup": ["pip", "install", "-e", ".[test]"],
+      "pat": "__GH_PAT__"
+    }
+  },
+  "params": {
+    "entry": "python",
+    "args": ["-m", "pytest", "-m", "not hardware", "-v", "--tb=short"],
+    "secrets_format": "dotenv",
+    "protomq": {
+      "broker_host": "127.0.0.1",
+      "mqtt_port": 1884,
+      "api_port": 5173,
+      "script": "tachyon-eyespi-beret-ili9341-240x320-demo"
+    }
+  },
+  "secrets": {
+    "IO_USERNAME": "__IO_USERNAME__",
+    "IO_KEY": "__IO_KEY__",
+    "MQTT_HOST": "127.0.0.1",
+    "MQTT_PORT": "1884"
+  },
+  "secrets_profile": "bench-protomq",
+  "timeouts": {
+    "total_s": 600,
+    "deploy_s": 180,
+    "run_s": 300,
+    "flash_s": 120
+  }
+}

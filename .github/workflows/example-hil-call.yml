@@ -1,0 +1,105 @@
+# Reference workflow showing how a downstream repository would call the
+# HIL controller from CI. Copy into the consuming repo and adapt the
+# selectors. Not run in this repo by default (workflow_dispatch only).
+#
+# Documents both auth paths (per-repo bearer token AND GitHub Actions
+# OIDC) so consumers can pick the one that matches their setup.
+
+name: example-hil-call
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_model:
+        description: "Device model selector (e.g. rp2040, esp32-s3, samd51)"
+        required: true
+        default: "rp2040"
+      firmware_url:
+        description: "URL to the firmware artifact"
+        required: true
+      firmware_sha256:
+        description: "Expected SHA-256 of the artifact"
+        required: true
+      script:
+        description: "Allow-listed HIL test script name"
+        required: true
+        default: "protomq.boot-handshake"
+
+permissions:
+  id-token: write   # required if HIL_OIDC_TOKEN path is used
+  contents: read
+
+jobs:
+  hil:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out caller repo
+        uses: actions/checkout@v4
+
+      - name: Render Wippersnapper secrets from repo secrets
+        env:
+          HIL_IO_USERNAME: ${{ secrets.HIL_IO_USERNAME }}
+          HIL_IO_KEY: ${{ secrets.HIL_IO_KEY }}
+          HIL_WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
+          HIL_WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
+          # Bench identity — not secret. The controller will accept these or
+          # overwrite them at flash time.
+          HIL_PROTOMQ_HOST: pi5-protomq.local
+          HIL_PROTOMQ_PORT: "1884"
+        run: |
+          mkdir -p out
+          envsubst < examples/wippersnapper-arduino/secrets.example.json > out/secrets.json
+          test -s out/secrets.json
+          # Don't print the rendered file — it now contains secrets.
+
+      - name: Build job submission body
+        env:
+          TARGET_MODEL: ${{ inputs.target_model }}
+          FIRMWARE_URL: ${{ inputs.firmware_url }}
+          FIRMWARE_SHA: ${{ inputs.firmware_sha256 }}
+          SCRIPT: ${{ inputs.script }}
+        run: |
+          jq -n \
+            --arg model "$TARGET_MODEL" \
+            --arg url   "$FIRMWARE_URL" \
+            --arg sha   "$FIRMWARE_SHA" \
+            --arg sc    "$SCRIPT" \
+            --arg pr    "${{ github.event.pull_request.number }}" \
+            --arg sha7  "${{ github.sha }}" \
+            '{
+              target: {
+                device:   { kind: "microcontroller", model: $model },
+                requires: [{ kind: "display" }],
+                pool:     "public"
+              },
+              script:  $sc,
+              params:  { secrets_artifact: "secrets.json" },
+              artifact: {
+                kind:   "url+sha256",
+                url:    $url,
+                sha256: $sha
+              },
+              timeouts: { total_s: 1500, flash_s: 180, run_s: 600 },
+              metadata: { pr: $pr, commit: $sha7 }
+             }' > out/job.json
+
+      - name: Acquire GitHub OIDC token for HIL controller
+        id: oidc
+        run: |
+          aud="${HIL_OIDC_AUDIENCE:-hil-controller}"
+          token=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -er .value)
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+
+      - name: Submit and wait
+        env:
+          HIL_API_BASE: ${{ vars.HIL_API_BASE }}
+          # Prefer OIDC; fall back to a per-repo token if OIDC isn't set up.
+          HIL_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          HIL_API_TOKEN: ${{ secrets.HIL_API_TOKEN }}
+          HIL_JOB_JSON: out/job.json
+          HIL_WAIT_TIMEOUT: "300"
+          HIL_TOTAL_BUDGET: "1800"
+        run: bash examples/hil-call.sh

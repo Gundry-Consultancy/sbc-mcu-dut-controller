@@ -1,0 +1,38 @@
+name: hil-controller-ci
+
+on:
+  push:
+    branches: [main, "claude/*"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test,lint,camera]"
+
+      - name: Lint
+        run: ruff check src/ tests/
+
+      - name: Type check
+        run: mypy src/hil_controller --ignore-missing-imports
+        continue-on-error: true
+
+      - name: Test
+        run: pytest --cov=hil_controller --cov-report=term-missing

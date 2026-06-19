@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="cards">
+  <div class="card">
+    <a href="/ui/hosts">
+      <div class="num">{{ hosts|length }}</div>
+      <div class="lbl">Hosts</div>
+    </a>
+  </div>
+  <div class="card">
+    <a href="/ui/devices">
+      <div class="num">{{ devices|length }}</div>
+      <div class="lbl">Devices</div>
+    </a>
+  </div>
+  <div class="card">
+    <a href="/ui/hardware">
+      <div class="num">{{ hardware|length }}</div>
+      <div class="lbl">Hardware (aux)</div>
+    </a>
+  </div>
+  <div class="card">
+    <a href="/ui/cameras">
+      <div class="num">{{ cameras|length }}</div>
+      <div class="lbl">Cameras</div>
+    </a>
+  </div>
+  <div class="card">
+    <a href="/ui/scripts">
+      <div class="num">{{ script_count }}</div>
+      <div class="lbl">ProtoMQ Scripts</div>
+    </a>
+  </div>
+  <div class="card">
+    <div class="num">{{ active_jobs }}</div>
+    <div class="lbl">Active Jobs</div>
+  </div>
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Hosts</h2></div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Role</th><th>Addr</th><th>Transport</th><th>Status</th><th>Devices</th>
+    </tr></thead>
+    <tbody>
+    {% for h in hosts %}
+    <tr>
+      <td class="mono">{{ h.id }}</td>
+      <td><span class="badge badge-info">{{ h.role }}</span></td>
+      <td class="mono">{{ h.addr }}</td>
+      <td>{{ h.transport }}</td>
+      <td><span class="badge {% if h.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ h.status }}</span></td>
+      <td>{{ h.device_count }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" style="color:#6c757d;text-align:center;padding:1.5rem;">No hosts configured — <a href="/ui/hosts">add one</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if recent_jobs %}
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Recent Jobs</h2></div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>State</th><th>Device</th><th>Created</th><th>Finished</th>
+    </tr></thead>
+    <tbody>
+    {% for j in recent_jobs %}
+    <tr>
+      <td class="mono" style="font-size:0.7rem;">{{ j.id[:18] }}…</td>
+      <td><span class="badge {% if j.state == 'finished' %}badge-ok{% elif j.state in ('error','timeout','cancelled') %}badge-err{% else %}badge-info{% endif %}">{{ j.state }}</span></td>
+      <td class="mono">{{ j.assigned_device or '—' }}</td>
+      <td>{{ j.created_at[:16] if j.created_at else '—' }}</td>
+      <td>{{ j.finished_at[:16] if j.finished_at else '—' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

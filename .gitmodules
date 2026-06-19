@@ -1,0 +1,16 @@
+[submodule "vendor/protomq"]
+	path = vendor/protomq
+	url = https://github.com/adafruit/protomq.git
+	branch = displays-v2-testing
+[submodule "vendor/usbip-autoattach"]
+	path = vendor/usbip-autoattach
+	url = https://github.com/tyeth-ai-assisted/usbip-autoattach.git
+	branch = main
+[submodule "vendor/hil-detection"]
+	path = vendor/hil-detection
+	url = https://github.com/tyeth-ai-assisted/hil-detection.git
+	branch = main
+[submodule "vendor/wippersnapper-arduino"]
+	path = vendor/wippersnapper-arduino
+	url = https://github.com/tyeth-ai-assisted/adafruit-Adafruit_Wippersnapper_Arduino.git
+	branch = migrate-api-v2

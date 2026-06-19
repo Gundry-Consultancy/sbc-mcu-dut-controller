@@ -1,0 +1,35 @@
+{# Partial rendered into #usb-ids-panel-{device_id}. Lists rows + delete buttons. #}
+{% if rows %}
+<table class="data-table" style="width:100%;font-size:0.9rem;">
+  <thead>
+    <tr>
+      <th>VID</th><th>PID</th><th>Role</th><th>Description</th>
+      <th>iSerial</th><th>Source</th><th>Last seen</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td><code>{{ r.vid }}</code></td>
+      <td><code>{{ r.pid }}</code></td>
+      <td>{{ r.role }}</td>
+      <td>{{ r.description or '' }}</td>
+      <td>{{ r.iserial or '' }}</td>
+      <td><span class="badge">{{ r.source }}</span>
+          {% if r.learned_from_job %}<br><small>job: {{ r.learned_from_job }}</small>{% endif %}</td>
+      <td><small>{{ r.last_seen_at }}</small></td>
+      <td>
+        <button type="button" class="btn btn-sm btn-danger"
+                hx-delete="/ui/devices/{{ device_id }}/usb-ids/{{ r.id }}"
+                hx-target="#usb-ids-panel-{{ device_id }}"
+                hx-swap="innerHTML"
+                hx-confirm="Delete this USB ID?">Delete</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="form-hint">No USB IDs recorded yet.</p>
+{% endif %}
+{% if error %}<div class="alert alert-error" style="margin-top:0.5rem;">{{ error }}</div>{% endif %}

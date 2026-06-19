@@ -1,0 +1,32 @@
+{% for a in hardware %}
+<tr id="hw-row-{{ a.id }}">
+  <td class="mono">{{ a.id }}</td>
+  <td><span class="badge badge-info">{{ a.kind }}</span></td>
+  <td>{{ a.model }}</td>
+  <td class="mono">{{ a.interface }}</td>
+  <td><span class="badge badge-gray">{{ a.observability }}</span></td>
+  <td><div class="caps">{% for c in a.capabilities %}<span class="badge badge-gray">{{ c }}</span>{% endfor %}</div></td>
+  <td>{{ a.pool }}</td>
+  <td>
+    <div class="caps">
+    {% for conn in a.connections %}
+      {% if conn.device_id %}<span class="badge badge-sbc" title="Connection #{{ conn.id }}">{{ conn.device_id }}</span>{% endif %}
+    {% endfor %}
+    </div>
+  </td>
+  <td><span class="badge {% if a.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ a.status }}</span></td>
+  <td>
+    <button class="btn btn-sm btn-outline"
+      hx-get="/ui/hardware/{{ a.id }}/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">Edit</button>
+    <button class="btn btn-sm btn-danger"
+      hx-delete="/ui/hardware/{{ a.id }}"
+      hx-target="#hw-row-{{ a.id }}"
+      hx-swap="outerHTML"
+      hx-confirm="Delete hardware {{ a.id }}?">Del</button>
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="10" style="color:#6c757d;text-align:center;padding:1.5rem;">No hardware items — click + Add Hardware to create one.</td></tr>
+{% endfor %}

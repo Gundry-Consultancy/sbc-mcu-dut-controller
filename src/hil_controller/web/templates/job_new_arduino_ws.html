@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>New Arduino WipperSnapper Test Job</h1>
+
+{% if disk.pct_used > 70 %}
+<div class="alert {% if disk.pct_used > 85 %}alert-error{% else %}alert-info{% endif %}" style="margin-bottom:1rem;">
+  Disk: {{ disk.free_fmt }} free ({{ disk.pct_used }}% used)
+  {% if disk.pct_used > 85 %} — consider <a href="/ui/assets">purging assets</a>{% endif %}
+</div>
+{% endif %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/ui/jobs/arduino-ws" style="max-width:900px;">
+  <div class="form-panel">
+    <h2>WipperSnapper Arduino</h2>
+    <p class="form-hint" style="margin-bottom:0.75rem;">
+      The worker clones this repo at the given ref and runs the tests inside it.
+      protoMQ is checked out as a <code>protomq/</code> sub-directory alongside.
+    </p>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:span 2;">
+        <label for="ws_repo">Repository URL</label>
+        <input type="text" id="ws_repo" name="wippersnapper_repo"
+          value="{{ form.wippersnapper_repo if form else cfg.wippersnapper_repo }}"
+          placeholder="{{ cfg.wippersnapper_repo }}">
+        <span class="form-hint">Leave blank to use default (<code>HIL_WIPPERSNAPPER_ARDUINO_REPO</code>)</span>
+      </div>
+      <div class="form-group">
+        <label for="ws_ref">Branch / Ref *</label>
+        <input type="text" id="ws_ref" name="wippersnapper_ref"
+          value="{{ form.wippersnapper_ref if form else defaults.wippersnapper_ref }}"
+          required placeholder="{{ defaults.wippersnapper_ref }}">
+      </div>
+      <div class="form-group">
+        <label for="pat">PAT (clone token)</label>
+        <input type="password" id="pat" name="pat"
+          value="{{ form.pat if form else '' }}" placeholder="ghp_… short-lived token">
+        <span class="form-hint">Only needed for private repos</span>
+      </div>
+      <div class="form-group" style="align-self:end;">
+        <label>
+          <input type="checkbox" name="submodules" value="1"
+            {% if (form and form.submodules) or not form %}checked{% endif %}> Recurse WipperSnapper submodules
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>protoMQ</h2>
+    <p class="form-hint" style="margin-bottom:0.75rem;">
+      Checked out into <code>protomq/</code> inside the WipperSnapper workspace.
+      Default ref is <code>{{ cfg.protomq_default_ref }}</code>
+      (override via <code>HIL_PROTOMQ_DEFAULT_REF</code>).
+    </p>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:span 2;">
+        <label for="proto_repo">protoMQ Repository URL</label>
+        <input type="text" id="proto_repo" name="protomq_repo"
+          value="{{ form.protomq_repo if form else cfg.protomq_repo }}"
+          placeholder="{{ cfg.protomq_repo }}">
+        <span class="form-hint">Leave blank to use default (<code>HIL_PROTOMQ_REPO</code>)</span>
+      </div>
+      <div class="form-group">
+        <label for="proto_ref">protoMQ Branch / Ref</label>
+        <input type="text" id="proto_ref" name="protomq_ref"
+          value="{{ form.protomq_ref if form else defaults.protomq_ref }}"
+          placeholder="{{ defaults.protomq_ref }}">
+      </div>
+      <div class="form-group">
+        <label for="protomq_script">Play-Script (protoMQ /scripts)</label>
+        <select id="protomq_script" name="protomq_script">
+          <option value="">None / not needed</option>
+          {% for s in scripts %}
+          <option value="{{ s.stem }}"
+            {% if form and form.protomq_script == s.stem %}selected{% endif %}>
+            {{ s.stem }}
+          </option>
+          {% endfor %}
+        </select>
+        <button type="button" class="btn btn-sm btn-outline" style="margin-top:0.4rem;"
+          hx-get="/ui/jobs/arduino-ws/scripts"
+          hx-include="[name='protomq_repo'],[name='protomq_ref'],[name='pat']"
+          hx-target="#protomq_script" hx-swap="innerHTML">
+          Load scripts from repo+ref
+        </button>
+        <span class="form-hint">Fetches <code>scripts/*.json</code> from the protoMQ repo at the given ref (GitHub API, no clone). Drives the display/device during the test run via MQTT.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Device</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="device_id">Target Device</label>
+        <select id="device_id" name="device_id">
+          <option value="">Auto (any arduino-snapper device)</option>
+          {% for d in mcu_devices %}
+          <option value="{{ d.id }}"
+            {% if form and form.device_id == d.id %}selected{% endif %}>
+            {{ d.id }} — {{ d.model }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Execution location</h2>
+    <p class="form-hint" style="margin-bottom:0.75rem;">
+      Each job phase can run on the <strong>controller</strong> or the
+      <strong>DUT host</strong>. rpi-displays is too weak to compile WipperSnapper,
+      so build defaults to the controller; flashing reaches the DUT over usbip
+      (the controller attaches the DUT's USB port) or by shipping the built
+      artifacts to the DUT host.
+    </p>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="build_host">Build host</label>
+        <select id="build_host" name="build_host">
+          {% set bh = form.build_host if form else 'controller' %}
+          <option value="controller" {% if bh == 'controller' %}selected{% endif %}>controller</option>
+          <option value="dut-host" {% if bh == 'dut-host' %}selected{% endif %}>dut-host</option>
+        </select>
+        <span class="form-hint"><code>pio run</code> (compile) host</span>
+      </div>
+      <div class="form-group">
+        <label for="flash_mode">Flash mode</label>
+        <select id="flash_mode" name="flash_mode">
+          {% set fm = form.flash_mode if form else 'usbip' %}
+          <option value="usbip" {% if fm == 'usbip' %}selected{% endif %}>usbip (attach DUT to controller)</option>
+          <option value="ship-artifacts" {% if fm == 'ship-artifacts' %}selected{% endif %}>ship-artifacts (esptool on DUT host)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="protomq_host">protoMQ host</label>
+        <select id="protomq_host" name="protomq_host">
+          {% set ph = form.protomq_host if form else 'controller' %}
+          <option value="controller" {% if ph == 'controller' %}selected{% endif %}>controller</option>
+          <option value="dut-host" {% if ph == 'dut-host' %}selected{% endif %}>dut-host</option>
+          <option value="off" {% if ph == 'off' %}selected{% endif %}>off</option>
+        </select>
+        <span class="form-hint">On controller, DUT's <code>MQTT_HOST</code> = controller LAN IP</span>
+      </div>
+      <div class="form-group">
+        <label for="test_host">Test (pytest) host</label>
+        <select id="test_host" name="test_host">
+          {% set th = form.test_host if form else 'none' %}
+          <option value="none" {% if th == 'none' %}selected{% endif %}>none</option>
+          <option value="controller" {% if th == 'controller' %}selected{% endif %}>controller</option>
+          <option value="dut-host" {% if th == 'dut-host' %}selected{% endif %}>dut-host</option>
+        </select>
+        <span class="form-hint">Must match the build host (shared workspace)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>PlatformIO Build</h2>
+    <p class="form-hint" style="margin-bottom:0.75rem;">
+      Firmware is <strong>compiled</strong> by the build steps below inside a fresh
+      <code>python3 -m venv --system-site-packages .venv</code> (so <code>pip</code> works
+      under PEP 668 / Debian externally-managed). Flashing is a separate phase (see
+      Execution location) — these steps stop at <code>pio run</code> and carry no
+      <code>--target upload</code>. Edit them freely — the env field just seeds the default text.
+    </p>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="pio_env">PlatformIO environment (<code>-e</code>)</label>
+        <input type="text" id="pio_env" name="pio_env"
+          value="{{ form.pio_env if form else cfg.pio_default_env }}"
+          placeholder="{{ cfg.pio_default_env }}">
+        <span class="form-hint">Override via <code>HIL_PIO_DEFAULT_ENV</code></span>
+      </div>
+      <div class="form-group">
+        <label for="serial_port">Serial / upload port</label>
+        <input type="text" id="serial_port" name="serial_port"
+          value="{{ form.serial_port if form else cfg.serial_default_port }}"
+          placeholder="{{ cfg.serial_default_port }}">
+        <span class="form-hint">Override via <code>HIL_SERIAL_DEFAULT_PORT</code></span>
+      </div>
+      <div class="form-group" style="grid-column:span 2;">
+        <label for="build_steps">Build steps (venv + PlatformIO compile)</label>
+        <textarea id="build_steps" name="build_steps" rows="4">{{ form.build_steps if form else default_build_steps }}</textarea>
+        <span class="form-hint">
+          Runs right after the protoMQ clone, before the extra setup below. Leave the
+          default to create+activate the venv then compile; clear it to fall back to the
+          auto-generated default. Upload happens in the separate flash phase.
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Test Configuration</h2>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:span 2;">
+        <label for="setup">Extra setup (after protoMQ clone + Build steps)</label>
+        <textarea id="setup" name="setup" rows="4">{{ form.setup if form else defaults.setup }}</textarea>
+        <span class="form-hint">
+          Appended to the deploy chain after the Build steps above (same shell, so the
+          <code>.venv</code> is still active). Default installs the WipperSnapper + protoMQ
+          Python packages and builds protoMQ's web assets (<code>npm ci … build-web</code>).
+        </span>
+      </div>
+      <div class="form-group" style="grid-column:span 2;">
+        <label for="test_cmd">Test command</label>
+        <textarea id="test_cmd" name="test_cmd" rows="2">{{ form.test_cmd if form else defaults.test_cmd }}</textarea>
+        <span class="form-hint">
+          Runs in the workspace root as a <em>separate</em> shell from deploy — prefix with
+          <code>. .venv/bin/activate &amp;&amp;</code> if it needs the Python venv.
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>MQTT / Secrets</h2>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;">
+      <button type="button" class="btn btn-sm btn-outline" onclick="applyPreset('local-anon')">Local ProtoMQ (anon)</button>
+      <button type="button" class="btn btn-sm btn-outline" onclick="applyPreset('local-auth')">Local ProtoMQ (auth)</button>
+      <button type="button" class="btn btn-sm btn-outline" onclick="applyPreset('production')">io.adafruit.com</button>
+      <button type="button" class="btn btn-sm btn-outline" onclick="applyPreset('staging')">io.adafruit.us (staging)</button>
+    </div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="mqtt_host">MQTT Host</label>
+        <input type="text" id="mqtt_host" name="mqtt_host"
+          value="{{ form.mqtt_host if form else cfg.mqtt_default_host }}"
+          placeholder="{{ cfg.mqtt_default_host }}">
+      </div>
+      <div class="form-group">
+        <label for="mqtt_port">MQTT Port</label>
+        <input type="number" id="mqtt_port" name="mqtt_port"
+          value="{{ form.mqtt_port if form else '1884' }}" placeholder="1884" min="1" max="65535">
+      </div>
+      <div class="form-group">
+        <label for="io_username">IO Username</label>
+        <input type="text" id="io_username" name="io_username"
+          value="{{ form.io_username if form else '' }}" placeholder="leave blank for anonymous">
+      </div>
+      <div class="form-group">
+        <label for="io_key">IO Key</label>
+        <input type="password" id="io_key" name="io_key"
+          value="{{ form.io_key if form else '' }}" placeholder="aio_… or blank for anonymous">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Advanced</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="secrets_profile">Secrets profile</label>
+        <input type="text" id="secrets_profile" name="secrets_profile"
+          value="{{ form.secrets_profile if form else 'bench-protomq' }}">
+      </div>
+      <div class="form-group">
+        <label for="timeout_total">Total timeout (s)</label>
+        <input type="number" id="timeout_total" name="timeout_total"
+          value="{{ form.timeout_total if form else '1200' }}" min="60" max="3600">
+      </div>
+      <div class="form-group">
+        <label for="timeout_run">Run timeout (s)</label>
+        <input type="number" id="timeout_run" name="timeout_run"
+          value="{{ form.timeout_run if form else '300' }}" min="30" max="1800">
+      </div>
+      <div class="form-group">
+        <label for="timeout_deploy">Deploy timeout (s)</label>
+        <input type="number" id="timeout_deploy" name="timeout_deploy"
+          value="{{ form.timeout_deploy if form else '900' }}" min="30" max="3600">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary" style="padding:0.5rem 1.5rem;">Submit Job</button>
+    <a href="/ui/jobs" class="btn btn-secondary">Cancel</a>
+  </div>
+</form>
+
+<script>
+const PRESETS = {
+  'local-anon':  {host: '127.0.0.1', port: '1884', user: '', key: ''},
+  'local-auth':  {host: '127.0.0.1', port: '1884', user: '', key: ''},
+  'production':  {host: 'io.adafruit.com', port: '1883', user: '', key: ''},
+  'staging':     {host: 'io.adafruit.us',  port: '1883', user: '', key: ''},
+};
+function applyPreset(name) {
+  const p = PRESETS[name];
+  if (!p) return;
+  document.getElementById('mqtt_host').value = p.host;
+  document.getElementById('mqtt_port').value = p.port;
+  if (name === 'local-anon') {
+    document.getElementById('io_username').value = '';
+    document.getElementById('io_key').value = '';
+  }
+}
+</script>
+{% endblock %}

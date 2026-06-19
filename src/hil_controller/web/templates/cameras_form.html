@@ -1,0 +1,108 @@
+<div class="form-panel">
+  <h2>{% if camera %}Edit Camera — {{ camera.id }}{% else %}New Camera{% endif %}</h2>
+  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+  <form hx-post="/ui/cameras{% if camera %}/{{ camera.id }}{% endif %}"
+        hx-target="#form-panel"
+        hx-swap="innerHTML">
+    <div class="form-grid">
+      {% if not camera %}
+      <div class="form-group">
+        <label for="f-cam-id">ID *</label>
+        <input type="text" id="f-cam-id" name="id" value="" required placeholder="ip-webcam-android">
+      </div>
+      {% endif %}
+      <div class="form-group">
+        <label for="f-cam-model">Model / Label</label>
+        <input type="text" id="f-cam-model" name="model" value="{{ camera.model if camera else '' }}" placeholder="Android IP Webcam, CSI Camera, …">
+      </div>
+      <div class="form-group">
+        <label for="f-cam-host">HIL Host (v4l2 only)</label>
+        <input type="text" id="f-cam-host" name="host_id" value="{{ camera.host_id if camera and camera.host_id else '' }}" placeholder="rpi-displays (blank for HTTP cameras)">
+      </div>
+      <div class="form-group">
+        <label for="f-cam-pool">Pool</label>
+        <input type="text" id="f-cam-pool" name="pool" value="{{ camera.pool if camera else 'public' }}">
+      </div>
+      <div class="form-group">
+        <label for="f-cam-status">Status</label>
+        <select id="f-cam-status" name="status">
+          {% for s in ['available','offline','maintenance'] %}
+          <option value="{{ s }}" {% if camera and camera.status == s %}selected{% elif not camera and s == 'available' %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="f-cam-notes">Notes</label>
+        <input type="text" id="f-cam-notes" name="notes" value="{{ camera.notes if camera and camera.notes else '' }}" placeholder="Physical location, coverage area, etc.">
+      </div>
+    </div>
+
+    <hr class="section-sep">
+    <h2>Streams</h2>
+    <p class="form-hint" style="margin-bottom:0.75rem;">Add URLs for each stream type. The first URL becomes the primary source used by the capture pipeline.</p>
+    <div id="streams-list">
+      {% set streams = camera.streams if camera and camera.streams else ([{"url": camera.source, "type": "snapshot"}] if camera and camera.source else []) %}
+      {% for s in streams %}
+      <div class="stream-row" style="display:flex;gap:0.5rem;margin-bottom:0.5rem;align-items:center;">
+        <select name="stream_type" style="width:110px;flex-shrink:0;">
+          {% for t in ['snapshot','mjpeg','rtsp','usb','other'] %}
+          <option value="{{ t }}" {% if s.get('type') == t %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+        <input type="text" name="stream_url" value="{{ s.get('url','') }}" style="flex:1;" placeholder="http://192.168.1.X:8080/shot.jpg or /dev/video0">
+        <button type="button" onclick="this.closest('.stream-row').remove()" class="btn btn-sm btn-danger">×</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" onclick="addStream()" class="btn btn-sm btn-outline" style="margin-bottom:1rem;">+ Add Stream</button>
+
+    <hr class="section-sep" style="margin-top:1rem;">
+    <h2>Snapshot Preview</h2>
+    <div style="margin-bottom:0.75rem;display:flex;align-items:center;gap:0.75rem;">
+      <button type="button" class="btn btn-sm btn-outline" onclick="camPreviewSnap()">Fetch Snapshot</button>
+      <span id="cam-preview-status" style="font-size:0.8rem;color:#666;"></span>
+    </div>
+    <div id="cam-preview-box" style="display:none;margin-bottom:1rem;">
+      <img id="cam-preview-img" src="" alt="Camera preview"
+           style="max-width:320px;border-radius:6px;border:1px solid #ddd;display:block;">
+    </div>
+
+    <hr class="section-sep" style="margin-top:1rem;">
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">{% if camera %}Save Changes{% else %}Create Camera{% endif %}</button>
+      <button type="button" class="btn btn-secondary"
+        hx-get="/ui/empty" hx-target="#form-panel" hx-swap="innerHTML">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<script>
+function camPreviewSnap() {
+  var urls = Array.from(document.querySelectorAll('input[name="stream_url"]'))
+    .map(function(i) { return i.value.trim(); }).filter(Boolean);
+  var url = urls[0];
+  var status = document.getElementById('cam-preview-status');
+  var box = document.getElementById('cam-preview-box');
+  var img = document.getElementById('cam-preview-img');
+  if (!url) { status.textContent = 'No stream URL entered.'; return; }
+  status.textContent = 'Fetching…';
+  box.style.display = '';
+  img.src = '/ui/cameras/preview?url=' + encodeURIComponent(url) + '&_t=' + Date.now();
+  img.onload = function() { status.textContent = ''; };
+  img.onerror = function() { status.textContent = 'Failed to load snapshot.'; box.style.display = 'none'; };
+}
+
+function addStream() {
+  const row = document.createElement('div');
+  row.className = 'stream-row';
+  row.style.cssText = 'display:flex;gap:0.5rem;margin-bottom:0.5rem;align-items:center;';
+  row.innerHTML =
+    '<select name="stream_type" style="width:110px;flex-shrink:0;">' +
+    '<option value="snapshot">snapshot</option><option value="mjpeg">mjpeg</option>' +
+    '<option value="rtsp">rtsp</option><option value="usb">usb</option>' +
+    '<option value="other">other</option></select>' +
+    '<input type="text" name="stream_url" style="flex:1;" placeholder="http://... or /dev/video0">' +
+    '<button type="button" onclick="this.closest(\'.stream-row\').remove()" class="btn btn-sm btn-danger">×</button>';
+  document.getElementById('streams-list').appendChild(row);
+}
+</script>

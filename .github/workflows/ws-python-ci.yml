@@ -1,0 +1,196 @@
+# Reusable Wippersnapper-Python HIL workflow.
+#
+# Pin every WS-Python-flavoured run through a single workflow_call entry
+# so caller repos only need to supply the parameters they care about
+# (repo coordinates, optional pytest spec, optional profile override).
+#
+# Caller usage:
+#
+#     jobs:
+#       display:
+#         uses: tyeth-ai-assisted/usbip-hil-controller/.github/workflows/ws-python-ci.yml@main
+#         with:
+#           repo_owner: ${{ github.repository_owner }}
+#           repo_name:  ${{ github.event.repository.name }}
+#           caller:     ${{ github.actor }}
+#         secrets:
+#           HIL_API_TOKEN: ${{ secrets.HIL_API_TOKEN }}   # optional if OIDC configured
+#
+# See examples/ws-python-caller.yml in this repo for a full caller workflow.
+
+name: ws-python-hil-ci-reusable
+
+on:
+  workflow_call:
+    inputs:
+      repo_owner:
+        description: "Owner of the repository under test."
+        required: true
+        type: string
+      repo_name:
+        description: "Name of the repository under test."
+        required: true
+        type: string
+      caller:
+        description: "GitHub username that triggered the run (audit trail)."
+        required: true
+        type: string
+      ref:
+        description: "Commit SHA, tag, or branch to test. Empty means use the caller's github.sha."
+        required: false
+        type: string
+        default: ""
+      tests:
+        description: |
+          Pytest spec passed to `python -m pytest`. Examples:
+          "tests/display", "-m display", "-k 'display and not slow'",
+          "tests/test_st7701.py::test_basic_init". Empty falls back to
+          the workflow default below (largest E-ink only for now).
+        required: false
+        type: string
+        default: ""
+      secrets_profile:
+        description: "Named secrets profile (bench-protomq, live-io-test, live-io-prod)."
+        required: false
+        type: string
+        default: "bench-protomq"
+      device_model:
+        description: "Target SBC model selector. Default pi5."
+        required: false
+        type: string
+        default: "pi5"
+      setup_command:
+        description: |
+          JSON array of argv strings to run after checkout, before tests.
+          Empty means the WS-Python default (`pip install -e .[test]`).
+        required: false
+        type: string
+        default: ""
+      timeout_s:
+        description: "Wall-clock budget on the controller (seconds)."
+        required: false
+        type: number
+        default: 1800
+    secrets:
+      HIL_API_TOKEN:
+        description: "Per-repo bearer token. Optional if HIL_API_BASE accepts the caller's OIDC token."
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  hil:
+    runs-on: ubuntu-latest
+    env:
+      # Default controller URL — override per-repo via Settings → Variables → Actions.
+      HIL_API_BASE: ${{ vars.HIL_API_BASE || 'http://wan.gdenu.fi:8080' }}
+      HIL_OIDC_AUDIENCE: ${{ vars.HIL_OIDC_AUDIENCE || 'hil-controller' }}
+    steps:
+      - name: Summary
+        run: |
+          echo "controller : ${HIL_API_BASE}"
+          echo "owner      : ${{ inputs.repo_owner }}"
+          echo "name       : ${{ inputs.repo_name }}"
+          echo "ref        : ${{ inputs.ref || github.sha }}"
+          echo "caller     : ${{ inputs.caller }}"
+          echo "tests      : ${{ inputs.tests || '(default: tests/display)' }}"
+          echo "profile    : ${{ inputs.secrets_profile }}"
+          echo "model      : ${{ inputs.device_model }}"
+
+      - name: Acquire GitHub OIDC token
+        id: oidc
+        run: |
+          token=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${HIL_OIDC_AUDIENCE}" \
+            | jq -er .value)
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch hil-call.sh from the controller repo
+        uses: actions/checkout@v4
+        with:
+          repository: tyeth-ai-assisted/usbip-hil-controller
+          path: .hil-tools
+          sparse-checkout: |
+            examples/hil-call.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Build job submission body
+        env:
+          REF: ${{ inputs.ref || github.sha }}
+          TESTS_INPUT: ${{ inputs.tests }}
+          SETUP_INPUT: ${{ inputs.setup_command }}
+          RUN_URL: ${{ github.server_url }}/${{ inputs.repo_owner }}/${{ inputs.repo_name }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Default scope: only the largest E-ink display tests until
+          # the rest of the bench is wired up. WS-Python should mark
+          # the relevant tests with `@pytest.mark.eink_large` and
+          # register the marker in pyproject.toml / pytest.ini. Pass
+          # `tests:` explicitly to override.
+          #
+          # shlex-split via Python so multi-token specs and quoted
+          # forms (e.g. -k 'display and not slow') survive correctly
+          # as a JSON array of argv strings. Reads TESTS_INPUT from
+          # the environment to keep the shell quoting straightforward.
+          tests_argv=$(python3 -c 'import json, os, shlex; spec = os.environ.get("TESTS_INPUT") or "-m eink_large"; print(json.dumps(shlex.split(spec)))')
+
+          if [ -n "$SETUP_INPUT" ]; then
+            setup_argv="$SETUP_INPUT"
+          else
+            setup_argv='["pip", "install", "-e", ".[test]"]'
+          fi
+
+          jq -n \
+            --arg owner       "${{ inputs.repo_owner }}" \
+            --arg name        "${{ inputs.repo_name }}" \
+            --arg ref         "$REF" \
+            --argjson tests   "$tests_argv" \
+            --arg caller      "${{ inputs.caller }}" \
+            --arg model       "${{ inputs.device_model }}" \
+            --arg profile     "${{ inputs.secrets_profile }}" \
+            --arg runurl      "$RUN_URL" \
+            --argjson tot     "${{ inputs.timeout_s }}" \
+            --argjson setup   "$setup_argv" \
+            '{
+              target: {
+                device: { kind: "sbc", model: $model },
+                pool:   "wippersnapper-python"
+              },
+              script: "git-clone-and-run",
+              params: {
+                entry: "python",
+                args:  (["-m", "pytest"] + $tests + ["-v"])
+              },
+              payload: {
+                kind: "git-source",
+                source: {
+                  repo:       ("https://github.com/" + $owner + "/" + $name + ".git"),
+                  ref:        $ref,
+                  submodules: true,
+                  shallow:    true,
+                  setup:      $setup
+                }
+              },
+              secrets_profile: $profile,
+              exclusive: { host: true },
+              timeouts: { total_s: $tot },
+              metadata: {
+                caller:   $caller,
+                repo:     ($owner + "/" + $name),
+                workflow: $runurl
+              }
+            }' > job.json
+
+          jq . job.json
+
+      - name: Submit and wait
+        env:
+          HIL_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          HIL_API_TOKEN: ${{ secrets.HIL_API_TOKEN }}
+          HIL_JOB_JSON: job.json
+          HIL_WAIT_TIMEOUT: "300"
+          HIL_TOTAL_BUDGET: ${{ inputs.timeout_s }}
+        run: bash .hil-tools/examples/hil-call.sh

@@ -1,0 +1,14 @@
+<div id="conn-list">
+{% for conn in connections %}
+<div id="conn-{{ conn.id }}" style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.4rem;">
+  <span class="badge badge-sbc">{{ conn.device_id or '(no device)' }}</span>
+  {% if conn.mux_id %}<span class="badge badge-gray">mux:{{ conn.mux_id }} ch:{{ conn.mux_channel }}</span>{% endif %}
+  <button type="button" class="btn btn-sm btn-danger"
+    hx-delete="/ui/connections/{{ conn.id }}"
+    hx-target="#conn-{{ conn.id }}"
+    hx-swap="outerHTML">Remove</button>
+</div>
+{% else %}
+<p style="color:#6c757d;font-size:0.8rem;">No device connections yet.</p>
+{% endfor %}
+</div>

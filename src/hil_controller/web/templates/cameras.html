@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Cameras</h1>
+
+<div id="form-panel"></div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>Configured Cameras <span class="tbl-count">{{ cameras|length }}</span></h2>
+    <button class="btn btn-primary"
+      hx-get="/ui/cameras/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">+ Add Camera</button>
+  </div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Model</th><th>Host</th><th>Streams</th>
+      <th>Pool</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody id="cameras-body">
+      {% include "cameras_body.html" %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
