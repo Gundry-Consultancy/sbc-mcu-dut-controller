@@ -212,48 +212,69 @@ class Uf2MscFlasher(CliFlasher):
         """No-op: copying the .uf2 overwrites the app region via the bootloader."""
         return None
 
-    async def flash(self, artifact: Artifact) -> FlashResult:
+    async def flash(self, artifact: Artifact, *, attempts: int = 4) -> FlashResult:
         """Mount the bootloader MSC drive, copy ``artifact.path`` (.uf2), sync.
 
         The bootloader writes flash as the file streams in and resets into the
         app, so the drive (and our mount) vanishes — the trailing ``umount`` is
         best-effort. ``offset`` is ignored: a UF2 carries its own target address.
+
+        **Re-enters the bootloader on every failed round.** The Adafruit UF2
+        bootloader auto-boots the resident app after a few seconds, so if a slow
+        preceding stage (e.g. ``launch_protomq`` cloning+building) sits between
+        bootloader entry and this flash, the drive is gone by the time we mount
+        (``mount: Can't open blockdev``). Each round therefore (re)enters the
+        bootloader via the 1200-touch loop, clears any stale mount, then
+        mount→cp→sync; a flapping marginal port is retried up to ``attempts``.
         """
-        dev = await self._locate_msc()
-        if not dev:
-            await self.enter_bootloader(on_line=None)
+        mnt = self.mount_dir
+        last: Exception | None = None
+        for i in range(max(1, attempts)):
             dev = await self._locate_msc()
             if not dev:
-                raise FlasherError(
-                    "uf2-msc.flash(): UF2 bootloader MSC drive not found "
-                    "(board not in bootloader / wrong USB by-path?)"
+                try:
+                    await self.enter_bootloader()
+                except FlasherError as exc:
+                    last = exc
+                    continue
+                dev = await self._locate_msc()
+            if not dev:
+                last = FlasherError("UF2 bootloader MSC drive not found after bootloader entry")
+                continue
+            await self._run(["mkdir", "-p", mnt], check=False)
+            await self._run(["umount", mnt], check=False)  # clear any stale mount
+            t0 = time.monotonic()
+            try:
+                await self._run(["mount", dev, mnt])  # needs root → sudo prefix
+            except FlasherError as exc:
+                # Drive flapped / booted the app between locate and mount — retry
+                # the whole round (which re-enters the bootloader).
+                last = exc
+                await asyncio.sleep(2)
+                continue
+            try:
+                await self._run(
+                    ["bash", "-c", f"cp {shlex.quote(artifact.path)} {shlex.quote(mnt)}/ && sync"]
                 )
-        mnt = self.mount_dir
-        t0 = time.monotonic()
-        await self._run(["mkdir", "-p", mnt], check=False)
-        await self._run(["mount", dev, mnt])  # needs root → sudo prefix
-        try:
-            await self._run(
-                ["bash", "-c", f"cp {shlex.quote(artifact.path)} {shlex.quote(mnt)}/ && sync"]
+            finally:
+                # The board reboots itself; the drive disappears → umount may fail.
+                await self._run(["umount", mnt], check=False)
+            elapsed = time.monotonic() - t0
+            size = await self._run(
+                ["bash", "-c", f"stat -c %s {shlex.quote(artifact.path)} 2>/dev/null || echo 0"],
+                check=False,
             )
-        finally:
-            # The board reboots itself; the drive disappears → umount may fail.
-            await self._run(["umount", mnt], check=False)
-        elapsed = time.monotonic() - t0
-        size = await self._run(
-            ["bash", "-c", f"stat -c %s {shlex.quote(artifact.path)} 2>/dev/null || echo 0"],
-            check=False,
-        )
-        try:
-            written = int((size.stdout or "0").strip() or 0)
-        except ValueError:
-            written = 0
-        return FlashResult(
-            bytes_written=written,
-            elapsed_s=elapsed,
-            raw_stdout=f"copied {artifact.path} -> {dev} ({mnt})",
-            raw_stderr="",
-        )
+            try:
+                written = int((size.stdout or "0").strip() or 0)
+            except ValueError:
+                written = 0
+            return FlashResult(
+                bytes_written=written,
+                elapsed_s=elapsed,
+                raw_stdout=f"copied {artifact.path} -> {dev} ({mnt})",
+                raw_stderr="",
+            )
+        raise last or FlasherError("uf2-msc.flash(): exhausted attempts")
 
     async def reset(self, *, into: Literal["bootloader", "application"]) -> None:
         """Bootloader: 1200-touch. Application: bootloader auto-resets after flash."""
