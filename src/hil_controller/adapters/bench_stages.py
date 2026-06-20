@@ -1092,7 +1092,13 @@ async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> Non
     ok = bool(uid)
     ctx.log_line(f"CHECKIN_VERDICT ok={'true' if ok else 'false'} uid={uid or ''}")
     ctx.checkin_ok = ok  # type: ignore[attr-defined]
-    if not ok:
+    # ``soft``: log the verdict but DON'T fail the job on a no-checkin. This lets a
+    # caller (e.g. the version-bisection runner) distinguish a *broken firmware*
+    # that flashed+booted but never connected (job finishes, CHECKIN_VERDICT
+    # ok=false) from an *infrastructure* failure that errored before this stage
+    # (no verdict line at all → flash/boot/host problem → recover + retry, not a
+    # firmware verdict). The default stays strict (raise) for smoke-test gating.
+    if not ok and not stage.get("soft", False):
         raise StageError(
             f"verify_checkin: no DUT checkin on {io_user}/wprsnpr/# within {checkin_timeout:.0f}s "
             "(device booted with secrets pointing at protomq?)"
