@@ -2459,6 +2459,151 @@ async def new_firmware_bench_page(
     )
 
 
+@router.get("/jobs/new-bisect", response_class=HTMLResponse, include_in_schema=False)
+async def new_bisect_page(request: Request, hil_token: str = Cookie(default="")) -> HTMLResponse:
+    # Before the /jobs/{job_id} catch-all (same reason as new-firmware-bench).
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.config import get_settings
+
+    db_path: str = request.app.state.db_path
+    mcu_devices = [d for d in await _devices(db_path) if d["kind"] == "microcontroller"]
+    cfg = get_settings()
+    return _tr(
+        request,
+        "job_new_bisect.html",
+        {
+            "token": hil_token,
+            "active": "jobs",
+            "mcu_devices": mcu_devices,
+            "secrets_configured": bool(cfg.bench_wifi_ssid),
+            "form": None,
+            "error": None,
+        },
+    )
+
+
+@router.post("/jobs/bisect", include_in_schema=False, response_model=None)
+async def submit_bisect(
+    request: Request,
+    hil_token: str = Cookie(default=""),
+    device_id: Annotated[str, Form()] = "",
+    working_ref: Annotated[str, Form()] = "",
+    broken_ref: Annotated[str, Form()] = "",
+    asset_glob: Annotated[str, Form()] = "",
+    flasher: Annotated[str, Form()] = "uf2-msc",
+    verify_times: Annotated[str, Form()] = "2",
+    repo: Annotated[str, Form()] = "",
+    test_branch: Annotated[str, Form()] = "",
+    extra_cmd: Annotated[str, Form()] = "",
+) -> Response:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.bisect import WS_REPO, BisectConfig
+    from hil_controller.config import get_settings
+    from hil_controller.web.bisect_runs import start_bisect
+
+    cfg = get_settings()
+    db_path: str = request.app.state.db_path
+    mcu_devices = [d for d in await _devices(db_path) if d["kind"] == "microcontroller"]
+
+    def _err(msg: str) -> HTMLResponse:
+        return _tr(
+            request,
+            "job_new_bisect.html",
+            {
+                "token": hil_token,
+                "active": "jobs",
+                "mcu_devices": mcu_devices,
+                "secrets_configured": bool(cfg.bench_wifi_ssid),
+                "form": {
+                    "device_id": device_id,
+                    "working_ref": working_ref,
+                    "broken_ref": broken_ref,
+                    "asset_glob": asset_glob,
+                    "flasher": flasher,
+                    "verify_times": verify_times,
+                    "repo": repo,
+                    "test_branch": test_branch,
+                    "extra_cmd": extra_cmd,
+                },
+                "error": msg,
+            },
+        )
+
+    if not device_id or not working_ref or not broken_ref or not asset_glob:
+        return _err("device, working ref, broken ref, and asset glob are all required")
+    if not cfg.bench_wifi_ssid:
+        return _err(
+            "no bench WiFi configured on the controller (set HIL_BENCH_WIFI_SSID / "
+            "HIL_BENCH_WIFI_PASSWORD in run/controller.env) — the DUT can't reach "
+            "protomq without it"
+        )
+
+    bcfg = BisectConfig(
+        device_id=device_id,
+        working_ref=working_ref,
+        broken_ref=broken_ref,
+        asset_glob=asset_glob,
+        base_url=f"http://127.0.0.1:{cfg.port}",
+        token=hil_token,  # the operator's bearer — valid regardless of static/hashed tokens
+        repo=repo or WS_REPO,
+        flasher=flasher,
+        secrets={
+            "IO_USERNAME": cfg.bench_io_username,
+            "IO_KEY": cfg.bench_io_key,
+            "WIFI_SSID": cfg.bench_wifi_ssid,
+            "WIFI_PASSWORD": cfg.bench_wifi_password,
+        },
+        verify_times=int(verify_times or 2),
+    )
+    summary = {
+        "device_id": device_id,
+        "working_ref": working_ref,
+        "broken_ref": broken_ref,
+        "asset_glob": asset_glob,
+        "flasher": flasher,
+        "verify_times": verify_times,
+        "test_branch": test_branch,
+        "extra_cmd": extra_cmd,
+    }
+    run_id = await start_bisect(bcfg, summary)
+    return RedirectResponse(f"/ui/bisect/{run_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/bisect/{run_id}", response_class=HTMLResponse, include_in_schema=False)
+async def bisect_run_page(
+    request: Request, run_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.web.bisect_runs import get_run
+
+    run = get_run(run_id)
+    if run is None:
+        return HTMLResponse("<h1>Bisection run not found</h1>", status_code=404)
+    return _tr(
+        request,
+        "bisect_run.html",
+        {"token": hil_token, "active": "jobs", "run": run},
+    )
+
+
+@router.get("/bisect/{run_id}/log", response_class=HTMLResponse, include_in_schema=False)
+async def bisect_run_log(
+    request: Request, run_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """HTMX poll target: the run's live log + status (auto-stops polling when terminal)."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.web.bisect_runs import get_run
+
+    run = get_run(run_id)
+    if run is None:
+        return HTMLResponse("run not found", status_code=404)
+    return _tr(request, "bisect_log.html", {"run": run})
+
+
 # Must be declared BEFORE the "/jobs/{job_id}" route below, or FastAPI matches
 # "new-arduino" as a job_id and the page 404s (same reason new-arduino-ws and
 # new-firmware-bench live up here).

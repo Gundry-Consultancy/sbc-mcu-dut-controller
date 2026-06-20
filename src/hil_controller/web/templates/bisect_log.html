@@ -1,0 +1,21 @@
+{# Self-refreshing fragment: re-fetches itself every 3s while running; the
+   trigger is omitted once terminal, so polling stops on its own. #}
+<div id="bisect-log"
+     {% if run.status == 'running' %}hx-get="/ui/bisect/{{ run.id }}/log" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  <p style="margin:0.5rem 0;">
+    Status:
+    {% if run.status == 'running' %}<span class="badge badge-gray">running…</span>
+    {% elif run.status == 'done' %}<span class="badge badge-green">done</span>
+    {% else %}<span class="badge badge-red">error</span>{% endif %}
+  </p>
+  {% if run.result %}
+  <div class="alert alert-info" style="margin:0.5rem 0;">
+    First broken release: <strong>{{ run.result.first_broken }}</strong>
+    &nbsp;·&nbsp; last good: <strong>{{ run.result.last_good }}</strong>
+    ({{ run.result.tested | length }} interior version(s) tested, {{ run.result.direction }})
+  </div>
+  {% elif run.error %}
+  <div class="alert alert-error" style="margin:0.5rem 0;">{{ run.error }}</div>
+  {% endif %}
+  <pre style="background:#1e1e1e;color:#d4d4d4;padding:0.75rem;border-radius:6px;max-height:60vh;overflow:auto;font-size:0.8rem;white-space:pre-wrap;">{{ run.log | join('\n') }}</pre>
+</div>

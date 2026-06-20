@@ -87,6 +87,17 @@ class Settings(BaseSettings):
     speed_baseline_openssl: float = 29800.0
     speed_baseline_sysbench: float = 50.0
 
+    # Bench secrets for the version-bisection UI (so the operator never re-enters
+    # them in the form). The DUT joins this WiFi to reach the controller's
+    # per-session protomq broker; the IO creds are placeholders (protomq
+    # autoresponds). VALUES live in run/controller.env, NEVER in the repo. Override
+    # via HIL_BENCH_WIFI_SSID / HIL_BENCH_WIFI_PASSWORD / HIL_BENCH_IO_USERNAME /
+    # HIL_BENCH_IO_KEY.
+    bench_wifi_ssid: str = ""
+    bench_wifi_password: str = ""
+    bench_io_username: str = "hil"
+    bench_io_key: str = "placeholder"
+
     # git credential helper for per-session clones (protomq + protobuf source).
     # Empty by default; non-admins pass a per-repo PAT instead. The bench sets
     # HIL_GIT_CREDENTIAL_HELPER='!sudo gh auth git-credential' in controller.env.

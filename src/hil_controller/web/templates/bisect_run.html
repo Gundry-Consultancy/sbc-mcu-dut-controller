@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Version bisection — {{ run.summary.device_id }}</h1>
+<p class="form-hint" style="margin-bottom:0.5rem;">
+  working <code>{{ run.summary.working_ref }}</code> → broken <code>{{ run.summary.broken_ref }}</code>
+  · asset <code>{{ run.summary.asset_glob }}</code> · flasher <code>{{ run.summary.flasher }}</code>
+  · verify ×{{ run.summary.verify_times }}
+</p>
+<p><a href="/ui/jobs/new-bisect" class="btn btn-sm btn-outline">+ New bisection</a>
+   <a href="/ui/jobs" class="btn btn-sm btn-secondary">Jobs</a></p>
+
+{% include "bisect_log.html" %}
+{% endblock %}

@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from hil_controller.bisect import (
+    BisectRunner,
     Release,
     Verdict,
     bisect,
@@ -15,6 +16,28 @@ from hil_controller.bisect import (
     select_window,
     version_key,
 )
+
+
+def test_classify_reads_checkin_verdict() -> None:
+    assert (
+        BisectRunner.classify("finished", "…\nCHECKIN_VERDICT ok=true uid=abc\n…") == Verdict.PASS
+    )
+    assert BisectRunner.classify("finished", "…\nCHECKIN_VERDICT ok=false uid=\n…") == Verdict.FAIL
+    # no verdict line (errored before verify_checkin) → infra, retry
+    assert BisectRunner.classify("error", "enter_bootloader failed") == Verdict.INFRA
+    assert BisectRunner.classify("timeout", "") == Verdict.INFRA
+
+
+def test_event_msg_extracts_bench_message() -> None:
+    ev = {
+        "seq": 9,
+        "kind": "log",
+        "payload_json": '{"stream": "bench", "msg": "CHECKIN_VERDICT ok=true uid=x"}',
+    }
+    assert BisectRunner._event_msg(ev) == "CHECKIN_VERDICT ok=true uid=x"
+    # already-parsed payload + plain-string fallback
+    assert BisectRunner._event_msg({"payload": {"msg": "hi"}}) == "hi"
+    assert BisectRunner._event_msg({"payload_json": "raw line"}) == "raw line"
 
 
 def test_version_key_orders_betas_and_finals() -> None:

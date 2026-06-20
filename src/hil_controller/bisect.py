@@ -33,6 +33,7 @@ The pure helpers (:func:`version_key`, :func:`parse_releases`,
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 import time
 from collections.abc import Callable
@@ -286,48 +287,61 @@ class BisectRunner:
         r.raise_for_status()
         return r.json()["id"]
 
-    def _wait(self, client: httpx.Client, job_id: str) -> str:
-        deadline = time.monotonic() + self.cfg.job_timeout_s
-        state = "pending"
-        while time.monotonic() < deadline:
-            r = client.get(
-                f"{self.cfg.base_url}/v1/jobs/{job_id}", headers=self._ctrl_headers(), timeout=30.0
-            )
-            r.raise_for_status()
-            state = r.json().get("state", "")
-            if state in ("finished", "error", "timeout", "cancelled"):
-                return state
-            time.sleep(10)
-        return "timeout"
+    @staticmethod
+    def _event_msg(ev: dict[str, Any]) -> str:
+        """Extract the human line from one job event row.
 
-    def _job_log(self, client: httpx.Client, job_id: str) -> str:
-        try:
-            r = client.get(
-                f"{self.cfg.base_url}/v1/jobs/{job_id}/assets",
-                headers=self._ctrl_headers(),
-                timeout=30.0,
-            )
-            r.raise_for_status()
-            assets = r.json().get("assets", r.json())
-            text = []
-            for a in assets if isinstance(assets, list) else []:
-                aid = a.get("id")
-                if not aid:
-                    continue
-                d = client.get(
-                    f"{self.cfg.base_url}/v1/jobs/{job_id}/assets/{aid}/download",
+        Bench events carry ``payload_json`` like ``{"stream":"bench","msg":"…"}``;
+        the verdict (``CHECKIN_VERDICT ok=…``) is one of those ``msg`` lines —
+        which is why we read the EVENT stream, not the command-output assets.
+        """
+        payload = ev.get("payload_json") or ev.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (ValueError, TypeError):
+                return payload
+        if isinstance(payload, dict):
+            return str(payload.get("msg") or payload.get("line") or "")
+        return ""
+
+    def _collect(self, client: httpx.Client, job_id: str) -> tuple[str, str]:
+        """Long-poll ``/wait`` (paging by ``since``) until terminal; return (state, log).
+
+        Accumulates every event ``msg`` so :meth:`classify` can read the
+        ``CHECKIN_VERDICT`` line. Bounded by ``job_timeout_s`` (a flaky-port
+        recovery round can take minutes — don't shorten it).
+        """
+        since = 0
+        msgs: list[str] = []
+        state = "pending"
+        deadline = time.monotonic() + self.cfg.job_timeout_s
+        while time.monotonic() < deadline:
+            try:
+                r = client.get(
+                    f"{self.cfg.base_url}/v1/jobs/{job_id}/wait",
                     headers=self._ctrl_headers(),
-                    timeout=30.0,
+                    params={"since": since, "timeout": 30},
+                    timeout=45.0,
                 )
-                if d.status_code == 200:
-                    text.append(d.text)
-            return "\n".join(text)
-        except httpx.HTTPError:
-            return ""
+                r.raise_for_status()
+                data = r.json()
+            except httpx.HTTPError:
+                time.sleep(3)
+                continue
+            for ev in data.get("events", []):
+                m = self._event_msg(ev)
+                if m:
+                    msgs.append(m)
+            since = data.get("next_since", since)
+            state = data.get("state", state)
+            if state in ("finished", "error", "timeout", "cancelled"):
+                break
+        return state, "\n".join(msgs)
 
     @staticmethod
     def classify(state: str, log: str) -> Verdict:
-        """Map a terminal job (state, log) to a Verdict.
+        """Map a terminal job (state, event-log) to a Verdict.
 
         ``CHECKIN_VERDICT ok=true`` → PASS; ``ok=false`` → FAIL (broken but
         flashed/booted); a finished job with NO verdict, or error/timeout → INFRA
@@ -343,8 +357,7 @@ class BisectRunner:
         with httpx.Client() as client:
             job_id = self._submit(client, release.asset_url)
             self.log(f"  job {job_id} ({release.tag}) submitted; waiting…")
-            state = self._wait(client, job_id)
-            log_text = self._job_log(client, job_id)
+            state, log_text = self._collect(client, job_id)
             v = self.classify(state, log_text)
             self.log(f"  {release.tag}: job {state} -> {v.value}")
             return v

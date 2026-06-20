@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>New Version Bisection</h1>
+<p class="form-hint" style="margin-bottom:1rem;max-width:900px;">
+  Find the first WipperSnapper release where a board broke. Flashes + connectivity-tests
+  the releases between a <strong>working</strong> and a <strong>broken</strong> ref on real
+  hardware, validates both endpoints first, then binary-searches. WiFi/IO secrets come from
+  the controller's configuration — they are <strong>not</strong> entered here.
+</p>
+
+{% if not secrets_configured %}
+<div class="alert alert-error" style="max-width:900px;">
+  No bench WiFi is configured on the controller (<code>HIL_BENCH_WIFI_SSID</code> /
+  <code>HIL_BENCH_WIFI_PASSWORD</code> in <code>run/controller.env</code>). The DUT can't
+  reach the per-session protomq broker without it — set those and restart the controller.
+</div>
+{% endif %}
+{% if error %}<div class="alert alert-error" style="max-width:900px;">{{ error }}</div>{% endif %}
+
+<form method="post" action="/ui/jobs/bisect" style="max-width:900px;">
+  <div class="form-panel">
+    <h2>Target &amp; refs</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="device_id">Device *</label>
+        <select id="device_id" name="device_id" required>
+          <option value="">— select a microcontroller —</option>
+          {% for d in mcu_devices %}
+          <option value="{{ d.id }}" {% if form and form.device_id == d.id %}selected{% endif %}>
+            {{ d.id }}{% if d.model %} — {{ d.model }}{% endif %}
+            {% if not d.build_target %} (no build_target){% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="flasher">Flasher</label>
+        <select id="flasher" name="flasher">
+          {% for f in ['uf2-msc','bossac','esptool'] %}
+          <option value="{{ f }}" {% if (form.flasher if form else 'uf2-msc') == f %}selected{% endif %}>{{ f }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="working_ref">Working ref * <span class="form-hint">(known-good)</span></label>
+        <input type="text" id="working_ref" name="working_ref" required
+               value="{{ form.working_ref if form else '' }}" placeholder="1.0.0-beta.78">
+      </div>
+      <div class="form-group">
+        <label for="broken_ref">Broken ref * <span class="form-hint">(known-bad)</span></label>
+        <input type="text" id="broken_ref" name="broken_ref" required
+               value="{{ form.broken_ref if form else '' }}" placeholder="1.0.0-beta.128">
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="asset_glob">Release-asset glob * <span class="form-hint">(per-board firmware)</span></label>
+        <input type="text" id="asset_glob" name="asset_glob" required
+               value="{{ form.asset_glob if form else '*pyportal_titano_tinyusb*.uf2' }}">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Options</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="verify_times">Verify each version N times</label>
+        <input type="number" id="verify_times" name="verify_times" min="1" max="5"
+               value="{{ form.verify_times if form else '2' }}">
+        <span class="form-hint">Guards against a false detection on a flaky board.</span>
+      </div>
+      <div class="form-group">
+        <label for="repo">Repo</label>
+        <input type="text" id="repo" name="repo"
+               value="{{ form.repo if form else '' }}"
+               placeholder="adafruit/Adafruit_Wippersnapper_Arduino">
+      </div>
+      <div class="form-group">
+        <label for="test_branch">Test branch (optional)</label>
+        <input type="text" id="test_branch" name="test_branch"
+               value="{{ form.test_branch if form else '' }}" placeholder="for extra pytests">
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="extra_cmd">Extra test command (optional)</label>
+        <input type="text" id="extra_cmd" name="extra_cmd"
+               value="{{ form.extra_cmd if form else '' }}" placeholder="additional per-version check">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary" style="padding:0.5rem 1.5rem;">Start bisection</button>
+    <a href="/ui/jobs" class="btn btn-secondary">Cancel</a>
+  </div>
+</form>
+{% endblock %}
