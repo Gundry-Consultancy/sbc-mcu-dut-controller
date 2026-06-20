@@ -82,29 +82,37 @@ class Uf2MscFlasher(CliFlasher):
     # ------------------------------------------------------------------ #
 
     async def _locate_msc(self) -> str | None:
-        """Resolve the bootloader's MSC block device, or None if absent.
+        """Resolve the **UF2 bootloader's** MSC block device, or None if absent.
 
-        Prefers the USB by-path scsi node (board-label-agnostic); falls back to
-        a configured volume label. Returns a real ``/dev/sdX`` path.
+        CRITICAL: a running WipperSnapper app ALSO exposes an MSC drive (label
+        ``WIPPER``) at the *same* USB by-path as the bootloader's ``*BOOT`` drive
+        (e.g. ``PORTALBOOT``) — but only the bootloader flashes a copied ``.uf2``;
+        copying to ``WIPPER`` is a silent no-op. So we match the by-path scsi node
+        AND require its volume label to look like a UF2 bootloader (``*BOOT``, or a
+        configured ``msc_label``). When only ``WIPPER`` is present we return None,
+        so :meth:`is_in_bootloader` is False and the caller 1200-touches into the
+        actual bootloader before flashing.
         """
         token = usb_path_token(self.port)
-        if token:
-            # Glob the by-path scsi node for this DUT's USB port and resolve it.
-            script = (
-                f"for p in /dev/disk/by-path/*{token}*-scsi-*; do "
-                f'[ -e "$p" ] && readlink -f "$p" && break; done'
-            )
-            res = await self._run(["bash", "-c", script], check=False, timeout=10)
-            lines = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
-            if lines:
-                return lines[0]
-        if self.msc_label:
-            link = f"/dev/disk/by-label/{self.msc_label}"
-            res = await self._run(["readlink", "-f", link], check=False, timeout=10)
-            dev = (res.stdout or "").strip()
-            if dev and dev != link:
-                return dev
-        return None
+        if not token:
+            return None
+        want = (self.msc_label or "").upper()
+        # For each by-path scsi node, resolve the block dev + read its FAT label;
+        # accept it only if the label is a bootloader (endswith BOOT) or matches a
+        # configured msc_label. Reject WIPPER (the running app's data drive).
+        script = (
+            f"for p in /dev/disk/by-path/*{token}*-scsi-*; do "
+            f'[ -e "$p" ] || continue; '
+            f'dev=$(readlink -f "$p"); '
+            f'lbl=$(lsblk -no LABEL "$dev" 2>/dev/null | head -1 | tr -d " "); '
+            f'lu=$(echo "$lbl" | tr "a-z" "A-Z"); '
+            f'case "$lu" in *BOOT) echo "$dev"; break;; esac; '
+            f'[ -n "{want}" ] && [ "$lu" = "{want}" ] && {{ echo "$dev"; break; }}; '
+            f"done"
+        )
+        res = await self._run(["bash", "-c", script], check=False, timeout=10)
+        lines = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+        return lines[0] if lines else None
 
     # ------------------------------------------------------------------ #
     # Bootloader entry (1200-baud double-tap → UF2 bootloader)            #
