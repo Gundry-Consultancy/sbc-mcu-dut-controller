@@ -118,11 +118,19 @@ async def test_erase_is_noop() -> None:
     assert tp.calls == []
 
 
+def _is_catch_script(argv: list[str]) -> bool:
+    a = argv[1:] if argv and argv[0] == "sudo" else argv
+    j = " ".join(a)
+    # The catch-and-touch script is the only bash -c carrying stty + 1200
+    # (the MSC-locate glob has neither).
+    return a[:2] == ["bash", "-c"] and "stty" in j and "1200" in j
+
+
 @pytest.mark.asyncio
-async def test_enter_bootloader_touches_until_present() -> None:
+async def test_enter_bootloader_catch_and_touch_until_present() -> None:
     tp = _RoutingTransport(msc_present=False)
-    # MSC appears after the first touch.
-    seq = {"n": 0}
+    # The MSC drive appears once the catch-and-touch script has fired once.
+    seq = {"touched": 0}
     orig = tp.exec
 
     async def exec_(argv, *, cwd=None, env=None):  # noqa: ANN001
@@ -130,13 +138,41 @@ async def test_enter_bootloader_touches_until_present() -> None:
         joined = " ".join(a)
         if a[:2] == ["bash", "-c"] and "by-path" in joined and "-scsi-" in joined:
             tp.calls.append(list(argv))
-            present = seq["n"] >= 1
+            present = seq["touched"] >= 1
             return _result(0, stdout=(MSC_DEV + "\n") if present else "")
-        if a[:1] == ["stty"]:
-            seq["n"] += 1
+        if _is_catch_script(argv):
+            tp.calls.append(list(argv))
+            seq["touched"] += 1
+            return _result(0)
         return await orig(argv, cwd=cwd, env=env)
 
     tp.exec = exec_  # type: ignore[assignment]
     f = Uf2MscFlasher(transport=tp, port=PORT, settle_s=0)
-    await f.enter_bootloader(attempts=4)
-    assert any("stty" in c and "1200" in c for c in tp.calls), tp.calls
+    await f.enter_bootloader(attempts=4, catch_s=1)
+    assert any(_is_catch_script(c) for c in tp.calls), tp.calls
+
+
+@pytest.mark.asyncio
+async def test_catch_and_touch_pre_on_powers_channel_on_first() -> None:
+    """tier-3 recovery: the catch loop turns the channel ON as its first action."""
+    tp = _RoutingTransport(msc_present=False)  # absent until the catch fires
+    seq = {"touched": 0}
+    orig = tp.exec
+
+    async def exec_(argv, *, cwd=None, env=None):  # noqa: ANN001
+        a = argv[1:] if argv and argv[0] == "sudo" else argv
+        joined = " ".join(a)
+        if a[:2] == ["bash", "-c"] and "by-path" in joined and "-scsi-" in joined:
+            tp.calls.append(list(argv))
+            return _result(0, stdout=(MSC_DEV + "\n") if seq["touched"] >= 1 else "")
+        if _is_catch_script(argv):
+            tp.calls.append(list(argv))
+            seq["touched"] += 1
+            return _result(0)
+        return await orig(argv, cwd=cwd, env=env)
+
+    tp.exec = exec_  # type: ignore[assignment]
+    f = Uf2MscFlasher(transport=tp, port=PORT, settle_s=0)
+    await f.enter_bootloader(attempts=2, catch_s=1, pre_on_channel=3)
+    catch = next(c for c in tp.calls if _is_catch_script(c))
+    assert "turn_on.sh 3" in " ".join(catch), catch

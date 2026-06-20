@@ -121,14 +121,53 @@ class Uf2MscFlasher(CliFlasher):
         """True if the bootloader's MSC drive is currently present."""
         return bool(await self._locate_msc())
 
+    async def _catch_and_touch(self, *, wait_s: float, pre_on_channel: int | None = None) -> bool:
+        """In ONE remote shell, catch the board's brief app window and 1200-touch it.
+
+        A board flapping on a marginal port — or reboot-looping on broken/no-secrets
+        firmware — only shows its app CDC for a fraction of a second at a time. A
+        per-attempt Python→SSH round trip is far too slow to hit that window, so this
+        runs a tight ``sleep 0.2`` poll *on the host*: the instant the serial by-path
+        node appears it issues ``stty <port> 1200`` and exits. The board reboots into
+        the UF2 bootloader, which (unlike the crashing app) is stable.
+
+        ``pre_on_channel`` implements the "power it on into an already-running tight
+        loop" recovery: the loop starts FIRST (``turn_on.sh <ch>`` as the very first
+        line, after which polling begins immediately), so a device whose firmware
+        crashes the USB stack on boot is caught and forced into the bootloader before
+        it can wedge the bus again. Returns True if the touch fired, False on timeout.
+        """
+        pre = ""
+        if pre_on_channel is not None:
+            pre = f"~/turn_on.sh {int(pre_on_channel)} >/dev/null 2>&1; "
+        port = self.port
+        script = (
+            f"{pre}end=$(( $(date +%s) + {int(wait_s)} )); "
+            f'while [ "$(date +%s)" -lt "$end" ]; do '
+            f'if [ -e "{port}" ]; then stty -F "{port}" 1200 2>/dev/null && exit 0; fi; '
+            f"sleep 0.2; done; exit 7"
+        )
+        res = await self._run(["bash", "-c", script], check=False, timeout=wait_s + 15)
+        return getattr(res, "exit_status", 7) == 0
+
     async def enter_bootloader(
         self,
         *,
-        attempts: int = 10,
+        attempts: int = 6,
         settle_s: float | None = None,
         on_line: Any | None = None,
+        catch_s: float = 20.0,
+        pre_on_channel: int | None = None,
     ) -> None:
-        """Loop a 1200-baud touch until the UF2 MSC drive appears."""
+        """Catch the app window and touch into the UF2 bootloader, until the MSC drive appears.
+
+        Each round: if the MSC drive is already present we're done; otherwise run a
+        tight :meth:`_catch_and_touch` (waits up to ``catch_s`` for the flapping
+        board's app CDC, then 1200-touches it), settle, and re-check for the drive.
+        ``pre_on_channel`` is forwarded to the FIRST round only (the
+        power-on-into-the-loop recovery). Raises :class:`FlasherError` if the drive
+        never appears.
+        """
 
         def _log(msg: str) -> None:
             if on_line is not None:
@@ -140,15 +179,20 @@ class Uf2MscFlasher(CliFlasher):
         settle = self.settle_s if settle_s is None else settle_s
         for i in range(max(1, attempts)):
             if await self.is_in_bootloader():
-                _log(f"UF2 bootloader drive present after {i} touch(es)")
+                _log(f"UF2 bootloader drive present (round {i})")
                 return
-            _log(f"1200-baud touch {i + 1}/{attempts} (settle {settle}s)")
-            await self.bootloader_touch_1200(settle_s=settle)
+            ch = pre_on_channel if i == 0 else None
+            on = " (power-on into loop)" if ch is not None else ""
+            _log(f"catch-and-touch round {i + 1}/{attempts}{on} (≤{catch_s:.0f}s for app window)")
+            touched = await self._catch_and_touch(wait_s=catch_s, pre_on_channel=ch)
+            _log("  touched the app CDC" if touched else "  app window never appeared this round")
+            if settle > 0:
+                await asyncio.sleep(settle)
         if await self.is_in_bootloader():
-            _log(f"UF2 bootloader drive present after {attempts} touch(es)")
+            _log(f"UF2 bootloader drive present after {attempts} rounds")
             return
         raise FlasherError(
-            f"UF2 bootloader MSC drive did not appear after {attempts} 1200-baud touches"
+            f"UF2 bootloader MSC drive did not appear after {attempts} catch-and-touch rounds"
         )
 
     # ------------------------------------------------------------------ #
