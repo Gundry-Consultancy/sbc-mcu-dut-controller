@@ -1,0 +1,124 @@
+# HIL version-bisect — manually-triggered firmware regression bisection.
+#
+# DROP THIS INTO the Adafruit_Wippersnapper_Arduino repo at
+# .github/workflows/hil-version-bisect.yml. It is the PRIMARY surface for the
+# hil-bisect engine (hil_controller.bisect / scripts/hil_bisect.py): an operator
+# runs it from the Actions tab to find the first release where a board broke.
+#
+# Repo secrets required (Settings → Secrets and variables → Actions):
+#   TAILSCALE_AUTHKEY_TYETH   — to join the tailnet and reach the controller
+#   HIL_API_TOKEN             — controller bearer token (= HIL_STATIC_TOKEN)
+#   HIL_WIFI_SSID / HIL_WIFI_PASSWORD — bench WiFi the DUT joins to reach protomq
+#   HIL_IO_USERNAME / HIL_IO_KEY      — Adafruit IO creds (placeholders are fine;
+#                                       the per-session protomq broker autoresponds)
+#   HIL_CONTROLLER_REPO_TOKEN — read access to the (private) controller repo to
+#                               fetch scripts/hil_bisect.py + hil_controller.bisect
+#
+# Variables:
+#   HIL_BASE_URL              — e.g. http://tachyon-<...>.ts.net:8080
+
+name: HIL version bisect
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: "Controller device id (e.g. mcu-pyportal)"
+        required: true
+        default: mcu-pyportal
+      working_ref:
+        description: "Known-GOOD release tag (e.g. 1.0.0-beta.78)"
+        required: true
+      broken_ref:
+        description: "Known-BROKEN release tag (e.g. 1.0.0-beta.128)"
+        required: true
+      asset_glob:
+        description: "Release-asset fnmatch for the board's firmware"
+        required: false
+        default: "*pyportal_titano_tinyusb*.uf2"
+      flasher:
+        description: "Flasher (uf2-msc | bossac | esptool)"
+        required: false
+        default: uf2-msc
+      verify_times:
+        description: "Test each version N times (false-detection guard)"
+        required: false
+        default: "2"
+      test_branch:
+        description: "(optional) branch to checkout for extra pytests"
+        required: false
+        default: ""
+      extra_cmd:
+        description: "(optional) extra test command/script to run per version"
+        required: false
+        default: ""
+
+concurrency:
+  group: hil-bench           # one HIL job at a time — the bench is a shared singleton
+  cancel-in-progress: false
+
+jobs:
+  bisect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Join Tailscale (reach the controller)
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY_TYETH }}
+
+      - name: Fetch the bisection engine from the controller repo
+        uses: actions/checkout@v4
+        with:
+          repository: Gundry-Consultancy/usbip-hil-controller
+          token: ${{ secrets.HIL_CONTROLLER_REPO_TOKEN }}
+          path: controller
+          sparse-checkout: |
+            src/hil_controller/bisect.py
+            scripts/hil_bisect.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install httpx
+
+      - name: Run version bisection
+        working-directory: controller
+        env:
+          HIL_BASE_URL: ${{ vars.HIL_BASE_URL }}
+          HIL_TOKEN: ${{ secrets.HIL_API_TOKEN }}
+          WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
+          WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
+          IO_USERNAME: ${{ secrets.HIL_IO_USERNAME }}
+          IO_KEY: ${{ secrets.HIL_IO_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: src
+        run: |
+          set -o pipefail
+          python scripts/hil_bisect.py \
+            --device       "${{ inputs.device }}" \
+            --working-ref  "${{ inputs.working_ref }}" \
+            --broken-ref   "${{ inputs.broken_ref }}" \
+            --asset-glob   "${{ inputs.asset_glob }}" \
+            --flasher      "${{ inputs.flasher }}" \
+            --verify-times "${{ inputs.verify_times }}" \
+            --repo         "${{ github.repository }}" \
+            | tee bisect-result.txt
+
+      - name: Summarise to the run
+        if: always()
+        working-directory: controller
+        run: |
+          {
+            echo '## HIL version bisect'
+            echo '```'
+            tail -n 40 bisect-result.txt 2>/dev/null || echo '(no output)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bisect-result
+          path: controller/bisect-result.txt
