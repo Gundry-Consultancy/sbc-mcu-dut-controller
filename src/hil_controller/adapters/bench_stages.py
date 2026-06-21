@@ -917,6 +917,28 @@ def _serial_size(path: str) -> int:
         return 0
 
 
+async def _await_serial_marker(path: str, marker: re.Pattern[str], timeout_s: float) -> bool:
+    """Poll the controller-local serial.log for *marker* (anywhere) until *timeout_s*.
+
+    Used by the serial ``verify_checkin`` mode — the WS registration banner only
+    prints on a fully-successful checkin, so matching it anywhere in the captured
+    serial is a clean PASS signal; a reboot-looping (never-connects) device never
+    prints it → timeout → FAIL.
+    """
+    if not path:
+        return False
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            with open(path, errors="ignore") as fh:
+                if marker.search(fh.read()):
+                    return True
+        except OSError:
+            pass
+        await asyncio.sleep(0.5)
+    return False
+
+
 async def _await_serial_reboot(path: str, start_offset: int, timeout_s: float) -> bool:
     """Poll the controller-local serial.log for a reset banner past *start_offset*."""
     if not path:
@@ -1062,6 +1084,29 @@ async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> Non
     which is the right default gate while the pixelWrite regression is parked.
     Requires protomq up (``launch_protomq``) and the DUT booted with secrets.
     """
+    # ``via: serial`` — verify the checkin from the SERIAL log instead of the local
+    # protomq broker. Needed when the DUT registers with a broker the controller
+    # can't observe (e.g. an AirLift board on an isolated WiFi checking in to the
+    # io.adafruit.com CLOUD, since the strict local protomq rejects the AirLift's
+    # MQTT CONNECT). Watches the captured serial.log for the WS registration banner.
+    if stage.get("via") == "serial":
+        marker = re.compile(
+            stage.get("marker", r"Registration and configuration complete"), re.IGNORECASE
+        )
+        timeout = float(stage.get("checkin_timeout_s", 180.0))
+        ctx.log_line(
+            f"verify_checkin (serial): waiting ≤{timeout:.0f}s for {marker.pattern!r} on serial"
+        )
+        ok = await _await_serial_marker(ctx.serial_log_path, marker, timeout)
+        ctx.log_line(f"CHECKIN_VERDICT ok={'true' if ok else 'false'}")
+        ctx.checkin_ok = ok  # type: ignore[attr-defined]
+        if not ok and not stage.get("soft", False):
+            raise StageError(
+                f"verify_checkin (serial): {marker.pattern!r} not seen within {timeout:.0f}s "
+                "(device booted with secrets pointing at the right broker?)"
+            )
+        return
+
     if not ctx.protomq_host or not ctx.protomq_port:
         raise StageError("verify_checkin needs protomq running (launch_protomq before this stage)")
     io_user = ctx.secrets.get("IO_USERNAME") or "hil"

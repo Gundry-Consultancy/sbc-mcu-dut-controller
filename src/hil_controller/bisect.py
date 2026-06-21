@@ -196,18 +196,34 @@ def bisect(
 # --------------------------------------------------------------------------- #
 
 
-#: Connectivity-test pipeline for a SAM/UF2 board: enter the UF2 bootloader,
-#: copy the .uf2, boot, write secrets onto the WIPPER drive, reboot, and assert
-#: a broker checkin (soft → a no-checkin is a FAIL verdict, not a job error).
-#: ``launch_protomq`` / ``start_serial_log`` / ``print_boot_log`` are auto-injected.
-def default_stages(flasher: str = "uf2-msc") -> list[dict[str, Any]]:
+#: Connectivity-test pipeline for a SAM/UF2 board: enter the UF2 bootloader (tight
+#: 1200-touch hammer), copy the .uf2, boot, write secrets onto the WIPPER drive
+#: pointing at ``io_url``, reboot, and assert a checkin. Default target is the
+#: **io.adafruit.com cloud** over TLS (the AirLift's MQTT CONNECT is rejected by
+#: the strict local protomq), so the checkin is verified from the **serial** log
+#: (``via: serial`` → the WS "Registration and configuration complete" banner) —
+#: soft, so a no-checkin is a FAIL verdict, not a job error. ``start_serial_log`` /
+#: ``print_boot_log`` are auto-injected; ``launch_protomq`` is skipped because the
+#: write_secrets stage carries an explicit (external) ``io_url``.
+def default_stages(
+    flasher: str = "uf2-msc",
+    *,
+    io_url: str = "io.adafruit.com",
+    io_port: int = 8883,
+    checkin_timeout_s: int = 240,
+) -> list[dict[str, Any]]:
     return [
         {"type": "enter_bootloader", "flasher": flasher},
         {"type": "flash", "flasher": flasher},
         {"type": "power_cycle"},
-        {"type": "write_secrets_msc"},
+        {"type": "write_secrets_msc", "io_url": io_url, "io_port": io_port},
         {"type": "power_cycle"},
-        {"type": "verify_checkin", "soft": True},
+        {
+            "type": "verify_checkin",
+            "via": "serial",
+            "soft": True,
+            "checkin_timeout_s": checkin_timeout_s,
+        },
     ]
 
 

@@ -447,9 +447,13 @@ class FirmwareBenchAdapter:
         """
         stages = [dict(s) for s in (self.params.get("stages") or DEFAULT_FLASH_STAGES)]
 
-        need_protomq = any(s.get("type") == "write_secrets_msc" for s in stages) or bool(
-            self.params.get("launch_protomq", False)
-        )
+        # Only launch the local protomq for a write_secrets_msc that relies on it
+        # (no explicit io_url). A write_secrets_msc pointing at an EXTERNAL broker
+        # (e.g. io.adafruit.com for an AirLift board) doesn't need it — skipping
+        # avoids a wasted ~60s clone/build + the strict-broker CONNECT-reject noise.
+        need_protomq = any(
+            s.get("type") == "write_secrets_msc" and not s.get("io_url") for s in stages
+        ) or bool(self.params.get("launch_protomq", False))
         if need_protomq and not any(s.get("type") == "launch_protomq" for s in stages):
             idx = self._first_index(stages, "flash")
             if idx is None:
