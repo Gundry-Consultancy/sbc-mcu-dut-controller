@@ -197,14 +197,18 @@ def bisect(
 
 
 #: Connectivity-test pipeline for a SAM/UF2 board: enter the UF2 bootloader (tight
-#: 1200-touch hammer), copy the .uf2, boot, write secrets onto the WIPPER drive
-#: pointing at ``io_url``, reboot, and assert a checkin. Default target is the
-#: **io.adafruit.com cloud** over TLS (the AirLift's MQTT CONNECT is rejected by
-#: the strict local protomq), so the checkin is verified from the **serial** log
-#: (``via: serial`` → the WS "Registration and configuration complete" banner) —
-#: soft, so a no-checkin is a FAIL verdict, not a job error. ``start_serial_log`` /
-#: ``print_boot_log`` are auto-injected; ``launch_protomq`` is skipped because the
-#: write_secrets stage carries an explicit (external) ``io_url``.
+#: 1200-touch hammer), **erase the app region** (so a no-op/failed flash can't
+#: leave STALE firmware booting → a false PASS — the bug that made a v128 job
+#: "pass" while still running the previous image), copy the .uf2, boot, write
+#: secrets onto the WIPPER drive pointing at ``io_url``, reboot, and assert a
+#: checkin. Default target is the **io.adafruit.com cloud** over TLS (the AirLift's
+#: MQTT CONNECT is rejected by the strict local protomq), so the checkin is
+#: verified from the **serial** log (``via: serial`` → the WS "Registration and
+#: configuration complete" banner) — soft, so a no-checkin is a FAIL verdict, not a
+#: job error. ``start_serial_log`` / ``print_boot_log`` are auto-injected (the
+#: boot log carries the WS "Firmware Version:" line for the operator to eyeball);
+#: ``launch_protomq`` is skipped because the write_secrets stage carries an
+#: explicit (external) ``io_url``.
 def default_stages(
     flasher: str = "uf2-msc",
     *,
@@ -214,6 +218,7 @@ def default_stages(
 ) -> list[dict[str, Any]]:
     return [
         {"type": "enter_bootloader", "flasher": flasher},
+        {"type": "erase", "flasher": flasher},
         {"type": "flash", "flasher": flasher},
         {"type": "power_cycle"},
         {"type": "write_secrets_msc", "io_url": io_url, "io_port": io_port},

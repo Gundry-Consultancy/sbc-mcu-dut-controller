@@ -255,6 +255,7 @@ class BenchContext:
                 transport=self.dut_transport,
                 port=self.flash_serial_port,
                 sudo=True,
+                app_offset=self.bossac_offset,
             )
         elif which in ("esptool", "", None):
             flasher = EsptoolFlasher(
@@ -1171,13 +1172,18 @@ DEFAULT_FLASH_STAGES: list[dict[str, Any]] = [
 
 #: Default cycle for a SAM (SAMD51) board — **UF2-MSC primary**. The firmware is a
 #: ``.uf2`` (the WipperSnapper release asset), so the cycle is: 1200-baud
-#: double-tap into the UF2 bootloader, copy the .uf2 onto the bootloader MSC drive
+#: double-tap into the UF2 bootloader, **erase the app region** (``bossac --erase``
+#: over the bootloader's SAM-BA CDC), copy the .uf2 onto the bootloader MSC drive
 #: (the bootloader writes flash + resets into the app), then a clean power-cycle
-#: (which also triggers the injected ``print_boot_log``). No erase/verify stages —
-#: the bootloader handles both. A firmware-bench job for the PyPortal/Titano sends
-#: this as ``params.stages`` (or relies on the device's ``flasher: uf2-msc``).
+#: (which also triggers the injected ``print_boot_log``). The erase is NOT
+#: optional: a copy that silently no-ops (e.g. onto the wrong drive) used to leave
+#: STALE firmware booting and reporting a false PASS — blanking the app first means
+#: a failed flash drops back to the bootloader instead. A firmware-bench job for
+#: the PyPortal/Titano sends this as ``params.stages`` (or relies on the device's
+#: ``flasher: uf2-msc``).
 SAMD51_FLASH_STAGES: list[dict[str, Any]] = [
     {"type": "enter_bootloader", "flasher": "uf2-msc"},
+    {"type": "erase", "flasher": "uf2-msc"},
     {"type": "flash", "flasher": "uf2-msc"},
     {"type": "power_cycle"},
 ]

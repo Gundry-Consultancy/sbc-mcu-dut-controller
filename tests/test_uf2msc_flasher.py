@@ -50,6 +50,10 @@ class _RoutingTransport:
             # _locate_msc by-path scsi glob (no stty) → /dev/sda when "present".
             if "by-path" in joined and "-scsi-" in joined:
                 return _result(0, stdout=(MSC_DEV + "\n") if self.msc_present else "")
+            # _bootloader_tty: resolves the bootloader CDC by-path (":1.0", not a
+            # scsi node) to a bare tty for bossac --erase.
+            if "readlink -f" in joined and ":1.0" in joined:
+                return _result(0, stdout="/dev/ttyACM0\n")
             if "INFO_UF2.TXT" in joined:
                 return _result(0, stdout=INFO_UF2)
             if "stat -c %s" in joined:
@@ -118,11 +122,38 @@ async def test_reset_bootloader_issues_1200_touch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_erase_is_noop() -> None:
-    tp = _RoutingTransport()
+async def test_erase_runs_bossac_on_bootloader_cdc() -> None:
+    # In the bootloader (msc_present) → resolve the CDC tty and bossac --erase it.
+    tp = _RoutingTransport(msc_present=True)
     f = Uf2MscFlasher(transport=tp, port=PORT)
-    await f.erase()  # no exception, no commands
-    assert tp.calls == []
+    await f.erase()
+    cmds = tp.cmds()
+    assert any(c == "bossac --port ttyACM0 --erase --offset=0x4000" for c in cmds), cmds
+    # The erase runs as root (the flasher forces sudo).
+    assert tp.has_sudo("bossac --port ttyACM0 --erase")
+
+
+@pytest.mark.asyncio
+async def test_erase_raises_when_no_cdc_tty() -> None:
+    # No CDC node resolves (readlink yields nothing) → erase raises rather than
+    # silently leaving the (possibly stale) app in place.
+    class _NoTty(_RoutingTransport):
+        async def exec(self, argv, *, cwd=None, env=None):  # noqa: ANN001
+            self.calls.append(list(argv))
+            a = argv[1:] if argv and argv[0] == "sudo" else argv
+            joined = " ".join(a)
+            if a[:2] == ["bash", "-c"]:
+                if "stty" in joined and "1200" in joined:
+                    return _result(0, stdout="BOOT:/dev/sda")
+                if "by-path" in joined and "-scsi-" in joined:
+                    return _result(0, stdout=MSC_DEV + "\n")
+                if "readlink -f" in joined and ":1.0" in joined:
+                    return _result(1, stdout="")  # no CDC tty present
+            return _result(0)
+
+    f = Uf2MscFlasher(transport=_NoTty(msc_present=True), port=PORT)
+    with pytest.raises(Exception):  # FlasherError — no CDC tty for bossac
+        await f.erase()
 
 
 def _is_hammer_script(argv: list[str]) -> bool:

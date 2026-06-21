@@ -37,6 +37,7 @@ from hil_controller.adapters.flashers.base import (
     FlasherError,
     FlashResult,
 )
+from hil_controller.adapters.flashers.bossac import SAMD51_APP_OFFSET
 from hil_controller.adapters.flashers.esptool import stty_1200_touch_argv
 
 # "…/by-path/...usb-0:1.1.4:1.0" → "1.1.4" (the hub port chain of this DUT)
@@ -70,12 +71,22 @@ class Uf2MscFlasher(CliFlasher):
         settle_s: float = 3.0,
         mount_dir: str = "/tmp/hil-uf2mnt",
         msc_label: str | None = None,
+        bossac: str = "bossac",
+        app_offset: int = SAMD51_APP_OFFSET,
     ) -> None:
         super().__init__(transport=transport, port=port, sudo=sudo)
         self.settle_s = settle_s
         self.mount_dir = mount_dir
         #: Optional volume-label fallback if the by-path lookup misses.
         self.msc_label = msc_label
+        #: bossac binary used by :meth:`erase` to blank the app via the bootloader
+        #: SAM-BA CDC. Defaults to PATH lookup — ``setup-hil-host.sh`` installs the
+        #: Adafruit/Arduino fork at ``/usr/local/bin`` (ahead of Debian's broken
+        #: one), so ``"bossac"`` resolves to the working build.
+        self.bossac = bossac
+        #: SAM application start (``0x4000`` on SAMD51); the erase stays above it
+        #: so the bootloader region is never touched.
+        self.app_offset = app_offset
 
     # ------------------------------------------------------------------ #
     # MSC drive location                                                  #
@@ -214,9 +225,57 @@ class Uf2MscFlasher(CliFlasher):
         m = _BOARD_ID_RE.search(text)
         return ChipInfo(family=m.group(1) if m else "SAM-UF2", raw={"info": text})
 
+    async def _bootloader_tty(self) -> str | None:
+        """Resolve the bootloader's SAM-BA CDC to a bare ``ttyACMn`` for bossac.
+
+        The Adafruit UF2 bootloader is a **composite CDC+MSC** device: alongside
+        the ``*BOOT`` mass-storage drive it exposes a CDC interface (``:1.0``, the
+        same USB by-path the running app's CDC uses) that speaks the SAM-BA
+        protocol — which the Adafruit-fork ``bossac`` can *erase* even though its
+        *write* applet is incompatible with Debian's build (see
+        :class:`BossacFlasher`). Prefers :attr:`port` when it resolves, else globs
+        the ``<token>:1.0`` by-path; returns the basename (bossac's POSIX backend
+        resolves it under ``/dev``), or None if no CDC node is present.
+        """
+        token = usb_path_token(self.port)
+        script = (
+            f'p={shlex.quote(self.port)}; '
+            f'[ -e "$p" ] || for q in /dev/serial/by-path/*{token}:1.0; do '
+            f'[ -e "$q" ] && p="$q" && break; done; '
+            f'[ -e "$p" ] && readlink -f "$p"'
+        )
+        res = await self._run(["bash", "-c", script], check=False, timeout=10)
+        lines = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+        dev = lines[0] if lines else ""
+        return dev.rsplit("/", 1)[-1] if dev else None
+
     async def erase(self) -> None:
-        """No-op: copying the .uf2 overwrites the app region via the bootloader."""
-        return None
+        """Blank the SAMD app region via the UF2 bootloader's SAM-BA CDC.
+
+        Runs ``bossac --erase --offset=0x4000`` against the bootloader's CDC tty.
+        Erasing leaves the app region blank **without resetting**, so the
+        composite bootloader (and its ``*BOOT`` MSC drive) stays up for the
+        following :meth:`flash` copy. The point is reliability: with a genuinely
+        blank app, a flash that silently no-ops (or fails to take) leaves a board
+        that drops back to the bootloader — a clear FAIL — instead of booting the
+        **stale previous firmware** and reporting a false PASS. That false-PASS is
+        exactly what made a v128 bisection job "pass" while still running the old
+        image, so the bisection erases before every flash.
+
+        Requires the device in the bootloader (enters it if not). Raises
+        :class:`FlasherError` if the erase can't run, so the caller treats it as
+        an INFRA failure (recover + retry) rather than flashing onto an unknown
+        state. Uses the Adafruit-fork ``bossac`` (:attr:`bossac`); Debian's build
+        is unusable for SAMD51.
+        """
+        if not await self.is_in_bootloader():
+            await self.enter_bootloader()
+        tty = await self._bootloader_tty()
+        if not tty:
+            raise FlasherError("uf2-msc.erase(): no bootloader CDC tty found to run bossac against")
+        await self._run(
+            [self.bossac, "--port", tty, "--erase", f"--offset=0x{self.app_offset:X}"]
+        )
 
     async def flash(self, artifact: Artifact, *, attempts: int = 4) -> FlashResult:
         """Mount the bootloader MSC drive, copy ``artifact.path`` (.uf2), sync.
