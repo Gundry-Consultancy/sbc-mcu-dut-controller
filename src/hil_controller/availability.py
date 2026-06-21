@@ -105,9 +105,20 @@ def target_record(row: dict, *, target_key: str = "model", host_hw: dict | None 
     available = status == STATUS_AVAILABLE
     kind = row.get("unavailable_kind") if not available else None
     reason = row.get("unavailable_reason") if not available else None
+
+    device_model = row.get(target_key) or ""
+    host_model = (host_hw or {}).get("model")
+    # For an SBC the device *is* the host board, so its real identity is the
+    # detected board model — use that instead of the static topology model (a
+    # blanket "pi5" across the whole fleet). An MCU keeps its own board model
+    # (the host is merely where it's plugged in). Falls back to the stored model
+    # when the host hasn't been probed yet (e.g. an offline SBC).
+    is_sbc = row.get("kind") == "sbc"
+    model = host_model if (is_sbc and host_model) else device_model
+
     return {
-        "target": row.get("build_target") or row.get(target_key) or "",
-        "model": row.get(target_key) or "",
+        "target": row.get("build_target") or model or "",
+        "model": model,
         "device_id": row.get("id"),
         "host_id": row.get("host_id"),
         "available": available,

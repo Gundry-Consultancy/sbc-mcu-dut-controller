@@ -31,7 +31,7 @@ async def list_targets(request: Request, _auth: Auth) -> dict[str, Any]:
     db_path: str = request.app.state.db_path
     async with get_db(db_path) as db:
         cur = await db.execute(
-            "SELECT id, host_id, model, build_target, status, unavailable_kind, "
+            "SELECT id, host_id, kind, model, build_target, status, unavailable_kind, "
             "unavailable_reason, retry_after FROM devices"
         )
         rows = [dict(r) for r in await cur.fetchall()]
