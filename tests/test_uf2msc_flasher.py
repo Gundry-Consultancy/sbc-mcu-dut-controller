@@ -32,21 +32,28 @@ def _result(exit_status: int = 0, stdout: str = "", stderr: str = "") -> MagicMo
 class _RoutingTransport:
     """Fake transport routing exec() by argv; records calls. MSC present by default."""
 
-    def __init__(self, *, msc_present: bool = True) -> None:
+    def __init__(self, *, msc_present: bool = True, hammer_succeeds: bool = True) -> None:
         self.calls: list[list[str]] = []
-        self.msc_present = msc_present
+        self.msc_present = msc_present  # whether _locate_msc finds the *BOOT drive
+        self.hammer_succeeds = hammer_succeeds  # whether the 1200-touch hammer lands
 
     async def exec(self, argv, *, cwd=None, env=None):  # noqa: ANN001
         self.calls.append(list(argv))
         a = argv[1:] if argv and argv[0] == "sudo" else argv
         joined = " ".join(a)
-        # by-path scsi glob → resolve to /dev/sda when "present"
-        if a[:2] == ["bash", "-c"] and "by-path" in joined and "-scsi-" in joined:
-            return _result(0, stdout=(MSC_DEV + "\n") if self.msc_present else "")
-        if a[:2] == ["bash", "-c"] and "INFO_UF2.TXT" in joined:
-            return _result(0, stdout=INFO_UF2)
-        if a[:2] == ["bash", "-c"] and "stat -c %s" in joined:
-            return _result(0, stdout="410224\n")
+        if a[:2] == ["bash", "-c"]:
+            # The 1200-touch HAMMER (carries stty + 1200): exit 0 + "BOOT:" on a catch.
+            if "stty" in joined and "1200" in joined:
+                if self.hammer_succeeds:
+                    return _result(0, stdout="BOOT:/dev/sda")
+                return _result(7)
+            # _locate_msc by-path scsi glob (no stty) → /dev/sda when "present".
+            if "by-path" in joined and "-scsi-" in joined:
+                return _result(0, stdout=(MSC_DEV + "\n") if self.msc_present else "")
+            if "INFO_UF2.TXT" in joined:
+                return _result(0, stdout=INFO_UF2)
+            if "stat -c %s" in joined:
+                return _result(0, stdout="410224\n")
         return _result(0)
 
     def cmds(self) -> list[str]:
@@ -118,61 +125,47 @@ async def test_erase_is_noop() -> None:
     assert tp.calls == []
 
 
-def _is_catch_script(argv: list[str]) -> bool:
+def _is_hammer_script(argv: list[str]) -> bool:
     a = argv[1:] if argv and argv[0] == "sudo" else argv
     j = " ".join(a)
-    # The catch-and-touch script is the only bash -c carrying stty + 1200
-    # (the MSC-locate glob has neither).
+    # The 1200-touch hammer is the only bash -c carrying stty + 1200.
     return a[:2] == ["bash", "-c"] and "stty" in j and "1200" in j
 
 
 @pytest.mark.asyncio
-async def test_enter_bootloader_catch_and_touch_until_present() -> None:
-    tp = _RoutingTransport(msc_present=False)
-    # The MSC drive appears once the catch-and-touch script has fired once.
-    seq = {"touched": 0}
-    orig = tp.exec
-
-    async def exec_(argv, *, cwd=None, env=None):  # noqa: ANN001
-        a = argv[1:] if argv and argv[0] == "sudo" else argv
-        joined = " ".join(a)
-        if a[:2] == ["bash", "-c"] and "by-path" in joined and "-scsi-" in joined:
-            tp.calls.append(list(argv))
-            present = seq["touched"] >= 1
-            return _result(0, stdout=(MSC_DEV + "\n") if present else "")
-        if _is_catch_script(argv):
-            tp.calls.append(list(argv))
-            seq["touched"] += 1
-            return _result(0)
-        return await orig(argv, cwd=cwd, env=env)
-
-    tp.exec = exec_  # type: ignore[assignment]
+async def test_enter_bootloader_hammers_until_caught() -> None:
+    # Not already in bootloader (locate finds nothing) → must hammer; hammer lands.
+    tp = _RoutingTransport(msc_present=False, hammer_succeeds=True)
     f = Uf2MscFlasher(transport=tp, port=PORT, settle_s=0)
-    await f.enter_bootloader(attempts=4, catch_s=1)
-    assert any(_is_catch_script(c) for c in tp.calls), tp.calls
+    await f.enter_bootloader(attempts=3, catch_s=1)
+    assert any(_is_hammer_script(c) for c in tp.calls), tp.calls
 
 
 @pytest.mark.asyncio
-async def test_catch_and_touch_pre_on_powers_channel_on_first() -> None:
-    """tier-3 recovery: the catch loop turns the channel ON as its first action."""
-    tp = _RoutingTransport(msc_present=False)  # absent until the catch fires
-    seq = {"touched": 0}
-    orig = tp.exec
-
-    async def exec_(argv, *, cwd=None, env=None):  # noqa: ANN001
-        a = argv[1:] if argv and argv[0] == "sudo" else argv
-        joined = " ".join(a)
-        if a[:2] == ["bash", "-c"] and "by-path" in joined and "-scsi-" in joined:
-            tp.calls.append(list(argv))
-            return _result(0, stdout=(MSC_DEV + "\n") if seq["touched"] >= 1 else "")
-        if _is_catch_script(argv):
-            tp.calls.append(list(argv))
-            seq["touched"] += 1
-            return _result(0)
-        return await orig(argv, cwd=cwd, env=env)
-
-    tp.exec = exec_  # type: ignore[assignment]
+async def test_enter_bootloader_raises_when_hammer_never_lands() -> None:
+    tp = _RoutingTransport(msc_present=False, hammer_succeeds=False)
     f = Uf2MscFlasher(transport=tp, port=PORT, settle_s=0)
-    await f.enter_bootloader(attempts=2, catch_s=1, pre_on_channel=3)
-    catch = next(c for c in tp.calls if _is_catch_script(c))
-    assert "turn_on.sh 3" in " ".join(catch), catch
+    with pytest.raises(Exception):  # FlasherError — bootloader never reached
+        await f.enter_bootloader(attempts=2, catch_s=1)
+    # it actually tried the hammer (didn't just give up)
+    assert sum(_is_hammer_script(c) for c in tp.calls) >= 2
+
+
+@pytest.mark.asyncio
+async def test_enter_bootloader_skips_hammer_when_already_in_bootloader() -> None:
+    tp = _RoutingTransport(msc_present=True)  # *BOOT drive already present
+    f = Uf2MscFlasher(transport=tp, port=PORT, settle_s=0)
+    await f.enter_bootloader(attempts=3, catch_s=1)
+    assert not any(_is_hammer_script(c) for c in tp.calls), tp.calls
+
+
+@pytest.mark.asyncio
+async def test_hammer_script_touches_and_detects_boot_label() -> None:
+    """The hammer must both 1200-touch the CDC and detect the *BOOT drive."""
+    tp = _RoutingTransport(msc_present=False, hammer_succeeds=True)
+    f = Uf2MscFlasher(transport=tp, port=PORT)
+    assert await f._catch_and_touch(wait_s=1) is True
+    script = next(" ".join(c) for c in tp.calls if _is_hammer_script(c))
+    assert "stty -F" in script and "1200" in script  # touches the CDC
+    assert "-scsi-" in script and "BOOT" in script  # detects the bootloader drive
+    assert "1.1.4:1.0" in script  # uses the device's USB by-path token

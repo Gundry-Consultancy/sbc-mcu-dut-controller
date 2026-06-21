@@ -517,72 +517,59 @@ async def _enter_bootloader_sam(stage: dict[str, Any], ctx: BenchContext) -> Non
     """
     which = stage.get("flasher", "uf2-msc")
     flasher = ctx.make_flasher(which)
-    attempts = int(stage.get("attempts", 6))
+    attempts = int(stage.get("attempts", 3))
     settle_s = float(stage.get("settle_s", 2.0))
-    catch_s = float(stage.get("catch_s", 20.0))
+    catch_s = float(stage.get("catch_s", 30.0))
     channel = ctx.device.get("solenoid_channel")
-    # uf2-msc supports the catch-and-touch knobs (catch_s / pre_on_channel); bossac
-    # (SAM-BA) takes the plain touch loop.
+    # uf2-msc takes the tight 1200-touch hammer (catch_s); bossac (SAM-BA) the plain loop.
     supports_catch = which == "uf2-msc"
 
-    def _kw(pre_on: int | None = None) -> dict[str, Any]:
+    def _kw() -> dict[str, Any]:
         kw: dict[str, Any] = {"attempts": attempts, "settle_s": settle_s, "on_line": ctx.log_line}
         if supports_catch:
             kw["catch_s"] = catch_s
-            if pre_on is not None:
-                kw["pre_on_channel"] = pre_on
         return kw
 
     if await flasher.is_in_bootloader():
         ctx.log_line(f"already in {which} bootloader — no touch needed")
         return
 
-    # Tier 1: catch the app window and touch (no power action).
-    ctx.log_line(f"tier1: catch-and-touch into {which} bootloader (≤{attempts} rounds)")
+    # Tier 1: hammer the running/booting (possibly bootlooping) device into the
+    # bootloader — the tight continuous 1200-touch catches its brief CDC window.
+    ctx.log_line(f"tier1: 1200-touch hammer into {which} bootloader")
     try:
         await flasher.enter_bootloader(**_kw())
         ctx.log_line(f"device is in {which} bootloader")
         return
     except FlasherError as exc:
-        ctx.log_line(f"tier1 did not reach {which} bootloader ({exc})")
+        ctx.log_line(f"tier1 hammer did not reach {which} bootloader ({exc})")
 
     if not stage.get("power_cycle", True) or channel is None:
         raise StageError(
-            f"could not enter {which} bootloader via catch-and-touch "
+            f"could not enter {which} bootloader via 1200-touch hammer "
             "(recovery disabled or no solenoid channel to power-cycle)"
         )
     hub = SolenoidHubAdapter(transport=ctx.hub_transport, sudo=ctx.sudo)
     off_s = float(stage.get("recover_off_s", 3.0))
-    boot_settle = float(stage.get("boot_settle_s", 5.0))
 
-    # Tier 2: clean power-cycle, then catch-and-touch.
-    ctx.log_line(f"tier2: power-cycle solenoid ch {channel}, then catch-and-touch")
-    try:
-        await hub.power_cycle(int(channel), off_s=off_s, settle_s=boot_settle)
-    except SolenoidHubError as exc:
-        raise StageError(f"hub power-cycle failed on channel {channel}: {exc}") from exc
-    try:
-        await flasher.enter_bootloader(**_kw())
-        ctx.log_line(f"device is in {which} bootloader (after power-cycle)")
-        return
-    except FlasherError as exc:
-        ctx.log_line(f"tier2 did not reach {which} bootloader ({exc})")
-
-    # Tier 3 (uf2-msc): power the device OFF, then power it ON *into* an already-
-    # running tight catch-and-touch loop — for a board whose firmware crashes the
-    # USB stack on boot, this grabs it before it can wedge the bus and forces it
-    # into the (stable) bootloader. The host-reboot-with-channel-off last resort is
-    # orchestrated controller-side (the bench stage can't reboot its own host).
-    if not supports_catch:
-        raise StageError(f"could not enter {which} bootloader after power-cycle recovery")
-    ctx.log_line(f"tier3: power OFF ch {channel}, then power ON into a running catch loop")
-    try:
-        await hub.port_off(int(channel), hold_s=off_s)
-    except SolenoidHubError as exc:
-        raise StageError(f"hub power-off failed on channel {channel}: {exc}") from exc
-    await asyncio.sleep(float(stage.get("tier3_off_s", 2.0)))
-    await flasher.enter_bootloader(**_kw(pre_on=int(channel)))
-    ctx.log_line(f"device is in {which} bootloader (tier3 power-on-into-loop)")
+    # Tier 2: power-cycle for a fresh boot window, then hammer (the hammer starts
+    # immediately so it's effectively "power on into a running touch loop"). A few
+    # rounds. NOTE: samd51_uf2's power double-tap is deliberately NOT used — a
+    # power-off clears the RAM magic value the SAMD double-tap relies on (only a
+    # reset preserves it, and the solenoid controls power, not reset).
+    for r in range(int(stage.get("power_cycle_rounds", 2))):
+        ctx.log_line(f"tier2 round {r + 1}: power-cycle solenoid ch {channel}, then hammer")
+        try:
+            await hub.power_cycle(int(channel), off_s=off_s, settle_s=0.0)
+        except SolenoidHubError as exc:
+            raise StageError(f"hub power-cycle failed on channel {channel}: {exc}") from exc
+        try:
+            await flasher.enter_bootloader(**_kw())
+            ctx.log_line(f"device is in {which} bootloader (after power-cycle round {r + 1})")
+            return
+        except FlasherError as exc:
+            ctx.log_line(f"tier2 round {r + 1} did not reach {which} bootloader ({exc})")
+    raise StageError(f"could not enter {which} bootloader after hammer + power-cycle recovery")
 
 
 async def _stage_bootloader_touch(stage: dict[str, Any], ctx: BenchContext) -> None:
