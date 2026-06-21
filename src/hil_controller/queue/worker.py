@@ -60,6 +60,7 @@ class JobWorker:
         self.db_path = db_path
         self._cancelled = False
         self._protomq_observer: Any | None = None
+        self._ctrl_protomq: Any | None = None
 
     async def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         await self.event_bus.publish(self.job_id, {"kind": kind, "payload": payload})
@@ -167,6 +168,7 @@ class JobWorker:
                 return WorkerResult(state="cancelled", result="cancelled")
 
             await self._emit("state", {"state": "running"})
+            await self._maybe_launch_controller_protomq()
             _observe_task = await self._start_protomq_observer()
             result = await self._run_script()
 
@@ -183,6 +185,11 @@ class JobWorker:
                 _observe_task.cancel()
                 try:
                     await _observe_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if self._ctrl_protomq is not None:
+                try:
+                    await asyncio.wait_for(self._ctrl_protomq.stop(), timeout=10)
                 except (asyncio.CancelledError, Exception):
                     pass
             await self._harvest_artifacts()
@@ -352,6 +359,56 @@ class JobWorker:
     # ---------------------------------------------------------------------- #
     # ProtoMQ observer                                                         #
     # ---------------------------------------------------------------------- #
+
+    async def _maybe_launch_controller_protomq(self) -> None:
+        """Launch a protomq broker ON THE CONTROLLER for a non-interactive job
+        that asks for it (``params.protomq.launch_on == "controller"``), and
+        point the (possibly remote) test at it.
+
+        For a python display HIL test on a remote SBC, the broker can't run on
+        the DUT host (a Pi Zero W is ARMv6 — no node). So launch protomq locally
+        via the same ProtomqLauncher firmware-bench uses, then inject
+        PROTOMQ_RUN_EXTERNALLY + PROTOMQ_HOST/PORT (and MQTT_HOST/PORT) =
+        controller_ip into the run env so the SBC test connects back to it.
+        Torn down in the worker's finally."""
+        cfg = self.params.get("protomq") or {}
+        if cfg.get("launch_on") != "controller":
+            return
+        from hil_controller.adapters.protomq_launcher import ProtomqLauncher
+        from hil_controller.config import get_settings, resolve_jobs_dir
+        from hil_controller.hosts.local import LocalTransport
+
+        s = get_settings()
+        launcher = ProtomqLauncher(
+            controller_transport=LocalTransport(),
+            repo=cfg.get("repo") or s.protomq_repo,
+            ref=cfg.get("ref") or s.firmware_bench_protomq_ref,
+            work_dir=str(Path(resolve_jobs_dir()) / self.job_id / "protomq"),
+            active_script=cfg.get("script") or None,
+            on_line=None,
+            pat=self.params.get("protomq_pat") or self.params.get("pat") or None,
+            credential_helper=s.git_credential_helper or None,
+            proto_repo=s.protobuf_repo,
+            proto_ref=s.protobuf_ref,
+        )
+        await launcher.clone_and_build()
+        await launcher.start()
+        self._ctrl_protomq = launcher
+        host, port = s.controller_ip, str(launcher.mqtt_port or 1884)
+        env = self.params.setdefault("extra_env", {})
+        env.update({
+            "PROTOMQ_RUN_EXTERNALLY": "1",
+            "PROTOMQ_HOST": host,
+            "PROTOMQ_PORT": port,
+            "MQTT_HOST": host,
+            "MQTT_PORT": port,
+            # WS-Python's defaults.py requires PROTOMQ_PATH to be set whenever
+            # PROTOMQ_RUN_EXTERNALLY is — value is unused when external.
+            "PROTOMQ_PATH": env.get("PROTOMQ_PATH", "/tmp/protomq-external"),
+        })
+        await self._emit("log", {"stream": "protomq",
+                                 "msg": f"launched on controller; test connects to "
+                                        f"{host}:{port} (api {launcher.api_port})"})
 
     async def _start_protomq_observer(self) -> asyncio.Task[None] | None:
         cfg = self.params.get("protomq", {})
