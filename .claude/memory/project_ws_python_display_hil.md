@@ -66,3 +66,26 @@ venv). Job submission body saved patterns in [[hil-display-pytest]].
   root `gh` has the `tyeth` account active = owns the fork). See [[reference-bench-host]].
 - Remove stage leaves the panel WHITE (display object released, backlight on),
   not black — the test asserts software state, not pixels, so it still passes.
+
+**✅ eInk extension PROVEN GREEN 2026-06-22 (remote-SBC displays).** Added two more
+real-display combos, both passing with full per-stage camera proof:
+- **UC8253 3.7" mono** on `rpi-hil002-zerow-a` (Pi Zero W, `raspi-0-w`), ROI
+  `2150,1150,540,780`.
+- **UC8179 5.83" mono** on `rpi-hil004-pi4-a` (Pi 4, `raspi-4b`), ROI
+  `2800,1080,900,860`.
+The eInk Bonnet wiring (both): bus0, CS=D8, DC=D22, RST=D27, BUSY=D17.
+Architecture differs from the local ILI9341: the **pytest runs ON the SBC**
+(drives the panel in-process) while **protoMQ + webcam capture run on the
+controller** — see the "Remote display on an SBC" section of [[hil-display-pytest]].
+New controller machinery (committed + deployed): `params.protomq.launch_on=controller`
+(worker launches the broker locally, injects MQTT/PROTOMQ env), transport `on_line`
+streaming, and a `HilCapture` coordinator (`adapters/camera/hil_capture.py`) that
+turns `WS_HIL_CAPTURE` stdout markers into proof frames. Also merged PR #3
+(ROI auto-focus). Five real bugs fixed en route: SSH dropped env (`AcceptEnv`) →
+inline `KEY=val`; scheduler double-parses request → inject protomq env into the
+adapter's params too; EPD status_bar must use `config_epd.properties` not
+`config_display` (oneof); slow-SBC round-trip needs `WS_PROTOBUF_TIMEOUT_S`
+(≈90/150 s); two controller-protomq instances clash on API port 5173 → serialize.
+The eInk SBCs need `adafruit_epd` installed in their venv (PIL does NOT go on the
+SBC — capture is controller-side). eInk topology split: hil002→3.7", hil004→5.83",
+hil006→2.9" flex (was wrongly both einks on hil002).
