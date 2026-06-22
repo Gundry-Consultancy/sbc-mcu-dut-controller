@@ -23,7 +23,7 @@ ch0=QTPy / ch3=UNCONFIRMED / ch4=PyPortal entries):
 | 0 | 1-1.1.1.4 | 239a:8123 | — | Feather ESP32-S3 Reverse TFT / mcu-feather-esp32s3-revtft |
 | 1 | 1-1.1.2 | 239a:811d | — | Feather ESP32-S3 TFT / mcu-feather-esp32s3-tft |
 | 2 | 1-1.1.3 | 239a:80df | — | Metro ESP32-S2 / mcu-metro-lcd-16x2 |
-| 3 | 1-1.1.4 | 239a:80eb | — | Feather ESP32-S2 / mcu-feather-alpha-fw-quad (MCU confirmed, peripheral not camera-verified) |
+| 3 | 1-1.1.4 | 239a:8053 | F1DF00AE…1730 | **PyPortal M4 Titano / mcu-pyportal** (re-seated 2026-06-20; superseded the flaky Feather ESP32-S2 that used to be here) |
 | 4 | 1-1.2 | 239a:8143 | — | QT Py ESP32-S3 / mcu-qtpy-oled-091-stemma |
 | 5 | 1-1.3 | 10c4:ea60 | 022AF71E | Huzzah32 (CP2104) / mcu-feather-oled-fw-128x64 |
 | 6 | 1-1.4 | 239a:8120 | E6614104030F7A24 | Pico W / mcu-pico-eink-154-tricolor |
@@ -49,10 +49,16 @@ device never enumerated. Re-enumerating the hub via sysfs unbind/bind did NOT he
 (the hub then hit `1-1: can't set config #1, error -110`); a Pi reboot cleared the
 bus-wide storm, and `all_off`→`all_on` + powering ch3 off restored the rest.
 
+**ch3 update (2026-06-20):** the PyPortal M4 Titano (`mcu-pyportal`, 239a:8053, ser
+F1DF00AE…1730) is **back on the bench at port 1-1.1.4 = solenoid ch3** (the flaky
+Feather ESP32-S2 that wedged this port is gone). by-path
+`/dev/serial/by-path/platform-3f980000.usb-usb-0:1.1.4:1.0`. Now a real
+firmware-bench target — `flasher: bossac`, `build_target: adafruit_pyportal_m4_titano`
+(see [[project-samd51-bossac-flasher]]).
+
 **Off-bench remainders (absent during probe; have topology entries, no channel):**
-mcu-pyportal (PyPortal M4 Titano, ser F1DF00AE5346513551202020FF171730 — its old port
-1-1.2 is now the QT Py), mcu-feather-esp32s2-tft, mcu-feather-oled-fw-128x32,
-mcu-feather-tft-13-240, mcu-feather-eink-29-rbw, mcu-feather-eink-29-gray-fw.
+mcu-feather-esp32s2-tft, mcu-feather-oled-fw-128x32, mcu-feather-tft-13-240,
+mcu-feather-eink-29-rbw, mcu-feather-eink-29-gray-fw.
 
 **DB vs topology precedence:** the seeder's `_merge_runtime_device_fields` makes the
 **live DB authoritative** for hub_port_path/solenoid_channel/usb_serial when present

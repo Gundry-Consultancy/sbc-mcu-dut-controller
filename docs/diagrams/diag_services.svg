@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 720" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="as" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <style>
+      .b{fill:#0f172a;font-size:13px;font-weight:700;}
+      .t{fill:#0f172a;font-size:11.5px;}
+      .s{fill:#475569;font-size:11px;}
+      .si{fill:#e2e8f0;font-size:11px;}
+      .mono{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;fill:#334155;}
+      .monw{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;fill:#e2e8f0;}
+      .port{font-family:ui-monospace,Consolas,monospace;font-size:11px;font-weight:700;fill:#b45309;}
+      .edge{stroke:#475569;stroke-width:1.7;fill:none;}
+      .obs{stroke:#7c3aed;stroke-width:1.6;fill:none;stroke-dasharray:5 4;}
+      .key{font-family:ui-monospace,Consolas,monospace;font-size:10px;fill:#0f766e;}
+    </style>
+  </defs>
+
+  <text x="530" y="28" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Services, Ports, Keys &amp; Endpoints</text>
+  <text x="530" y="48" text-anchor="middle" class="s">Who listens where, what guards each hop, and why the network layer is interchangeable</text>
+
+  <!-- CI -->
+  <rect x="24" y="74" width="232" height="186" rx="11" fill="#334155"/>
+  <text x="140" y="96" text-anchor="middle" class="b" fill="#fff">GitHub Actions runner</text>
+  <text x="38" y="118" class="si" font-weight="600">Repo secrets it carries:</text>
+  <text x="38" y="137" class="monw">TAILSCALE_AUTHKEY_*</text>
+  <text x="38" y="154" class="monw">HIL_API_KEY_*  (Bearer)</text>
+  <text x="38" y="171" class="monw">HIL_IO_USERNAME / _KEY</text>
+  <text x="38" y="188" class="monw">HIL_WIFI_SSID / _PASSWORD</text>
+  <text x="38" y="210" class="si" font-weight="600">Vars:</text>
+  <text x="38" y="228" class="monw">HIL_API_BASE</text>
+  <text x="38" y="245" class="monw">HIL_LOW_REF · HIL_TARGETS</text>
+
+  <!-- Network seam -->
+  <rect x="276" y="74" width="118" height="186" rx="11" fill="#fff7ed" stroke="#fb923c" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="335" y="96" text-anchor="middle" class="b" fill="#c2410c">Network seam</text>
+  <text x="335" y="112" text-anchor="middle" class="s" font-style="italic">swappable</text>
+  <text x="335" y="134" text-anchor="middle" class="s">Tailscale MagicDNS</text>
+  <text x="335" y="150" text-anchor="middle" class="s">— or —</text>
+  <text x="335" y="166" text-anchor="middle" class="mono">LAN 192.168.1.169</text>
+  <text x="335" y="182" text-anchor="middle" class="mono">WAN wan.gdenu.fi</text>
+  <text x="335" y="198" text-anchor="middle" class="s">any VPN / port-fwd</text>
+  <text x="335" y="222" text-anchor="middle" class="s">CI only needs reach</text>
+  <text x="335" y="238" text-anchor="middle" class="s">+ HIL_API_BASE</text>
+
+  <path class="edge" d="M256 150 H276" marker-end="url(#as)"/>
+  <path class="edge" d="M394 150 H430" marker-end="url(#as)"/>
+  <text x="412" y="142" text-anchor="middle" class="port">:8080</text>
+
+  <!-- Controller -->
+  <rect x="430" y="74" width="300" height="252" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="580" y="95" text-anchor="middle" class="b" fill="#4338ca">Controller host</text>
+  <text x="580" y="111" text-anchor="middle" class="s">no DUTs · orchestrates only</text>
+  <line x1="444" y1="120" x2="716" y2="120" stroke="#c7d2fe"/>
+  <text x="444" y="137" class="t" font-weight="700">Services</text>
+  <text x="444" y="155" class="t">Caddy/nginx — TLS reverse proxy</text>
+  <text x="444" y="172" class="t">uvicorn · FastAPI <tspan class="port">:8080</tspan></text>
+  <text x="458" y="188" class="mono">/v1 API · /ui (HTMX) · /healthz · /metrics</text>
+  <text x="444" y="205" class="t">SQLite — jobs · events · audit (WAL)</text>
+  <line x1="444" y1="216" x2="716" y2="216" stroke="#c7d2fe"/>
+  <text x="444" y="233" class="t" font-weight="700">Secrets at rest (mode 0400, user hil)</text>
+  <text x="444" y="251" class="key">/etc/hil/keys/*  — per-host SSH private keys</text>
+  <text x="444" y="267" class="key">/etc/hil/secrets.env  — AIO + Wi-Fi creds</text>
+  <text x="444" y="283" class="mono">bearer tokens (argon2id) · mint-token.py</text>
+  <text x="444" y="299" class="mono">OIDC verifier — JWKS, aud=hil-controller</text>
+  <text x="444" y="317" class="s">Bearer / OIDC required for every write</text>
+
+  <!-- DUT host -->
+  <rect x="748" y="74" width="288" height="196" rx="12" fill="#ccfbf1" stroke="#0d9488" stroke-width="2"/>
+  <text x="892" y="95" text-anchor="middle" class="b" fill="#0f766e">DUT host — rpi-displays / rpi-hil006</text>
+  <text x="892" y="111" text-anchor="middle" class="s">microcontroller fleet · USB-server host</text>
+  <line x1="762" y1="120" x2="1022" y2="120" stroke="#5eead4"/>
+  <text x="762" y="138" class="t">sshd <tspan class="port">:22</tspan> — pi user, controller key authorised</text>
+  <text x="762" y="156" class="t">hil-usbipd <tspan class="port">:3240</tspan> — usbip attach target</text>
+  <text x="762" y="174" class="t">usbip-autobind (udev) — DUT stays bound</text>
+  <text x="762" y="192" class="t" font-weight="700" fill="#b45309">solenoid control — USB power plane</text>
+  <text x="776" y="208" class="mono">MCP23017 @ I²C 0x20 (bus 1) · usb_hub.py</text>
+  <text x="776" y="224" class="mono">HID solenoid hub · per-board timing profiles</text>
+  <text x="762" y="244" class="t">CSI camera v4l2:0 · esptool/picotool/uf2-msc</text>
+  <text x="762" y="261" class="mono">/dev/serial/by-id/… (stable serial node)</text>
+
+  <!-- SBC fleet -->
+  <rect x="748" y="284" width="288" height="92" rx="12" fill="#ccfbf1" stroke="#0d9488" stroke-width="2"/>
+  <text x="892" y="305" text-anchor="middle" class="b" fill="#0f766e">SBC fleet — rpi-hil001 … rpi-hil007</text>
+  <text x="762" y="325" class="t">sshd <tspan class="port">:22</tspan> — one shared fleet key:</text>
+  <text x="776" y="342" class="key">/etc/hil/keys/rpi-hil-fleet</text>
+  <text x="762" y="359" class="s">per-host known_hosts pinning · power control planned</text>
+
+  <!-- Broker -->
+  <rect x="430" y="404" width="300" height="120" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="580" y="425" text-anchor="middle" class="b" fill="#6d28d9">ProtoMQ broker (per-session)</text>
+  <text x="580" y="441" text-anchor="middle" class="s">on the controller, a DUT host, or external</text>
+  <text x="444" y="463" class="t">MQTT <tspan class="port">:1884</tspan> — DUT connects (or live IO <tspan class="port">:8883</tspan>)</text>
+  <text x="444" y="482" class="t">HTTP control <tspan class="mono">api_port</tspan> — /api/echo · /api/autoresponse</text>
+  <text x="444" y="501" class="t">web UI <tspan class="port">:5173</tspan></text>
+  <text x="444" y="518" class="s">host:port injected into DUT secrets at flash time</text>
+
+  <!-- Cameras -->
+  <rect x="748" y="404" width="288" height="78" rx="12" fill="#fdf2f8" stroke="#db2777" stroke-width="2"/>
+  <text x="892" y="425" text-anchor="middle" class="b" fill="#be185d">Cameras</text>
+  <text x="762" y="445" class="t">CSI v4l2:0 — on the DUT host, read over SSH</text>
+  <text x="762" y="463" class="t">IP webcam (Android) <tspan class="port">:8080</tspan> <tspan class="mono">/video</tspan> — direct HTTP</text>
+  <text x="762" y="479" class="s">per-device ROI; QR-assisted calibration</text>
+
+  <!-- Edges controller -> DUT host: SSH + usbip -->
+  <path class="edge" d="M730 140 H748" marker-end="url(#as)"/>
+  <text x="739" y="132" text-anchor="middle" class="port">:22</text>
+  <path class="edge" d="M730 162 H748" marker-end="url(#as)"/>
+  <text x="739" y="178" text-anchor="middle" class="port">:3240</text>
+
+  <!-- controller -> SBC fleet -->
+  <path class="edge" d="M730 300 H748" marker-end="url(#as)"/>
+  <text x="739" y="293" text-anchor="middle" class="port">:22</text>
+
+  <!-- controller -> broker -->
+  <path class="obs" d="M560 326 V404" marker-end="url(#as)"/>
+  <text x="528" y="368" text-anchor="middle" class="s" fill="#6d28d9">observe :1884</text>
+  <text x="528" y="383" text-anchor="middle" class="s" fill="#6d28d9">+ HTTP api_port</text>
+
+  <!-- DUT -> broker MQTT -->
+  <path class="obs" d="M748 250 C700 470 700 462 730 462" marker-end="url(#as)"/>
+  <text x="690" y="430" text-anchor="middle" class="port">MQTT :1884</text>
+
+  <!-- camera -> controller -->
+  <path class="edge" d="M748 443 C700 443 720 360 730 320" marker-end="url(#as)"/>
+
+  <!-- legend / note -->
+  <text x="24" y="560" class="b">Why "swappable"</text>
+  <text x="24" y="580" class="s">The controller is just an HTTP service on :8080. CI reaches it however the network allows — Tailscale MagicDNS today,</text>
+  <text x="24" y="598" class="s">but a plain LAN address (192.168.1.169:8080), a WAN host (wan.gdenu.fi:8080), or any other VPN works identically.</text>
+  <text x="24" y="616" class="s">Only two CI inputs change with the path: HIL_API_BASE (where) and the join step (TAILSCALE_AUTHKEY, or a different VPN's).</text>
+  <text x="24" y="640" class="s">The bearer token (or GitHub OIDC) is what actually authorises a job — independent of the transport that carried it.</text>
+
+  <text x="24" y="676" class="b" fill="#b45309">USB power plane</text>
+  <text x="24" y="696" class="s">"Toggle USB" = pulse a solenoid channel on the Genesys hub via the MCP23017 GPIO expander (I²C 0x20). usb_hub.py drives it;</text>
+  <text x="24" y="714" class="s">timing profiles (standard, samd51_uf2, …) give the right power/reset pulse to enter a bootloader. usbip :3240 then re-attaches the DUT.</text>
+</svg>
