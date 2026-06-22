@@ -53,7 +53,15 @@ class SSHTransport:
     ) -> ExecResult:
         import asyncssh
 
-        cmd = " ".join(_shell_quote(a) for a in argv)
+        # Inline env as `KEY=val` assignments before the command. asyncssh's
+        # ``env=`` sends SSH SETENV requests that sshd silently drops unless it's
+        # configured with a matching ``AcceptEnv`` — so custom vars (e.g.
+        # WS_REAL_DISPLAY_TEST, the injected MQTT_HOST/PORT, secrets) never reach
+        # the remote process. Prefixing the command sets them reliably.
+        env_prefix = ""
+        if env:
+            env_prefix = "".join(f"{k}={_shell_quote(str(v))} " for k, v in env.items())
+        cmd = env_prefix + " ".join(_shell_quote(a) for a in argv)
         if cwd:
             cmd = f"cd {_shell_quote(cwd)} && {cmd}"
 

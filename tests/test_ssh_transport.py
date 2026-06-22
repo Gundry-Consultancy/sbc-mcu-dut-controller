@@ -123,3 +123,32 @@ async def test_healthcheck_false_when_ssh_fails(ssh_transport):
     with patch("asyncssh.connect", side_effect=ConnectionRefusedError("refused")):
         ok = await ssh_transport.healthcheck()
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_exec_inlines_env_into_command(ssh_transport):
+    """env must be inlined as KEY=val assignments — asyncssh env= relies on
+    sshd AcceptEnv and is silently dropped, so the remote process never sees it."""
+    mock_result = MagicMock()
+    mock_result.exit_status = 0
+    mock_result.stdout = ""
+    mock_result.stderr = ""
+
+    mock_conn = AsyncMock()
+    mock_conn.run = AsyncMock(return_value=mock_result)
+    mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_conn.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("asyncssh.connect", return_value=mock_conn):
+        await ssh_transport.exec(
+            ["python", "-m", "pytest"],
+            env={"WS_REAL_DISPLAY_TEST": "1", "MQTT_HOST": "192.168.1.169"},
+            cwd="/tmp/hil/job1",
+        )
+
+    sent_cmd = mock_conn.run.call_args.args[0]
+    assert "WS_REAL_DISPLAY_TEST='1'" in sent_cmd
+    assert "MQTT_HOST='192.168.1.169'" in sent_cmd
+    assert "cd '/tmp/hil/job1' &&" in sent_cmd
+    # env assignments precede the command
+    assert sent_cmd.index("WS_REAL_DISPLAY_TEST") < sent_cmd.index("pytest")
