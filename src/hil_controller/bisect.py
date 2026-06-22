@@ -45,6 +45,27 @@ import httpx
 
 WS_REPO = "adafruit/Adafruit_Wippersnapper_Arduino"
 
+#: An Adafruit IO **cloud** host needs a REAL account (anonymous / job-id creds
+#: don't authenticate). The local protomq broker is anonymous, so anything else
+#: is treated as local.
+_CLOUD_IO_RE = re.compile(r"(^|\.)adafruit\.(com|us)$", re.IGNORECASE)
+#: Credential values that are config *placeholders*, not real accounts — so a
+#: misconfigured controller fails loudly instead of flashing a board that
+#: reboot-loops on an MQTT auth reject.
+_PLACEHOLDER_IO_KEYS = {"", "placeholder", "your_aio_key_here", "your_io_key_here"}
+
+
+def is_cloud_broker(io_url: str) -> bool:
+    """True if ``io_url`` is an Adafruit IO cloud host (needs a real account)."""
+    host = (io_url or "").strip().lower()
+    host = host.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    return bool(_CLOUD_IO_RE.search(host))
+
+
+def is_real_io_key(key: str) -> bool:
+    """True if ``key`` looks like a real Adafruit IO key (not a placeholder)."""
+    return (key or "").strip().lower() not in _PLACEHOLDER_IO_KEYS
+
 
 # --------------------------------------------------------------------------- #
 # Verdict                                                                     #
@@ -244,6 +265,12 @@ class BisectConfig:
     flasher: str = "uf2-msc"
     secrets: dict[str, str] = field(default_factory=dict)
     stages: list[dict[str, Any]] | None = None
+    #: Broker the DUT checks in to. Default is the io.adafruit.com cloud (the
+    #: AirLift's MQTT CONNECT is rejected by the strict local protomq); set to
+    #: an empty io_url to use the per-session local broker (anonymous creds).
+    io_url: str = "io.adafruit.com"
+    io_port: int = 8883
+    checkin_timeout_s: int = 240
     gh_token: str = ""
     verify_times: int = 2
     infra_retries: int = 2
@@ -261,7 +288,12 @@ class BisectRunner:
     def __init__(self, cfg: BisectConfig, *, log: Callable[[str], None] = print) -> None:
         self.cfg = cfg
         self.log = log
-        self._stages = cfg.stages or default_stages(cfg.flasher)
+        self._stages = cfg.stages or default_stages(
+            cfg.flasher,
+            io_url=cfg.io_url,
+            io_port=cfg.io_port,
+            checkin_timeout_s=cfg.checkin_timeout_s,
+        )
 
     # -- HTTP helpers ------------------------------------------------------- #
 
@@ -413,8 +445,29 @@ class BisectRunner:
             )
         return results[0]
 
+    def _check_secrets(self) -> None:
+        """Fail fast if a cloud-broker stage lacks a real Adafruit IO key.
+
+        A ``write_secrets_msc`` pointing at io.adafruit.com (or .us) needs a real
+        account — anonymous / placeholder creds get the MQTT CONNECT rejected, the
+        DUT reboot-loops, and every version looks "broken". Catch that at submit
+        time with a clear message rather than burning a full flash/test cycle.
+        """
+        for stage in self._stages:
+            if stage.get("type") != "write_secrets_msc":
+                continue
+            io_url = stage.get("io_url") or ""
+            if is_cloud_broker(io_url) and not is_real_io_key(self.cfg.secrets.get("IO_KEY", "")):
+                raise BisectError(
+                    f"cloud broker {io_url!r} needs a real Adafruit IO account, but none was "
+                    "supplied (IO_USERNAME/IO_KEY are empty or placeholder). Pass real creds "
+                    "in the request (CLI: IO_USERNAME/IO_KEY env; UI: the IO fields), or target "
+                    "the local broker (leave io_url unset) to use anonymous per-job creds."
+                )
+
     def run(self) -> dict[str, Any]:
         """Enumerate, validate the oracle at both endpoints, then bisect."""
+        self._check_secrets()
         releases = self.fetch_releases()
         if not releases:
             raise BisectError(f"no releases in {self.cfg.repo} match asset {self.cfg.asset_glob!r}")

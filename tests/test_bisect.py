@@ -8,14 +8,65 @@ from __future__ import annotations
 import pytest
 
 from hil_controller.bisect import (
+    BisectConfig,
+    BisectError,
     BisectRunner,
     Release,
     Verdict,
     bisect,
+    is_cloud_broker,
+    is_real_io_key,
     parse_releases,
     select_window,
     version_key,
 )
+
+
+def test_is_cloud_broker() -> None:
+    assert is_cloud_broker("io.adafruit.com")
+    assert is_cloud_broker("io.adafruit.us")
+    assert is_cloud_broker("mqtts://io.adafruit.com:8883")
+    assert not is_cloud_broker("")  # blank → local
+    assert not is_cloud_broker("192.168.1.169")
+    assert not is_cloud_broker("notadafruit.com.evil.test")
+
+
+def test_is_real_io_key() -> None:
+    assert is_real_io_key("aio_EXAMPLEKEYABC123")
+    assert not is_real_io_key("")
+    assert not is_real_io_key("placeholder")
+    assert not is_real_io_key("YOUR_AIO_KEY_HERE")
+
+
+def _cfg(**kw: object) -> BisectConfig:
+    base = dict(
+        device_id="mcu-pyportal",
+        working_ref="1.0.0-beta.78",
+        broken_ref="1.0.0-beta.130",
+        asset_glob="*.uf2",
+        base_url="http://127.0.0.1:8080",
+        token="t",
+    )
+    base.update(kw)
+    return BisectConfig(**base)  # type: ignore[arg-type]
+
+
+def test_check_secrets_rejects_cloud_without_real_key() -> None:
+    # Cloud broker (default io.adafruit.com) + no/placeholder key → fail fast.
+    runner = BisectRunner(_cfg(secrets={"IO_KEY": "placeholder"}), log=lambda _m: None)
+    with pytest.raises(BisectError, match="real Adafruit IO account"):
+        runner._check_secrets()
+
+
+def test_check_secrets_allows_cloud_with_real_key() -> None:
+    runner = BisectRunner(_cfg(secrets={"IO_KEY": "aio_realkey123"}), log=lambda _m: None)
+    runner._check_secrets()  # no raise
+
+
+def test_check_secrets_allows_local_broker_without_creds() -> None:
+    # Local broker (empty io_url) needs no creds — the bench derives anon ones.
+    runner = BisectRunner(_cfg(io_url="", io_port=1884, secrets={}), log=lambda _m: None)
+    runner._check_secrets()  # no raise
 
 
 def test_classify_reads_checkin_verdict() -> None:

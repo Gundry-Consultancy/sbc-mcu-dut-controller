@@ -454,6 +454,15 @@ class FirmwareBenchAdapter:
         need_protomq = any(
             s.get("type") == "write_secrets_msc" and not s.get("io_url") for s in stages
         ) or bool(self.params.get("launch_protomq", False))
+        # The local protomq broker (aedes) is ANONYMOUS — any username/key
+        # authenticates. So for a local-broker secrets write with no real creds
+        # supplied, derive a stable per-job identity from the job id (16 lowercase
+        # hex, no dashes) rather than relying on controller.env placeholders
+        # ("hil"/"placeholder") that auth fine locally but are meaningless. A
+        # CLOUD write_secrets (explicit io_url, e.g. io.adafruit.com) is left
+        # untouched: it needs a real Adafruit IO account, validated at submit.
+        if need_protomq:
+            self._maybe_derive_anon_io_creds()
         if need_protomq and not any(s.get("type") == "launch_protomq" for s in stages):
             idx = self._first_index(stages, "flash")
             if idx is None:
@@ -475,6 +484,35 @@ class FirmwareBenchAdapter:
             if last_pc is not None:
                 stages.insert(last_pc + 1, {"type": "print_boot_log"})
         return stages
+
+    @staticmethod
+    def anon_io_cred(job_id: str) -> str:
+        """Anonymous-broker credential from a job id: 16 lowercase hex, no dashes.
+
+        The local protomq broker doesn't validate credentials, so a per-job
+        identity is all that's needed; using the job id keeps it stable and
+        traceable. Falls back to ``"anon"`` for an empty/odd id.
+        """
+        token = (job_id or "").replace("-", "").lower()
+        token = "".join(ch for ch in token if ch.isalnum())[:16]
+        return token or "anon"
+
+    def _maybe_derive_anon_io_creds(self) -> None:
+        """Fill IO_USERNAME/IO_KEY from the job id for a local (anonymous) broker.
+
+        Only when the supplied creds are empty or the known controller.env
+        placeholders (``hil``/``placeholder``) — a real account (anything else)
+        is preserved. Mutates ``self.secrets`` in place (shared with the
+        :class:`BenchContext`, built after this).
+        """
+        key = (self.secrets.get("IO_KEY") or "").strip().lower()
+        user = (self.secrets.get("IO_USERNAME") or "").strip().lower()
+        if key not in ("", "placeholder") or user not in ("", "hil", "placeholder"):
+            return  # a real account was supplied — leave it
+        anon = self.anon_io_cred(self.job_id)
+        self.secrets["IO_USERNAME"] = anon
+        self.secrets["IO_KEY"] = anon
+        self._sink("bench", f"local broker is anonymous → derived IO creds from job id ({anon})")
 
     @staticmethod
     def _first_index(stages: list[dict[str, Any]], stype: str) -> int | None:

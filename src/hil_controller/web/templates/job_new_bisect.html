@@ -4,17 +4,11 @@
 <p class="form-hint" style="margin-bottom:1rem;max-width:900px;">
   Find the first WipperSnapper release where a board broke. Flashes + connectivity-tests
   the releases between a <strong>working</strong> and a <strong>broken</strong> ref on real
-  hardware, validates both endpoints first, then binary-searches. WiFi/IO secrets come from
-  the controller's configuration — they are <strong>not</strong> entered here.
+  hardware, validates both endpoints first, then binary-searches. WiFi/IO secrets default to
+  the controller's configuration but can be overridden in the <strong>Broker &amp; secrets</strong>
+  panel below — they are stored only for the run, never persisted.
 </p>
 
-{% if not secrets_configured %}
-<div class="alert alert-error" style="max-width:900px;">
-  No bench WiFi is configured on the controller (<code>HIL_BENCH_WIFI_SSID</code> /
-  <code>HIL_BENCH_WIFI_PASSWORD</code> in <code>run/controller.env</code>). The DUT can't
-  reach the per-session protomq broker without it — set those and restart the controller.
-</div>
-{% endif %}
 {% if error %}<div class="alert alert-error" style="max-width:900px;">{{ error }}</div>{% endif %}
 
 <form method="post" action="/ui/jobs/bisect" style="max-width:900px;">
@@ -83,6 +77,49 @@
         <label for="extra_cmd">Extra test command (optional)</label>
         <input type="text" id="extra_cmd" name="extra_cmd"
                value="{{ form.extra_cmd if form else '' }}" placeholder="additional per-version check">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-panel">
+    <h2>Broker &amp; secrets <span class="form-hint">(optional — defaults to controller config)</span></h2>
+    <p class="form-hint" style="margin-bottom:0.75rem;">
+      Leave the IO URL as <code>io.adafruit.com</code> for the cloud (a <strong>real</strong> IO
+      account is required — AirLift boards can't use the local broker). Clear it to use the local
+      per-session broker, which is anonymous: IO creds are auto-derived from the job id, so leave
+      them blank. WiFi defaults to <code>bench-wifi</code> when left blank.
+    </p>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="io_url">IO URL</label>
+        <input type="text" id="io_url" name="io_url"
+               value="{{ form.io_url if form else 'io.adafruit.com' }}"
+               placeholder="io.adafruit.com (blank = local broker)">
+      </div>
+      <div class="form-group">
+        <label for="io_port">IO port</label>
+        <input type="number" id="io_port" name="io_port"
+               value="{{ form.io_port if form else '8883' }}" placeholder="8883">
+      </div>
+      <div class="form-group">
+        <label for="io_username">IO username <span class="form-hint">(cloud only)</span></label>
+        <input type="text" id="io_username" name="io_username" autocomplete="off"
+               value="{{ form.io_username if form else '' }}" placeholder="from controller config if blank">
+      </div>
+      <div class="form-group">
+        <label for="io_key">IO key <span class="form-hint">(cloud only)</span></label>
+        <input type="password" id="io_key" name="io_key" autocomplete="off"
+               placeholder="from controller config if blank">
+      </div>
+      <div class="form-group">
+        <label for="wifi_ssid">WiFi SSID</label>
+        <input type="text" id="wifi_ssid" name="wifi_ssid"
+               value="{{ form.wifi_ssid if form else '' }}" placeholder="bench-wifi">
+      </div>
+      <div class="form-group">
+        <label for="wifi_password">WiFi password</label>
+        <input type="password" id="wifi_password" name="wifi_password" autocomplete="off"
+               placeholder="from controller config if blank">
       </div>
     </div>
   </div>

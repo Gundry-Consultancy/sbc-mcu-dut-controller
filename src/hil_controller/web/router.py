@@ -2496,10 +2496,16 @@ async def submit_bisect(
     repo: Annotated[str, Form()] = "",
     test_branch: Annotated[str, Form()] = "",
     extra_cmd: Annotated[str, Form()] = "",
+    io_url: Annotated[str, Form()] = "",
+    io_port: Annotated[str, Form()] = "",
+    io_username: Annotated[str, Form()] = "",
+    io_key: Annotated[str, Form()] = "",
+    wifi_ssid: Annotated[str, Form()] = "",
+    wifi_password: Annotated[str, Form()] = "",
 ) -> Response:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
-    from hil_controller.bisect import WS_REPO, BisectConfig
+    from hil_controller.bisect import WS_REPO, BisectConfig, is_cloud_broker, is_real_io_key
     from hil_controller.config import get_settings
     from hil_controller.web.bisect_runs import start_bisect
 
@@ -2526,6 +2532,10 @@ async def submit_bisect(
                     "repo": repo,
                     "test_branch": test_branch,
                     "extra_cmd": extra_cmd,
+                    "io_url": io_url,
+                    "io_port": io_port,
+                    "io_username": io_username,
+                    "wifi_ssid": wifi_ssid,
                 },
                 "error": msg,
             },
@@ -2533,12 +2543,36 @@ async def submit_bisect(
 
     if not device_id or not working_ref or not broken_ref or not asset_glob:
         return _err("device, working ref, broken ref, and asset glob are all required")
-    if not cfg.bench_wifi_ssid:
+
+    # Secret precedence: request field → controller.env config (when it's not the
+    # bare placeholder) → server-side default/derivation. IO creds for a CLOUD
+    # broker MUST be real; for the local broker they're left empty so the bench
+    # derives anonymous per-job creds. WiFi defaults to bench-wifi/changeme.
+    def _cfg_io_user() -> str:
+        return cfg.bench_io_username if cfg.bench_io_username not in ("", "hil") else ""
+
+    def _cfg_io_key() -> str:
+        return cfg.bench_io_key if is_real_io_key(cfg.bench_io_key) else ""
+
+    r_io_url = io_url.strip() or "io.adafruit.com"
+    r_io_port = int((io_port or "").strip() or 8883)
+    r_io_user = io_username.strip() or _cfg_io_user()
+    r_io_key = io_key.strip() or _cfg_io_key()
+    r_wifi_ssid = wifi_ssid.strip() or cfg.bench_wifi_ssid or "bench-wifi"
+    r_wifi_password = wifi_password.strip() or cfg.bench_wifi_password or "changeme"
+
+    if is_cloud_broker(r_io_url) and not is_real_io_key(r_io_key):
         return _err(
-            "no bench WiFi configured on the controller (set HIL_BENCH_WIFI_SSID / "
-            "HIL_BENCH_WIFI_PASSWORD in run/controller.env) — the DUT can't reach "
-            "protomq without it"
+            f"the cloud broker {r_io_url!r} needs a real Adafruit IO account — enter IO "
+            "username + key below (the controller's configured value is a placeholder). "
+            "Or set a local broker (clear the IO URL) to use anonymous per-job creds."
         )
+
+    secrets: dict[str, str] = {"WIFI_SSID": r_wifi_ssid, "WIFI_PASSWORD": r_wifi_password}
+    if r_io_user:
+        secrets["IO_USERNAME"] = r_io_user
+    if r_io_key:
+        secrets["IO_KEY"] = r_io_key
 
     bcfg = BisectConfig(
         device_id=device_id,
@@ -2549,12 +2583,9 @@ async def submit_bisect(
         token=hil_token,  # the operator's bearer — valid regardless of static/hashed tokens
         repo=repo or WS_REPO,
         flasher=flasher,
-        secrets={
-            "IO_USERNAME": cfg.bench_io_username,
-            "IO_KEY": cfg.bench_io_key,
-            "WIFI_SSID": cfg.bench_wifi_ssid,
-            "WIFI_PASSWORD": cfg.bench_wifi_password,
-        },
+        secrets=secrets,
+        io_url=r_io_url,
+        io_port=r_io_port,
         verify_times=int(verify_times or 2),
     )
     summary = {
@@ -2566,6 +2597,9 @@ async def submit_bisect(
         "verify_times": verify_times,
         "test_branch": test_branch,
         "extra_cmd": extra_cmd,
+        "io_url": r_io_url,
+        "io_port": r_io_port,
+        "broker": "cloud" if is_cloud_broker(r_io_url) else "local",
     }
     run_id = await start_bisect(bcfg, summary)
     return RedirectResponse(f"/ui/bisect/{run_id}", status_code=status.HTTP_303_SEE_OTHER)

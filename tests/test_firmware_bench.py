@@ -187,6 +187,42 @@ def test_build_stages_no_protomq_or_bootlog_for_flash_only(tmp_path: Path) -> No
     assert "print_boot_log" not in types
 
 
+def test_anon_io_cred_from_job_id() -> None:
+    full = "11f079bb-67e9-4a21-af8c-851cc8783449"
+    assert FirmwareBenchAdapter.anon_io_cred(full) == "11f079bb67e94a21"
+    assert FirmwareBenchAdapter.anon_io_cred("job-1") == "job1"
+    assert FirmwareBenchAdapter.anon_io_cred("") == "anon"
+
+
+def test_local_broker_derives_anon_creds_when_placeholder(tmp_path: Path) -> None:
+    # Local (no io_url) write_secrets + placeholder creds → derive from job id.
+    a = _adapter(tmp_path, stages=[{"type": "flash"}, {"type": "write_secrets_msc"}])
+    a.secrets = {"IO_USERNAME": "hil", "IO_KEY": "placeholder"}
+    a._build_stages(log_port="")
+    assert a.secrets["IO_USERNAME"] == "job1"
+    assert a.secrets["IO_KEY"] == "job1"
+
+
+def test_local_broker_preserves_real_creds(tmp_path: Path) -> None:
+    # A real account must NOT be overwritten by the anon derivation.
+    a = _adapter(tmp_path, stages=[{"type": "flash"}, {"type": "write_secrets_msc"}])
+    a.secrets = {"IO_USERNAME": "playground_example", "IO_KEY": "aio_realkey"}
+    a._build_stages(log_port="")
+    assert a.secrets["IO_KEY"] == "aio_realkey"
+
+
+def test_cloud_broker_no_anon_derivation(tmp_path: Path) -> None:
+    # An external io_url (cloud) is not anonymous — never derive; leave creds empty
+    # so the bisection's submit-time check rejects a missing real account.
+    a = _adapter(
+        tmp_path,
+        stages=[{"type": "flash"}, {"type": "write_secrets_msc", "io_url": "io.adafruit.com"}],
+    )
+    a.secrets = {}
+    a._build_stages(log_port="")
+    assert "IO_KEY" not in a.secrets
+
+
 # --------------------------------------------------------------------------- #
 # flash phase                                                                 #
 # --------------------------------------------------------------------------- #

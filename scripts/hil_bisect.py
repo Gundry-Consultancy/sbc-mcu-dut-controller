@@ -54,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--asset-glob", default="", help="release-asset fnmatch (per-board firmware)")
     p.add_argument("--repo", default=WS_REPO)
     p.add_argument("--flasher", default="uf2-msc")
+    p.add_argument(
+        "--io-url",
+        default="io.adafruit.com",
+        help="broker the DUT checks in to (blank = local per-session broker, anonymous creds)",
+    )
+    p.add_argument("--io-port", type=int, default=8883)
     p.add_argument("--verify-times", type=int, default=2, help="test each version N times")
     p.add_argument("--infra-retries", type=int, default=2)
     p.add_argument("--job-timeout-s", type=float, default=900.0)
@@ -68,9 +74,18 @@ def main(argv: list[str] | None = None) -> int:
     if not asset_glob:
         p.error(f"no --asset-glob and no default for device {args.device!r}")
     secrets = _secrets_from_env()
-    if not secrets.get("IO_USERNAME"):
+    # Drop a placeholder IO key so the server either anon-derives (local broker)
+    # or fails fast (cloud) instead of flashing a board that reboot-loops on auth.
+    from hil_controller.bisect import is_cloud_broker, is_real_io_key
+
+    if secrets.get("IO_KEY") and not is_real_io_key(secrets["IO_KEY"]):
+        secrets.pop("IO_KEY", None)
+        secrets.pop("IO_USERNAME", None)
+    if is_cloud_broker(args.io_url) and not is_real_io_key(secrets.get("IO_KEY", "")):
         print(
-            "warning: no IO_USERNAME/IO_KEY/WIFI_* in env — checkin test will FAIL", file=sys.stderr
+            f"warning: cloud broker {args.io_url!r} needs a real IO_USERNAME/IO_KEY in env — "
+            "the checkin will FAIL (or pass --io-url '' for the anonymous local broker)",
+            file=sys.stderr,
         )
 
     cfg = BisectConfig(
@@ -83,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
         repo=args.repo,
         flasher=args.flasher,
         secrets=secrets,
+        io_url=args.io_url,
+        io_port=args.io_port,
         gh_token=os.environ.get("GITHUB_TOKEN", ""),
         verify_times=args.verify_times,
         infra_retries=args.infra_retries,
