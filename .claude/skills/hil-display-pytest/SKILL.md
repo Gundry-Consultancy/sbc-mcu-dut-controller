@@ -108,6 +108,57 @@ camera per stage. Assert on `run.log` lines (`[real-tft]`, the broker B2D
 `display.add/write/remove` publishes) + the ROI images, not the live stream
 (pytest stdout arrives as one `run.log` at the end).
 
+## Remote display on an SBC (controller-side capture)
+
+When the panel is wired to a **remote** SBC (not the controller) — e.g. the 3.7"
+UC8253 on `rpi-hil002` (Pi Zero W) or the 5.83" UC8179 on `rpi-hil004` (Pi 4) —
+the split is: **the pytest runs ON the SBC** (drives the panel in-process = the
+"basic client"), while **protoMQ + the webcam/proof run on the controller**. The
+Zero W is ARMv6 and can't run the node broker at all, so this isn't optional.
+
+Wiring it (proven green for UC8253 + UC8179):
+- **protoMQ on the controller**: `params.protomq = {"launch_on": "controller"}`.
+  The worker launches a broker locally (its own free ports) and injects
+  `PROTOMQ_RUN_EXTERNALLY=1` + `MQTT_HOST/PORT` + `PROTOMQ_HOST/PORT/PATH` into
+  the run env so the SBC client connects back. (The test's `protomq` fixture then
+  prints "ProtoMQ run externally" and skips the local `npm start`.)
+- **Controller-side capture**: `params.capture = {webcam_url, roi:[x,y,w,h],
+  snapshot_dir, tune:{iso,exposure_ns}}`. The SBC test prints
+  `WS_HIL_CAPTURE seq=N label=L kind=snap|splash window_s=W` stage markers; the
+  worker streams the run's stdout line-by-line (transport `on_line` hook) and a
+  `HilCapture` consumer turns each marker into a full frame + ROI crop under
+  `snapshot_dir`. Harvest with `collect_artifacts: ["<snapshot_dir>/*.jpg"]`.
+- **`entry`** = the SBC's venv python (e.g. `/home/pi/Adafruit_Wippersnapper_Python/.venv/bin/python`).
+- The SBC needs the **same client stack** as the controller: `adafruit_epd` (the
+  display driver — the *client's* job, install it on the SBC; PIL is NOT needed
+  on the SBC, it lives on the controller where capture runs), plus the test deps.
+- Point the SBC's persistent checkout at the test branch so the editable package
+  matches the cloned test files (esp. the protoMQ external-mode handling).
+
+Gotchas that bit (all now fixed in the controller, but watch for regressions):
+- **SSH drops env vars.** `asyncssh env=` relies on sshd `AcceptEnv`; custom vars
+  (`WS_REAL_DISPLAY_TEST`, the injected `MQTT_HOST`, …) silently never arrive and
+  the test **skips** (hollow pass) or can't reach the broker. The SSH transport
+  now inlines env as `KEY=val` in the command — verify with an `env | grep`
+  diagnostic job if a remote test mysteriously skips.
+- **The scheduler parses `request_json` twice** (once for the adapter, once for
+  the worker) → `worker.params` and `adapter.params` are *different* dicts; the
+  controller-protomq env injection writes to **both** so `GitDeploy.run` (reads
+  the adapter's) actually sees it.
+- **EPD config is the `config_epd` oneof.** Toggling `config_display.status_bar`
+  on an EPD switches the proto oneof and wipes the mode/properties →
+  "driver setup failed". Use `config_epd.properties.status_bar`.
+- **Slow panels blow the round-trip timeout.** A real eInk add (splash +
+  status-bar refresh) on a weak SBC exceeds the fixture's 5.5 s
+  `send_and_receive_protobuf` timeout → `TimeoutError`. Raise it via
+  `WS_PROTOBUF_TIMEOUT_S` (≈90 s Zero W / 150 s 5.83").
+- **Don't run two eInk jobs concurrently.** Each controller-protomq exposes its
+  API on the default port 5173; parallel jobs clash (`Cannot connect to
+  192.168.1.169:5173`). Serialize them (matrix `max-parallel: 1`).
+- eInk refresh flashes black mid-update, so the `splash` (kind=splash) frame can
+  catch a dark transitional frame — the `after_add`/write frames are the reliable
+  proof. Tune the splash window per panel (`WS_EPD_SPLASH_WINDOW_S`).
+
 ## CI
 
 Commit `.github/workflows/hil-test-suite.yml` to the repo under test: it builds
