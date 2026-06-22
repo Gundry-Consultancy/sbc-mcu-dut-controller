@@ -275,7 +275,7 @@ async def test_ui_devices_form_save_persists_hub_fields(cookie_client):
             "status": "available",
             "camera_id": "",
             "qr_identifier": "",
-            "manual_focus_dioptres": "",
+            "manual_focus": "",
             "illuminator_brightness": "",
             "hub_host_id": "hub-a",
             "hub_port_path": "1-1.2.4",

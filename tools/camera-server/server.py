@@ -163,8 +163,15 @@ class SnapshotHandler(BaseHTTPRequestHandler):
         backend: Backend = self.server.backend  # type: ignore[attr-defined]
         mode = body.get("mode", "auto")
         position = body.get("position")
+        window = body.get("window")
+        if isinstance(window, dict):
+            try:
+                window = (window["x"], window["y"], window["w"], window["h"])
+            except (KeyError, TypeError):
+                self.send_error(400, "window must have x, y, w, h")
+                return
         try:
-            backend.set_lens(mode=mode, position=position)
+            backend.set_lens(mode=mode, position=position, window=window)
         except NotImplementedError as exc:
             self.send_error(501, str(exc))
             return

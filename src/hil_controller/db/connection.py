@@ -45,14 +45,35 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     except Exception:
         pass
 
+    # cameras.kind: focus-driver selector ('pi-camera-server' | 'ip-webcam' |
+    # NULL=auto-detect from source URL). See adapters/camera/focus_drivers.py.
+    try:
+        await db.execute("ALTER TABLE cameras ADD COLUMN kind TEXT")
+        await db.commit()
+    except Exception:
+        pass  # column already exists
+
     # camera_id: FK to cameras table; qr_identifier: QR URL for auto-ROI.
-    # manual_focus_dioptres / illuminator_brightness: per-device overrides
-    # the camera orchestrator combines (midpoint / max) across devices
-    # sharing one camera, and pushes to the camera server.
+    # manual_focus / illuminator_brightness: per-device overrides the camera
+    # orchestrator combines across devices sharing one camera and pushes to the
+    # camera via its focus driver (mean focus / max brightness). manual_focus is
+    # in the *assigned camera's native units* — dioptres for libcamera (Pi
+    # camera-server), 0..10 focus_distance for the Android IP Webcam — so it does
+    # NOT auto-translate if a device moves to a different camera kind.
+    #
+    # Rename the legacy manual_focus_dioptres column (the "dioptre" unit was only
+    # ever true for the Pi). Idempotent: errors when the old column is absent
+    # (fresh DB, or already renamed) and falls through to the additive ADD below.
+    try:
+        await db.execute("ALTER TABLE devices RENAME COLUMN manual_focus_dioptres TO manual_focus")
+        await db.commit()
+    except Exception:
+        pass
+
     for col, defn in [
         ("camera_id", "TEXT"),
         ("qr_identifier", "TEXT"),
-        ("manual_focus_dioptres", "REAL"),
+        ("manual_focus", "REAL"),
         ("illuminator_brightness", "INTEGER"),
     ]:
         try:

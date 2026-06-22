@@ -227,6 +227,106 @@ async def test_set_roi_autodetects_frame_dims(client, monkeypatch):
     assert r.json()["roi_frame_width"] == 2328
 
 
+# ---------------------------------------------------------------------------
+# ROI-based focus
+# ---------------------------------------------------------------------------
+
+# Closed local port: the best-effort push fails instantly (connection refused)
+# so the endpoint still returns its computed directive, without real hardware.
+_DEAD_CAM_URL = "http://127.0.0.1:9/shot.jpg"
+
+
+@pytest.mark.asyncio
+async def test_focus_device_not_found(authed_client):
+    r = await authed_client.post("/v1/devices/nope/camera/focus", json={"mode": "auto"})
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_focus_no_camera_assigned(client):
+    await _create_host_and_device(client, "foc-host-0", "foc-dev-0")
+    r = await client.post("/v1/devices/foc-dev-0/camera/focus", json={"mode": "auto"}, headers=AUTH)
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_focus_invalid_mode(client):
+    await _create_camera(client, "foc-cam-1", _DEAD_CAM_URL)
+    await _create_host_and_device(client, "foc-host-1", "foc-dev-1")
+    await _assign_camera("foc-dev-1", "foc-cam-1")
+    r = await client.post(
+        "/v1/devices/foc-dev-1/camera/focus", json={"mode": "sideways"}, headers=AUTH
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_focus_region_without_roi_is_422(client):
+    await _create_camera(client, "foc-cam-2", _DEAD_CAM_URL)
+    await _create_host_and_device(client, "foc-host-2", "foc-dev-2")
+    await _assign_camera("foc-dev-2", "foc-cam-2")
+    r = await client.post(
+        "/v1/devices/foc-dev-2/camera/focus", json={"mode": "region"}, headers=AUTH
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_focus_region_with_roi_returns_window_directive(client):
+    await _create_camera(client, "foc-cam-3", _DEAD_CAM_URL)
+    await _create_host_and_device(client, "foc-host-3", "foc-dev-3")
+    await _assign_camera("foc-dev-3", "foc-cam-3")
+    await client.put(
+        "/v1/devices/foc-dev-3/camera/roi",
+        json={"x": 100, "y": 200, "w": 400, "h": 300, "frame_width": 1000, "frame_height": 1000},
+        headers=AUTH,
+    )
+    r = await client.post(
+        "/v1/devices/foc-dev-3/camera/focus", json={"mode": "region"}, headers=AUTH
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["kind"] == "ip-webcam"  # …/shot.jpg auto-detected
+    assert data["directive"]["mode"] == "window"
+    assert data["directive"]["target_device"] == "foc-dev-3"
+    assert data["directive"]["window"] == [0.1, 0.2, 0.4, 0.3]
+
+
+@pytest.mark.asyncio
+async def test_focus_auto_without_roi_ok(client):
+    await _create_camera(client, "foc-cam-4", _DEAD_CAM_URL)
+    await _create_host_and_device(client, "foc-host-4", "foc-dev-4")
+    await _assign_camera("foc-dev-4", "foc-cam-4")
+    r = await client.post("/v1/devices/foc-dev-4/camera/focus", json={"mode": "auto"}, headers=AUTH)
+    assert r.status_code == 200, r.text
+    assert r.json()["directive"]["mode"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_get_focus_reports_kind_and_directive(client):
+    await _create_camera(client, "foc-cam-5", _DEAD_CAM_URL)
+    await _create_host_and_device(client, "foc-host-5", "foc-dev-5")
+    await _assign_camera("foc-dev-5", "foc-cam-5")
+    r = await client.get("/v1/devices/foc-dev-5/camera/focus", headers=AUTH)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["kind"] == "ip-webcam"
+    assert data["supports_window"] is False
+    # manual_focus units/range are surfaced so the UI labels the field correctly.
+    assert data["focus_units"] == "distance"
+    assert data["focus_range"] == [0.0, 10.0]
+    assert data["directive"]["mode"] == "auto"  # nothing active → auto
+
+
+@pytest.mark.asyncio
+async def test_camera_kind_column_surfaced(client):
+    await _create_camera(client, "kind-cam-1", "http://127.0.0.1:8080/")
+    r = await client.get("/v1/cameras/kind-cam-1", headers=AUTH)
+    assert r.status_code == 200
+    # kind is exposed (None here → auto-detected by the focus driver layer).
+    assert "kind" in r.json()
+
+
 @pytest.mark.asyncio
 async def test_camera_rois_has_frame_columns(client):
     """Migration added roi_frame_width/height to camera_rois."""

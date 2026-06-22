@@ -76,6 +76,36 @@ def test_scale_box_pad_grows_box():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# normalize_roi / center_box
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_roi_basic():
+    assert roi_snapshot.normalize_roi(100, 200, 400, 300, 1000, 1000) == (0.1, 0.2, 0.4, 0.3)
+
+
+def test_normalize_roi_missing_frame_returns_none():
+    # Legacy ROIs without a recorded reference frame can't be normalized safely.
+    assert roi_snapshot.normalize_roi(10, 10, 20, 20, None, None) is None
+    assert roi_snapshot.normalize_roi(10, 10, 20, 20, 0, 100) is None
+
+
+def test_normalize_roi_clamps_to_frame():
+    # A box that runs past the right/bottom edge is clamped to stay in [0,1].
+    nx, ny, nw, nh = roi_snapshot.normalize_roi(900, 900, 400, 400, 1000, 1000)
+    assert nx + nw <= 1.0 and ny + nh <= 1.0
+
+
+def test_center_box_centres_and_shrinks():
+    bx, by, bw, bh = roi_snapshot.center_box((0.1, 0.2, 0.4, 0.3), size=0.2)
+    # smaller than the source box
+    assert bw == pytest.approx(0.08) and bh == pytest.approx(0.06)
+    # same centre as the source box
+    assert bx + bw / 2 == pytest.approx(0.3)
+    assert by + bh / 2 == pytest.approx(0.35)
+
+
 def test_crop_to_jpeg_scales_and_crops():
     cv2 = pytest.importorskip("cv2")
     import numpy as np

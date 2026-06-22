@@ -52,32 +52,107 @@ class Picamera2Backend(Backend):
         self._cam = None
         self._lens_mode = "auto"
         self._manual_position: float | None = None
+        # Normalized [0..1] AF window (region metering) and its last-resolved
+        # sensor-pixel rectangle. None when metering full-frame.
+        self._af_window_norm: tuple[float, float, float, float] | None = None
+        self._af_window: tuple[int, int, int, int] | None = None
 
     def supports_autofocus(self) -> bool:
         return True
 
-    def set_lens(self, *, mode: str, position: float | None = None) -> None:
+    def set_lens(
+        self,
+        *,
+        mode: str,
+        position: float | None = None,
+        window: tuple[float, float, float, float] | None = None,
+    ) -> None:
         if self._cam is None:
             raise RuntimeError("camera not open")
         if mode == "auto":
-            self._cam.set_controls(
-                {
-                    "AfMode": controls.AfModeEnum.Continuous,
-                    "AfRange": controls.AfRangeEnum.Full,
-                }
-            )
             self._lens_mode = "auto"
             self._manual_position = None
+            self._af_window_norm = None
+            self._af_window = None
         elif mode == "manual":
             if position is None:
                 raise ValueError("manual lens mode requires position")
-            self._cam.set_controls(
-                {"AfMode": controls.AfModeEnum.Manual, "LensPosition": float(position)}
-            )
             self._lens_mode = "manual"
             self._manual_position = float(position)
+            self._af_window_norm = None
+            self._af_window = None
+        elif mode == "window":
+            if window is None:
+                raise ValueError("window lens mode requires window")
+            self._lens_mode = "window"
+            self._manual_position = None
+            self._af_window_norm = tuple(float(v) for v in window)
         else:
             raise ValueError(f"unknown lens mode: {mode!r}")
+        self._cam.set_controls(self._lens_control_block())
+
+    def _af_window_rect(
+        self, norm: tuple[float, float, float, float]
+    ) -> tuple[int, int, int, int]:
+        """Map a normalized [0..1] rect to sensor pixels (AfWindows space).
+
+        libcamera ``AfWindows`` are expressed in the coordinate system given by
+        the ``ScalerCropMaximum`` property (the full active sensor area). Fall
+        back to the max ``ScalerCrop`` range, then the sensor resolution, if the
+        property isn't populated yet.
+        """
+        nx, ny, nw, nh = norm
+        base = None
+        try:
+            base = self._cam.camera_properties.get("ScalerCropMaximum")
+        except Exception:
+            base = None
+        if not base or len(base) != 4 or base[2] == 0 or base[3] == 0:
+            try:
+                base = self._cam.camera_controls["ScalerCrop"][1]  # max crop
+            except Exception:
+                base = None
+        if not base or len(base) != 4 or base[2] == 0 or base[3] == 0:
+            sw, sh = self._cam.sensor_resolution
+            base = (0, 0, sw, sh)
+        bx, by, bw, bh = base
+        ix = int(bx + nx * bw)
+        iy = int(by + ny * bh)
+        iw = max(1, int(nw * bw))
+        ih = max(1, int(nh * bh))
+        return ix, iy, iw, ih
+
+    def _lens_control_block(self) -> dict:
+        """libcamera controls for the current lens mode.
+
+        Resolves the AF window lazily (its sensor-pixel coords depend on the
+        live sensor geometry) and degrades to full-frame continuous AF when the
+        sensor lacks the ``AfMetering`` control.
+        """
+        if self._lens_mode == "manual" and self._manual_position is not None:
+            self._af_window = None
+            return {
+                "AfMode": controls.AfModeEnum.Manual,
+                "LensPosition": self._manual_position,
+            }
+        block = {
+            "AfMode": controls.AfModeEnum.Continuous,
+            "AfRange": controls.AfRangeEnum.Full,
+            "AfSpeed": controls.AfSpeedEnum.Fast,
+        }
+        metering = getattr(controls, "AfMeteringEnum", None)
+        can_window = metering is not None and "AfMetering" in self._cam.camera_controls
+        if self._lens_mode == "window" and self._af_window_norm is not None and can_window:
+            rect = self._af_window_rect(self._af_window_norm)
+            self._af_window = rect
+            block["AfMetering"] = metering.Windows
+            block["AfWindows"] = [rect]
+        else:
+            # full-frame: explicitly reset metering when the sensor supports it
+            self._af_window = None
+            if can_window:
+                block["AfMetering"] = metering.Auto
+        return block
 
     def get_lens(self) -> dict:
         reported: float | None = None
@@ -91,6 +166,8 @@ class Picamera2Backend(Backend):
             "mode": getattr(self, "_lens_mode", "auto"),
             "position": reported,
             "manual_position": getattr(self, "_manual_position", None),
+            "window": getattr(self, "_af_window_norm", None),
+            "af_window_px": getattr(self, "_af_window", None),
         }
 
     def _open(self) -> None:
@@ -178,24 +255,10 @@ class Picamera2Backend(Backend):
                     raw={"size": _smallest_full_fov_mode(self._cam, sensor_size)},
                 )
                 self._cam.configure(video_cfg)
-                # Re-apply AF / lens controls before start so they're live
-                # from frame 0.
+                # Re-apply AF / lens controls (incl. any AF window) before start
+                # so they're live from frame 0.
                 if "AfMode" in self._cam.camera_controls:
-                    if self._lens_mode == "manual" and self._manual_position is not None:
-                        self._cam.set_controls(
-                            {
-                                "AfMode": controls.AfModeEnum.Manual,
-                                "LensPosition": self._manual_position,
-                            }
-                        )
-                    else:
-                        self._cam.set_controls(
-                            {
-                                "AfMode": controls.AfModeEnum.Continuous,
-                                "AfRange": controls.AfRangeEnum.Full,
-                                "AfSpeed": controls.AfSpeedEnum.Fast,
-                            }
-                        )
+                    self._cam.set_controls(self._lens_control_block())
                 self._cam.start()
         return jpeg
 

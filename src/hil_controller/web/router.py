@@ -770,7 +770,7 @@ async def create_device(
     status: Annotated[str, Form()] = "available",
     camera_id: Annotated[str, Form()] = "",
     qr_identifier: Annotated[str, Form()] = "",
-    manual_focus_dioptres: Annotated[str, Form()] = "",
+    manual_focus: Annotated[str, Form()] = "",
     illuminator_brightness: Annotated[str, Form()] = "",
     hub_host_id: Annotated[str, Form()] = "",
     hub_port_path: Annotated[str, Form()] = "",
@@ -795,7 +795,7 @@ async def create_device(
             },
         )
     usb_json = json.dumps({"vid": usb_vid, "pid": usb_pid}) if (usb_vid or usb_pid) else None
-    focus_val = _parse_optional_float(manual_focus_dioptres)
+    focus_val = _parse_optional_float(manual_focus)
     brightness_val = _parse_optional_int(illuminator_brightness)
     solenoid_val = _parse_optional_int(solenoid_channel)
     hub_host_val = hub_host_id or host_id  # default to device host
@@ -805,7 +805,7 @@ async def create_device(
                 """INSERT INTO devices
                    (id, host_id, kind, model, capabilities_json, usb_json,
                     pool, status, serial_port, flasher, camera_id, qr_identifier,
-                    manual_focus_dioptres, illuminator_brightness,
+                    manual_focus, illuminator_brightness,
                     hub_host_id, hub_port_path, solenoid_channel, usb_serial)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
@@ -874,7 +874,7 @@ async def update_device(
     status: Annotated[str, Form()] = "available",
     camera_id: Annotated[str, Form()] = "",
     qr_identifier: Annotated[str, Form()] = "",
-    manual_focus_dioptres: Annotated[str, Form()] = "",
+    manual_focus: Annotated[str, Form()] = "",
     illuminator_brightness: Annotated[str, Form()] = "",
     hub_host_id: Annotated[str, Form()] = "",
     hub_port_path: Annotated[str, Form()] = "",
@@ -885,7 +885,7 @@ async def update_device(
         return _login_redirect()
     db_path: str = request.app.state.db_path
     usb_json = json.dumps({"vid": usb_vid, "pid": usb_pid}) if (usb_vid or usb_pid) else None
-    focus_val = _parse_optional_float(manual_focus_dioptres)
+    focus_val = _parse_optional_float(manual_focus)
     brightness_val = _parse_optional_int(illuminator_brightness)
     solenoid_val = _parse_optional_int(solenoid_channel)
     hub_host_val = hub_host_id or host_id
@@ -897,7 +897,7 @@ async def update_device(
             """UPDATE devices SET host_id=?, kind=?, model=?, capabilities_json=?,
                usb_json=?, pool=?, status=?, serial_port=?, flasher=?,
                camera_id=?, qr_identifier=?,
-               manual_focus_dioptres=?, illuminator_brightness=?,
+               manual_focus=?, illuminator_brightness=?,
                hub_host_id=?, hub_port_path=?, solenoid_channel=?, usb_serial=?
                WHERE id=?""",
             (
@@ -1163,23 +1163,32 @@ async def preview_camera_settings(
         if row is None or not row["camera_id"]:
             return JSONResponse({"error": "device has no camera"}, status_code=400)
         async with db.execute(
-            "SELECT source FROM cameras WHERE id = ?", (row["camera_id"],)
+            "SELECT source, kind FROM cameras WHERE id = ?", (row["camera_id"],)
         ) as cur:
             cam_row = await cur.fetchone()
         if cam_row is None:
             return JSONResponse({"error": "camera not found"}, status_code=404)
 
-    from hil_controller.adapters.camera.orchestrator import (
-        _push_illuminator,
-        _push_lens,
-        camera_base_url,
-    )
+    import httpx
+
+    from hil_controller.adapters.camera.focus_drivers import get_driver, resolve_camera_kind
+    from hil_controller.adapters.camera.orchestrator import camera_base_url
 
     base = camera_base_url(cam_row["source"])
     if base is None:
         return JSONResponse({"error": "camera source is not HTTP"}, status_code=400)
-    await _push_lens(base, focus)
-    await _push_illuminator(base, brightness)
+
+    # Preview pushes a raw value, bypassing the shared-camera compromise: a focus
+    # value means manual focus, no value means continuous auto.
+    directive = (
+        {"mode": "manual", "window": None, "position": focus, "target_device": device_id}
+        if focus is not None
+        else {"mode": "auto", "window": None, "position": None, "target_device": device_id}
+    )
+    driver = get_driver(resolve_camera_kind(cam_row))
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        await driver.apply(client, base, directive)
+        await driver.apply_illuminator(client, base, brightness)
     return JSONResponse({"ok": True, "base": base, "focus": focus, "brightness": brightness})
 
 
@@ -1555,6 +1564,7 @@ async def create_camera(
     id: Annotated[str, Form()] = "",
     model: Annotated[str, Form()] = "",
     host_id: Annotated[str, Form()] = "",
+    kind: Annotated[str, Form()] = "",
     stream_url: Annotated[list[str], Form()] = [],
     stream_type: Annotated[list[str], Form()] = [],
     pool: Annotated[str, Form()] = "public",
@@ -1577,12 +1587,13 @@ async def create_camera(
         try:
             await db.execute(
                 """INSERT INTO cameras
-                   (id, host_id, source, model, pool, status, notes, streams_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, host_id, source, kind, model, pool, status, notes, streams_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     id,
                     host_id or None,
                     primary_url,
+                    kind or None,
                     model,
                     pool,
                     status,
@@ -1603,6 +1614,7 @@ async def update_camera(
     hil_token: str = Cookie(default=""),
     model: Annotated[str, Form()] = "",
     host_id: Annotated[str, Form()] = "",
+    kind: Annotated[str, Form()] = "",
     stream_url: Annotated[list[str], Form()] = [],
     stream_type: Annotated[list[str], Form()] = [],
     pool: Annotated[str, Form()] = "public",
@@ -1620,11 +1632,12 @@ async def update_camera(
             if await cur.fetchone() is None:
                 return HTMLResponse("Camera not found", status_code=404)
         await db.execute(
-            """UPDATE cameras SET model=?, host_id=?, source=?, pool=?, status=?,
+            """UPDATE cameras SET model=?, host_id=?, kind=?, source=?, pool=?, status=?,
                notes=?, streams_json=? WHERE id=?""",
             (
                 model,
                 host_id or None,
+                kind or None,
                 primary_url,
                 pool,
                 status,

@@ -482,10 +482,27 @@ capture, then reverted.
   per-device override), or a small `capture_profiles` table keyed by name. The
   controller sends the profile to the camera before `res=full` capture.
 
-### 15.2 Auto-focus window from the ROI
+### 15.2 Auto-focus window from the ROI — IMPLEMENTED
 
-Point the camera's AF metering at the DUT instead of the whole bench: picamera2
-`AfMetering=Windows` + `AfWindows=[(x,y,w,h)]` in sensor coords. The ROI (now
-frame-relative) already provides the box — scale it to the AF coordinate space and
-push it via the camera-server lens/controls endpoint. Nice-to-have; not required
-for correct crops.
+Point the camera's AF metering at the DUT instead of the whole bench. Built as a
+**capability-tiered focus driver** layer (`adapters/camera/focus_drivers.py`)
+selected by `cameras.kind` (falls back to a source-URL heuristic):
+
+- **`pi-camera-server`** (picamera2/libcamera) — true windowed AF. The
+  frame-relative ROI is normalized to `[0,1]` (`roi_snapshot.normalize_roi`) and
+  the backend maps it into sensor pixels via `ScalerCropMaximum`, then sets
+  `AfMetering=Windows` + `AfWindows=[rect]` (continuous). Degrades to full-frame
+  continuous AF on sensors without `AfMetering`.
+- **`ip-webcam`** (Android IP Webcam app) — has **no focus-region API**, so ROI
+  focus degrades to full-frame continuous-picture AF + a `/focus` trigger; an
+  explicit manual focus value maps to `focusmode=off` + `focus_distance`.
+
+The orchestrator (`recompute_for_camera`) computes one focus *directive* per
+camera by precedence: an explicit `prefer_device_id` (the "focus this DUT now"
+API), else the most-recent active job declaring visual assets (window on its
+ROI), else the mean of manual focus values, else continuous auto. It rides the
+existing trigger points (job state changes, camera/focus UI edits).
+
+API: `POST /v1/devices/{id}/camera/focus` (`mode=region|point|auto|manual`) and
+`GET …/camera/focus` (resolved kind + directive + live lens state). Camera-server
+`POST /lens` accepts `{"mode":"window","window":{x,y,w,h}}` (normalized).

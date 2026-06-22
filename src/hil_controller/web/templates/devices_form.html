@@ -118,11 +118,11 @@
         <span class="form-hint">QR code URL printed on the board (for auto-ROI detection)</span>
       </div>
       <div class="form-group">
-        <label for="f-dev-focus">Manual focus (dioptres)</label>
-        <input type="number" id="f-dev-focus" name="manual_focus_dioptres" min="0" max="32" step="0.1"
-               value="{{ device.manual_focus_dioptres if device and device.manual_focus_dioptres is not none else '' }}"
+        <label for="f-dev-focus">Manual focus (camera-native units)</label>
+        <input type="number" id="f-dev-focus" name="manual_focus" min="0" step="0.1"
+               value="{{ device.manual_focus if device and device.manual_focus is not none else '' }}"
                placeholder="leave blank for auto">
-        <span class="form-hint">Override continuous autofocus with a fixed lens position (0–32). Blank = use camera auto. Across devices sharing a camera, the server applies the midpoint of min/max.</span>
+        <span class="form-hint">Override continuous autofocus with a fixed lens position, in the <em>assigned camera's native units</em>: dioptres for the Pi camera-server (≈0–32), or 0–10 focus distance for an Android IP Webcam. This value does NOT translate if the device moves to a different camera type. Blank = camera auto. Across devices sharing a camera, the server applies the mean.</span>
       </div>
       <div class="form-group">
         <label for="f-dev-brightness">Illuminator brightness</label>

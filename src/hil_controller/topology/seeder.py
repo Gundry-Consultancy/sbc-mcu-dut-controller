@@ -77,12 +77,12 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
             await db.execute(
                 """
                 INSERT INTO cameras
-                    (id, host_id, source, model, resolution_w, resolution_h, fps,
+                    (id, host_id, source, kind, model, resolution_w, resolution_h, fps,
                      pool, status, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     host_id=excluded.host_id, source=excluded.source,
-                    model=excluded.model,
+                    kind=excluded.kind, model=excluded.model,
                     resolution_w=excluded.resolution_w, resolution_h=excluded.resolution_h,
                     fps=excluded.fps, pool=excluded.pool, notes=excluded.notes
                 """,
@@ -90,6 +90,7 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     cam["id"],
                     cam.get("host_id"),
                     cam.get("source", ""),
+                    cam.get("kind"),
                     cam.get("model", ""),
                     cam.get("resolution", [None, None])[0],
                     cam.get("resolution", [None, None])[1],

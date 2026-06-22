@@ -31,6 +31,15 @@
           {% endfor %}
         </select>
       </div>
+      <div class="form-group">
+        <label for="f-cam-kind">Focus driver</label>
+        <select id="f-cam-kind" name="kind">
+          {% set kinds = [('', 'Auto-detect from URL'), ('pi-camera-server', 'Pi camera-server (windowed AF)'), ('ip-webcam', 'Android IP Webcam (full-frame AF)')] %}
+          {% for val, label in kinds %}
+          <option value="{{ val }}" {% if camera and (camera.kind or '') == val %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
       <div class="form-group" style="grid-column:1/-1;">
         <label for="f-cam-notes">Notes</label>
         <input type="text" id="f-cam-notes" name="notes" value="{{ camera.notes if camera and camera.notes else '' }}" placeholder="Physical location, coverage area, etc.">

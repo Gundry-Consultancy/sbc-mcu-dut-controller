@@ -58,11 +58,23 @@ class Backend(ABC):
     def supports_autofocus(self) -> bool:
         return False
 
-    def set_lens(self, *, mode: str, position: float | None = None) -> None:
-        """Switch between continuous AF and a fixed lens position.
+    def set_lens(
+        self,
+        *,
+        mode: str,
+        position: float | None = None,
+        window: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        """Set the focus mode.
 
-        ``mode`` is ``"auto"`` (continuous AF) or ``"manual"``. When manual,
-        ``position`` is a dioptre value in the sensor-specific range.
+        ``mode`` is one of:
+          * ``"auto"``   — continuous AF metering over the whole frame;
+          * ``"manual"`` — fixed lens; ``position`` is a libcamera LensPosition
+            in dioptres (sensor-specific range, clamped by the backend);
+          * ``"window"`` — continuous AF metered on ``window``, a normalized
+            ``(nx, ny, nw, nh)`` rectangle in ``[0, 1]`` (backends that can't
+            window degrade to full-frame continuous AF).
+
         Default no-op; subclasses override.
         """
         raise NotImplementedError(f"{self.name} does not support lens control")

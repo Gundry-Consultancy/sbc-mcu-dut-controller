@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS cameras (
     id           TEXT PRIMARY KEY,
     host_id      TEXT,                          -- NULL for HTTP cameras; FK to hosts.id
     source       TEXT NOT NULL DEFAULT '',      -- "v4l2:0" or primary HTTP URL
+    kind         TEXT,                          -- focus driver: 'pi-camera-server' | 'ip-webcam' | NULL=auto-detect from source
     model        TEXT NOT NULL DEFAULT '',
     resolution_w INTEGER,
     resolution_h INTEGER,

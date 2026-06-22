@@ -81,6 +81,45 @@ def scale_box(
     return ix, iy, iw, ih
 
 
+def normalize_roi(
+    x: int, y: int, w: int, h: int, frame_w: int | None, frame_h: int | None
+) -> tuple[float, float, float, float] | None:
+    """Map a pixel ROI to a normalized ``(nx, ny, nw, nh)`` rect in ``[0, 1]``.
+
+    The result is frame-resolution independent so each camera backend can scale
+    it into its own coordinate space (e.g. libcamera ``AfWindows`` in sensor
+    pixels). Returns ``None`` when the reference frame size is unknown (legacy
+    ROIs predate ``roi_frame_*``) or non-positive — the caller falls back to
+    full-frame focus rather than guess a window.
+    """
+    if not frame_w or not frame_h or frame_w <= 0 or frame_h <= 0:
+        return None
+    nx = max(0.0, min(x / frame_w, 1.0))
+    ny = max(0.0, min(y / frame_h, 1.0))
+    nw = max(0.0, min(w / frame_w, 1.0 - nx))
+    nh = max(0.0, min(h / frame_h, 1.0 - ny))
+    if nw <= 0.0 or nh <= 0.0:
+        return None
+    return nx, ny, nw, nh
+
+
+def center_box(
+    rect: tuple[float, float, float, float], size: float = 0.2
+) -> tuple[float, float, float, float]:
+    """Shrink a normalized rect to a small box centred on it (point focus).
+
+    ``size`` is the fraction of the *original* box kept on each axis, clamped so
+    the result stays within ``[0, 1]``. Used when the caller wants point-focus
+    (a single AF point at the ROI centre) rather than region metering.
+    """
+    nx, ny, nw, nh = rect
+    cx, cy = nx + nw / 2.0, ny + nh / 2.0
+    bw, bh = nw * size, nh * size
+    bx = max(0.0, min(cx - bw / 2.0, 1.0 - bw))
+    by = max(0.0, min(cy - bh / 2.0, 1.0 - bh))
+    return bx, by, bw, bh
+
+
 def decode_dims(frame_bytes: bytes) -> tuple[int, int] | None:
     """Return ``(width, height)`` of a JPEG, or None if cv2 missing / decode fails."""
     if not _CV2:

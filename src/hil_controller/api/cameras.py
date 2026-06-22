@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from hil_controller.adapters.camera import roi_snapshot
+from hil_controller.adapters.camera import orchestrator, roi_snapshot
+from hil_controller.adapters.camera.focus_drivers import get_driver, resolve_camera_kind
 from hil_controller.auth.principal import Principal
 from hil_controller.auth.tokens import require_auth
 from hil_controller.db.connection import get_db, now_iso
@@ -41,6 +42,7 @@ class CameraSummary(BaseModel):
     id: str
     host_id: str | None
     source: str
+    kind: str | None = None
     model: str
     pool: str
     status: str
@@ -75,6 +77,15 @@ class ROISetRequest(BaseModel):
     frame_height: int | None = None
 
 
+class FocusRequest(BaseModel):
+    # region  -> window AF on the whole ROI rectangle
+    # point   -> window AF on a small box at the ROI centre
+    # auto    -> full-frame continuous AF
+    # manual  -> fixed focus at ``position`` (camera's native units)
+    mode: str = "region"
+    position: float | None = None
+
+
 # ---------------------------------------------------------------------------
 # Camera list / detail
 # ---------------------------------------------------------------------------
@@ -97,6 +108,7 @@ def _camera_summary(r: dict) -> CameraSummary:
         id=r["id"],
         host_id=r["host_id"],
         source=r["source"],
+        kind=r.get("kind"),
         model=r["model"],
         pool=r["pool"],
         status=r["status"],
@@ -271,6 +283,94 @@ async def delete_device_roi(request: Request, device_id: str, _auth: Auth) -> di
         await db.execute("DELETE FROM camera_rois WHERE device_id = ?", (device_id,))
         await db.commit()
     return {"status": "cleared", "device_id": device_id}
+
+
+@router.post("/v1/devices/{device_id}/camera/focus")
+async def focus_device_camera(
+    request: Request, device_id: str, body: FocusRequest, _auth: Auth
+) -> dict[str, Any]:
+    """Focus this device's camera on its ROI now (region/point/auto/manual).
+
+    Forces the focus decision onto this device, bypassing the shared-camera
+    precedence chain. ``region``/``point`` need a calibrated ROI; without one the
+    camera falls back to full-frame auto (reported in ``directive``).
+    """
+    if body.mode not in ("region", "point", "auto", "manual"):
+        raise HTTPException(status_code=422, detail=f"invalid mode: {body.mode!r}")
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT camera_id FROM devices WHERE id = ?", (device_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+        if not row["camera_id"]:
+            raise HTTPException(status_code=422, detail="Device has no camera assigned")
+        if (
+            body.mode in ("region", "point")
+            and (await orchestrator._device_roi(db, device_id)) is None
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Device has no ROI; calibrate one or use mode=auto/manual",
+            )
+        result = await orchestrator.recompute_for_device(
+            db, device_id, prefer=True, prefer_mode=body.mode, position=body.position
+        )
+    if result is None:
+        raise HTTPException(status_code=422, detail="Device has no camera assigned")
+    return result
+
+
+@router.get("/v1/devices/{device_id}/camera/focus")
+async def get_device_focus(request: Request, device_id: str, _auth: Auth) -> dict[str, Any]:
+    """Report the resolved focus driver + the directive the camera would apply.
+
+    Shows what automatic orchestration would push right now (the shared-camera
+    precedence chain) plus the camera's live lens state from ``/health``.
+    """
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT d.camera_id, c.source, c.kind "
+            "FROM devices d LEFT JOIN cameras c ON c.id = d.camera_id "
+            "WHERE d.id = ?",
+            (device_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+        if not row["camera_id"]:
+            raise HTTPException(status_code=422, detail="Device has no camera assigned")
+        directive = await orchestrator.compute_focus_directive(db, row["camera_id"])
+
+    kind = resolve_camera_kind(dict(row))
+    driver = get_driver(kind)
+    base = orchestrator.camera_base_url(row["source"]) if row["source"] else None
+
+    lens: dict[str, Any] | None = None
+    if base:
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.get(f"{base}/health")
+                r.raise_for_status()
+                lens = r.json().get("lens")
+        except Exception:  # noqa: BLE001 — health is best-effort
+            lens = None
+
+    return {
+        "device_id": device_id,
+        "camera_id": row["camera_id"],
+        "kind": kind,
+        "supports_window": driver.supports_window,
+        # manual_focus is in the camera's native units — surfaced so callers/UI
+        # can label inputs correctly (it does not translate across camera kinds).
+        "focus_units": driver.focus_units,
+        "focus_range": [driver.focus_min, driver.focus_max],
+        "directive": directive,
+        "lens": lens,
+    }
 
 
 @router.get("/v1/devices/{device_id}/camera/snapshot")

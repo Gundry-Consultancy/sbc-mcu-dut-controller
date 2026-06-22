@@ -391,7 +391,7 @@ async def test_create_device_with_focus_and_brightness_overrides(client):
             "model": "esp32-s3",
             "pool": "public",
             "status": "available",
-            "manual_focus_dioptres": "12.5",
+            "manual_focus": "12.5",
             "illuminator_brightness": "192",
         },
         cookies=COOKIE,
@@ -434,7 +434,7 @@ async def test_blank_focus_brightness_stored_as_null(client):
             "kind": "microcontroller",
             "pool": "public",
             "status": "available",
-            "manual_focus_dioptres": "",
+            "manual_focus": "",
             "illuminator_brightness": "",
         },
         cookies=COOKIE,
@@ -445,7 +445,7 @@ async def test_blank_focus_brightness_stored_as_null(client):
     # specifically to these two inputs (not just any empty input on the page).
     import re
 
-    focus_match = re.search(r'<input[^>]*name="manual_focus_dioptres"[^>]*value="([^"]*)"', r.text)
+    focus_match = re.search(r'<input[^>]*name="manual_focus"[^>]*value="([^"]*)"', r.text)
     brightness_match = re.search(
         r'<input[^>]*name="illuminator_brightness"[^>]*value="([^"]*)"', r.text
     )
