@@ -494,7 +494,10 @@ async def _recover_download_via_hub(
     # drop a wedged native-USB board's power. Tunable via the stage.
     off_s = float(stage.get("recover_off_s", stage.get("off_s", 3.0)))
     post_off = float(stage.get("recover_post_off_s", 3.0))
-    boot_settle = float(stage.get("boot_settle_s", 5.0))
+    # Default ~0 (was a legacy 5.0 that defeated the tight-loop ROM-window catch
+    # below): only the app-mode 1200-touch fallback uses this. Raise it only for a
+    # board that must finish booting before that touch.
+    boot_settle = float(stage.get("boot_settle_s", 0.01))
     attempts = int(stage.get("attempts", 8))
     settle_s = float(stage.get("settle_s", 3.0))
     hub = SolenoidHubAdapter(transport=ctx.hub_transport, sudo=ctx.sudo)
@@ -503,7 +506,13 @@ async def _recover_download_via_hub(
         f"(off {off_s}s + depower {post_off}s, boot settle {boot_settle}s)"
     )
     try:
-        await hub.power_cycle(int(channel), off_s=off_s, settle_s=boot_settle, post_off_s=post_off)
+        # NO post-on settle here: the USB-Serial/JTAG reset below must catch the
+        # ~1-2s ROM up-window that opens immediately after power-on, BEFORE any app
+        # (CircuitPython, a healthy WS) boots and closes it. force_download_via_reset
+        # is itself a tight retry loop that does the timing; sleeping boot_settle
+        # first would miss the window on a native-USB board that boots an app in
+        # ~1.6s. boot_settle is reserved for the app-mode 1200-touch fallback.
+        await hub.power_cycle(int(channel), off_s=off_s, settle_s=0.0, post_off_s=post_off)
     except SolenoidHubError as exc:
         raise StageError(f"hub power-cycle failed on channel {channel}: {exc}") from exc
     flasher = ctx.make_flasher("esptool")
@@ -514,6 +523,10 @@ async def _recover_download_via_hub(
     ):
         ctx.log_line("device is in ROM download mode (after hub recovery, via USB-JTAG reset)")
         return
+    # Not caught in the ROM window → it booted an app. Give it boot_settle to come
+    # up fully, then take the app-mode 1200-touch route.
+    if boot_settle > 0:
+        await asyncio.sleep(boot_settle)
     try:
         await flasher.enter_download_mode(
             attempts=attempts, settle_s=settle_s, on_line=ctx.log_line
