@@ -64,6 +64,7 @@ class JobWorker:
         self._cancelled = False
         self._protomq_observer: Any | None = None
         self._ctrl_protomq: Any | None = None
+        self._hil_capture: Any | None = None
 
     async def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         await self.event_bus.publish(self.job_id, {"kind": kind, "payload": payload})
@@ -134,6 +135,7 @@ class JobWorker:
 
     async def _run(self) -> WorkerResult:
         _observe_task: asyncio.Task[None] | None = None
+        _capture_task: asyncio.Task[None] | None = None
         # Give adapters that need live job-event streaming + DB access (e.g. the
         # firmware-bench hold-loop reading its lease expiry) the runtime context
         # the worker holds. Opt-in and additive — other adapters ignore it.
@@ -173,7 +175,16 @@ class JobWorker:
             await self._emit("state", {"state": "running"})
             await self._maybe_launch_controller_protomq()
             _observe_task = await self._start_protomq_observer()
+            _capture_task = self._maybe_start_hil_capture()
             result = await self._run_script()
+            if _capture_task is not None and self._hil_capture is not None:
+                # No more stdout markers once the run returns — drain the queue
+                # (the last splash sample may still be finishing) before harvest.
+                self._hil_capture.close()
+                try:
+                    await asyncio.wait_for(_capture_task, timeout=90)
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         except asyncio.CancelledError:
             await self._emit("state", {"state": "cancelled"})
@@ -188,6 +199,12 @@ class JobWorker:
                 _observe_task.cancel()
                 try:
                     await _observe_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if _capture_task is not None and not _capture_task.done():
+                _capture_task.cancel()
+                try:
+                    await _capture_task
                 except (asyncio.CancelledError, Exception):
                     pass
             if self._ctrl_protomq is not None:
@@ -412,6 +429,25 @@ class JobWorker:
         await self._emit("log", {"stream": "protomq",
                                  "msg": f"launched on controller; test connects to "
                                         f"{host}:{port} (api {launcher.api_port})"})
+
+    def _maybe_start_hil_capture(self) -> asyncio.Task[None] | None:
+        """Start the controller-side webcam capture for a remote-display HIL test
+        (``params.capture`` present). The SBC pytest drives the panel and prints
+        ``WS_HIL_CAPTURE`` stage markers; we stream those into the capture via the
+        adapter's ``on_line`` hook and a concurrent consume task turns each into a
+        proof frame. The adapter must support per-line streaming (GitDeploy does)."""
+        cfg = self.params.get("capture") or {}
+        if not cfg.get("webcam_url") or not hasattr(self.adapter, "on_line"):
+            return None
+        from hil_controller.adapters.camera.hil_capture import HilCapture
+
+        capture = HilCapture(cfg)
+        self._hil_capture = capture
+        self.adapter.on_line = capture.feed
+        task = asyncio.ensure_future(capture.consume())
+        log.info("hil_capture started for job %s (webcam %s, roi %s)",
+                 self.job_id, cfg.get("webcam_url"), cfg.get("roi"))
+        return task
 
     async def _start_protomq_observer(self) -> asyncio.Task[None] | None:
         cfg = self.params.get("protomq", {})

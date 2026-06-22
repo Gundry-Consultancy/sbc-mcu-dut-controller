@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol, runtime_checkable
@@ -24,6 +24,7 @@ class HostTransport(Protocol):
         env: dict[str, str] | None = None,
         stdin: bytes | None = None,
         cwd: str | None = None,
+        on_line: Callable[[str], None] | None = None,
     ) -> ExecResult: ...
 
     async def stream(self, argv: list[str]) -> AsyncIterator[bytes]: ...

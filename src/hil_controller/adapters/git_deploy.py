@@ -70,6 +70,9 @@ class GitDeployAdapter:
         self._deploy_stderr: str = ""
         self._run_stdout: str = ""
         self._run_stderr: str = ""
+        # Optional per-stdout-line callback for the run phase (set by the worker
+        # for HIL capture: it watches WS_HIL_CAPTURE stage markers live).
+        self.on_line: Any = None
 
     async def acquire(self) -> None:
         pass
@@ -188,7 +191,9 @@ class GitDeployAdapter:
         if extra_env:
             env = {**(env or {}), **extra_env}
 
-        result = await self.transport.exec(argv, cwd=str(self.work_dir), env=env)
+        result = await self.transport.exec(
+            argv, cwd=str(self.work_dir), env=env, on_line=self.on_line
+        )
         self._run_stdout = result.stdout
         self._run_stderr = result.stderr
         log.info("test exit %d", result.exit_status)

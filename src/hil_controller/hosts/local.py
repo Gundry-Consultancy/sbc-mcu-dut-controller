@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import shutil
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path, PurePosixPath
 
 from hil_controller.hosts.base import ExecResult
@@ -24,6 +24,7 @@ class LocalTransport:
         env: dict[str, str] | None = None,
         stdin: bytes | None = None,
         cwd: str | None = None,
+        on_line: Callable[[str], None] | None = None,
     ) -> ExecResult:
         merged_env = {**os.environ, **(env or {})}
         proc = await asyncio.create_subprocess_exec(
@@ -34,13 +35,45 @@ class LocalTransport:
             cwd=cwd,
             env=merged_env,
         )
-        stdout_b, stderr_b = await proc.communicate(input=stdin)
-        rc = proc.returncode if proc.returncode is not None else 0
-        log.debug("local exec %s → exit %d", argv[0], rc)
+        if on_line is None:
+            stdout_b, stderr_b = await proc.communicate(input=stdin)
+            rc = proc.returncode if proc.returncode is not None else 0
+            log.debug("local exec %s → exit %d", argv[0], rc)
+            return ExecResult(
+                exit_status=rc,
+                stdout=stdout_b.decode(errors="replace"),
+                stderr=stderr_b.decode(errors="replace"),
+            )
+
+        # Streaming path: accumulate the full output but also fire on_line per
+        # stdout line as it arrives (used by HIL capture to react to in-test
+        # WS_HIL_CAPTURE stage markers while the run is still going).
+        out_parts: list[str] = []
+        err_parts: list[str] = []
+        if stdin is not None and proc.stdin is not None:
+            proc.stdin.write(stdin)
+            proc.stdin.close()
+
+        async def _pump_stdout() -> None:
+            assert proc.stdout is not None
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace")
+                out_parts.append(line)
+                try:
+                    on_line(line.rstrip("\n"))
+                except Exception:  # pragma: no cover - callback must not kill the run
+                    log.exception("on_line callback raised")
+
+        async def _pump_stderr() -> None:
+            assert proc.stderr is not None
+            async for raw in proc.stderr:
+                err_parts.append(raw.decode(errors="replace"))
+
+        await asyncio.gather(_pump_stdout(), _pump_stderr())
+        rc = await proc.wait()
+        log.debug("local exec %s (streamed) → exit %d", argv[0], rc)
         return ExecResult(
-            exit_status=rc,
-            stdout=stdout_b.decode(errors="replace"),
-            stderr=stderr_b.decode(errors="replace"),
+            exit_status=rc, stdout="".join(out_parts), stderr="".join(err_parts)
         )
 
     async def stream(self, argv: list[str]) -> AsyncIterator[bytes]:
