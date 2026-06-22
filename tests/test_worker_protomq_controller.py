@@ -53,6 +53,33 @@ async def test_launch_controller_protomq_injects_env(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_launch_controller_protomq_injects_into_adapter_params(monkeypatch):
+    """The scheduler parses request_json twice, so the adapter's params dict is a
+    *different* object than the worker's. The injected broker env must land in the
+    adapter's params (that is what GitDeploy.run reads), not only the worker's."""
+    fake = MagicMock()
+    fake.clone_and_build = AsyncMock()
+    fake.start = AsyncMock()
+    fake.mqtt_port, fake.api_port = 1884, 5173
+    monkeypatch.setattr(
+        "hil_controller.adapters.protomq_launcher.ProtomqLauncher",
+        MagicMock(return_value=fake),
+    )
+    monkeypatch.setattr(config, "resolve_jobs_dir", lambda: "/tmp/jd")
+
+    worker = _worker({"protomq": {"launch_on": "controller"}})
+    # Simulate the scheduler's double-parse: adapter has its own params dict.
+    adapter_params = {"protomq": {"launch_on": "controller"}}
+    worker.adapter.params = adapter_params
+
+    await worker._maybe_launch_controller_protomq()  # pylint: disable=protected-access
+
+    ip = config.get_settings().controller_ip
+    assert adapter_params["extra_env"]["MQTT_HOST"] == ip
+    assert adapter_params["extra_env"]["PROTOMQ_RUN_EXTERNALLY"] == "1"
+
+
+@pytest.mark.asyncio
 async def test_no_launch_when_not_requested(monkeypatch):
     monkeypatch.setattr(
         "hil_controller.adapters.protomq_launcher.ProtomqLauncher",

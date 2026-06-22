@@ -415,8 +415,7 @@ class JobWorker:
         await launcher.start()
         self._ctrl_protomq = launcher
         host, port = s.controller_ip, str(launcher.mqtt_port or 1884)
-        env = self.params.setdefault("extra_env", {})
-        env.update({
+        injected = {
             "PROTOMQ_RUN_EXTERNALLY": "1",
             "PROTOMQ_HOST": host,
             "PROTOMQ_PORT": port,
@@ -424,8 +423,15 @@ class JobWorker:
             "MQTT_PORT": port,
             # WS-Python's defaults.py requires PROTOMQ_PATH to be set whenever
             # PROTOMQ_RUN_EXTERNALLY is — value is unused when external.
-            "PROTOMQ_PATH": env.get("PROTOMQ_PATH", "/tmp/protomq-external"),
-        })
+            "PROTOMQ_PATH": "/tmp/protomq-external",
+        }
+        # The scheduler parses request_json TWICE — once to build the adapter and
+        # once for the worker — so self.params and the adapter's params are
+        # *different* dict objects. The run reads the adapter's, so inject there
+        # too (not only into self.params, which only our tests inspect).
+        for params in (self.params, getattr(self.adapter, "params", None)):
+            if isinstance(params, dict):
+                params.setdefault("extra_env", {}).update(injected)
         await self._emit("log", {"stream": "protomq",
                                  "msg": f"launched on controller; test connects to "
                                         f"{host}:{port} (api {launcher.api_port})"})
