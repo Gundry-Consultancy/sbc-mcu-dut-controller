@@ -718,6 +718,38 @@ async def test_transcript_captures_commands_and_output() -> None:
     assert any(re.search(r"\d{4}-\d\d-\d\dT.*→ exit 0", ln) for ln in lines)
 
 
+def test_record_masks_secret_values_last4() -> None:
+    # `tee` echoes secrets.json to stdout; the credential value must be masked to
+    # last-4 in BOTH the stored transcript (flash.log) and the live stream, while
+    # the command, the field names, and the public username stay readable.
+    tp = AsyncMock()
+    lines: list[str] = []
+    ctx = _ctx(
+        tp,
+        device={},
+        emit=lines.append,
+        secrets={
+            "IO_USERNAME": "playground_example",
+            "IO_KEY": "aio_realKEY9876",
+            "WIFI_SSID": "bench-wifi",
+            "WIFI_PASSWORD": "hunter2pass",
+        },
+    )
+    body = (
+        '{"io_username": "playground_example", "io_key": "aio_realKEY9876", '
+        '"wifi_password": "hunter2pass"}'
+    )
+    ctx.record(["tee", "/media/pi/WIPPER/secrets.json"], _result(0, stdout=body))
+
+    entry = ctx.transcript[0]
+    blob = entry["stdout"] + "\n".join(lines)
+    assert "aio_realKEY9876" not in blob and "hunter2pass" not in blob  # full secrets gone
+    assert "****9876" in entry["stdout"] and "****pass" in entry["stdout"]  # last-4 shown
+    assert "io_key" in entry["stdout"]  # field names (args) preserved
+    assert "playground_example" in entry["stdout"]  # public username not masked
+    assert "tee /media/pi/WIPPER/secrets.json" in entry["cmd"]
+
+
 @pytest.mark.asyncio
 async def test_full_stderr_surfaced_to_live_log_even_on_success() -> None:
     """stderr (e.g. esptool deprecation warnings) reaches the live CI feed even

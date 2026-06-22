@@ -45,6 +45,11 @@ from hil_controller.adapters.msc_secrets import (
 )
 from hil_controller.adapters.solenoid_hub import SolenoidHubAdapter, SolenoidHubError
 from hil_controller.adapters.ws_signal_inject import WsInjectError, WsSignalInjector
+from hil_controller.redact import mask_values
+
+#: secrets.json keys whose VALUES are credentials to mask in logs (last-4). The
+#: username (anonymous / public playground) and routing fields stay visible.
+_SECRET_KEY_HINTS = ("KEY", "TOKEN", "PASSWORD", "SECRET", "PAT")
 
 log = logging.getLogger(__name__)
 
@@ -217,7 +222,25 @@ class BenchContext:
         self.dut_transport = _RecordingTransport(self.dut_transport, self.record)
         self.hub_transport = _RecordingTransport(self.hub_transport, self.record)
 
+    def _secret_values(self) -> list[str]:
+        """Credential VALUES to mask in any logged text (read live from secrets).
+
+        A value is sensitive if its key name looks like a credential
+        (``*KEY``/``*PASSWORD``/``*TOKEN``/…) — so IO_KEY and WIFI_PASSWORD are
+        masked, while IO_USERNAME / WIFI_SSID / routing stay readable. Computed
+        per-call so anonymous creds derived just before the run are covered.
+        """
+        return [
+            v
+            for k, v in (self.secrets or {}).items()
+            if v and any(h in k.upper() for h in _SECRET_KEY_HINTS)
+        ]
+
     def log_line(self, msg: str) -> None:
+        # Keep the message (and any command/arg it carries) intact, but mask any
+        # credential value down to its last 4 chars before it reaches the log,
+        # the live event stream, the API, or a downloaded asset.
+        msg = mask_values(msg, self._secret_values())
         log.info("[bench] %s", msg)
         if self.emit is not None:
             try:
@@ -281,9 +304,14 @@ class BenchContext:
         """
         import shlex
 
-        cmd = " ".join(shlex.quote(a) for a in argv)
-        out = (getattr(result, "stdout", "") or "").rstrip()
-        err = (getattr(result, "stderr", "") or "").rstrip()
+        # Mask credential values to last-4 in BOTH the stored transcript (→ the
+        # downloadable flash.log asset) and the live stream below. The command +
+        # its args are preserved; only secret values are reduced — including the
+        # secrets.json body that ``tee`` echoes to stdout.
+        secrets = self._secret_values()
+        cmd = mask_values(" ".join(shlex.quote(a) for a in argv), secrets)
+        out = mask_values((getattr(result, "stdout", "") or "").rstrip(), secrets)
+        err = mask_values((getattr(result, "stderr", "") or "").rstrip(), secrets)
         rc = getattr(result, "exit_status", 0)
         self.transcript.append(
             {"at": _now_iso(), "cmd": cmd, "exit": rc, "stdout": out, "stderr": err}

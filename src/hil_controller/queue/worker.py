@@ -21,14 +21,17 @@ TERMINAL_STATES = frozenset({"finished", "error", "timeout", "cancelled"})
 
 # Redact credentials that adapters can echo into deploy logs: tokens embedded in
 # clone URLs (https://<token>@host) and bare GitHub PATs. Keeps captured logs +
-# the deploy:info announce safe to surface in the UI.
-_URL_CRED_RE = re.compile(r"(https?://)[^@/\s]+@")
+# the deploy:info announce safe to surface in the UI — partial (last-4) so the
+# command stays identifiable, consistent with the bench transcript masking.
+_URL_CRED_RE = re.compile(r"(https?://)([^@/\s]+)@")
 _TOKEN_RE = re.compile(r"\b(?:ghp_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})\b")
 
 
 def _redact_secrets(text: str) -> str:
-    text = _URL_CRED_RE.sub(r"\1<redacted>@", text)
-    return _TOKEN_RE.sub("<redacted>", text)
+    from hil_controller.redact import mask_secret
+
+    text = _URL_CRED_RE.sub(lambda m: m.group(1) + mask_secret(m.group(2)) + "@", text)
+    return _TOKEN_RE.sub(lambda m: mask_secret(m.group(0)), text)
 
 
 @dataclass
@@ -444,20 +447,36 @@ class JobWorker:
         return asyncio.create_task(obs.observe(self._emit), name=f"protomq-{self.job_id}")
 
     async def _purge_job_secrets(self) -> None:
-        """Redact secrets values from request_json in DB — values replaced with '***'."""
+        """Redact request_json secrets in the DB to a partial (last-4) form.
+
+        Credential values (``*KEY``/``*PASSWORD``/``*TOKEN``/…) are reduced to
+        ``****`` + last 4 chars so the stored/API-served request stays auditable
+        (you can confirm *which* credential ran) without persisting the full
+        secret; non-credential fields (username / SSID) are kept readable.
+        """
         if not self.db_path:
             return
         try:
             import json
 
             from hil_controller.db.connection import get_db, get_job
+            from hil_controller.redact import mask_secret
+
+            sensitive = ("KEY", "TOKEN", "PASSWORD", "SECRET", "PAT")
 
             async with get_db(self.db_path) as db:
                 row = await get_job(db, self.job_id)
                 if row:
                     req = json.loads(row["request_json"])
                     if req.get("secrets"):
-                        req["secrets"] = {k: "***" for k in req["secrets"]}
+                        req["secrets"] = {
+                            k: (
+                                mask_secret(str(v))
+                                if any(h in k.upper() for h in sensitive)
+                                else str(v)
+                            )
+                            for k, v in req["secrets"].items()
+                        }
                         await db.execute(
                             "UPDATE jobs SET request_json = ? WHERE id = ?",
                             (json.dumps(req), self.job_id),

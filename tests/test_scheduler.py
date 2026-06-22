@@ -333,8 +333,9 @@ async def test_worker_purges_secrets_from_db_after_finish(tmp_path, event_bus):
     async with get_db(db_file) as db:
         row = await get_job(db, job_id)
     req = json.loads(row["request_json"])
-    assert req["secrets"]["IO_KEY"] == "***"
-    assert req["secrets"]["IO_USERNAME"] == "***"
+    # Credential keys → last-4 partial; non-credential fields (username) kept.
+    assert req["secrets"]["IO_KEY"] == "****cret"  # "supersecret"
+    assert req["secrets"]["IO_USERNAME"] == "testuser"
 
 
 @pytest.mark.asyncio
@@ -408,7 +409,9 @@ def test_redact_secrets_scrubs_url_creds_and_bare_tokens():
     s = "git clone https://ghp_ABCDEFGHIJKLMNOPQRST@github.com/o/r.git; tok=ghp_ABCDEFGHIJKLMNOPQRST"  # noqa: E501
     out = _redact_secrets(s)
     assert "ghp_ABCDEFGHIJKLMNOPQRST" not in out
-    assert "https://<redacted>@github.com/o/r.git" in out
+    # Partial (last-4) so the line stays identifiable without leaking the token.
+    assert "https://****QRST@github.com/o/r.git" in out
+    assert "tok=****QRST" in out
 
 
 async def _run_git_source_worker(tmp_path, event_bus, adapter, job_id):
