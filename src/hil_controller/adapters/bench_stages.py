@@ -1212,6 +1212,61 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
     ctx.i2c_probe_results = results  # type: ignore[attr-defined]
 
 
+async def _stage_inject_i2c_scan_v1(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Drive a v1 I2C bus scan at the checked-in DUT, per TwoWire port.
+
+    Uses the known-good v1 firmware's ``I2CBusScanRequest`` (which carries an
+    explicit ``i2c_port_number`` + pins) to prove which port reaches the STEMMA
+    sensors — settles 'devices unreachable' vs 'WS bus-instance bug'. Scans each
+    port in ``ports`` (default ``[0, 1]``) on ``pin_scl``/``pin_sda`` and logs a
+    machine-greppable ``I2C_SCAN_VERDICT port=<n> found=[0x..]`` per port.
+    Requires protomq up + secrets pointing at it (v1 device)."""
+    if not ctx.protomq_host or not ctx.protomq_port:
+        raise StageError("inject_i2c_scan_v1 needs protomq running (launch_protomq before this)")
+    ports = [int(p) for p in stage.get("ports", [0, 1])]
+    pin_scl = int(stage.get("pin_scl", 40))
+    pin_sda = int(stage.get("pin_sda", 41))
+    freq = int(stage.get("freq", 100000))
+    checkin_timeout = float(stage.get("checkin_timeout_s", 150.0))
+    observe_s = float(stage.get("observe_s", 15.0))
+    io_user = ctx.secrets.get("IO_USERNAME") or "hil"
+    api_url = stage.get("protomq_api_url") or getattr(ctx, "protomq_api_url", "") or None
+    injector = WsSignalInjector(
+        broker_host=ctx.protomq_host,
+        mqtt_port=ctx.protomq_port,
+        api_url=api_url,
+        io_username=io_user,
+    )
+    ctx.log_line(f"inject_i2c_scan_v1: waiting ≤{checkin_timeout:.0f}s for DUT checkin")
+    try:
+        uid = await injector.wait_for_checkin(timeout=checkin_timeout)
+    except WsInjectError as exc:
+        raise StageError(f"inject_i2c_scan_v1: cannot observe checkin ({exc})") from exc
+    if not uid:
+        raise StageError(f"inject_i2c_scan_v1: no DUT checkin within {checkin_timeout:.0f}s")
+    ctx.log_line(f"inject_i2c_scan_v1: device checked in (uid={uid})")
+    results: dict[int, list[int]] = {}
+    for port in ports:
+        ctx.log_line(f"inject_i2c_scan_v1: scanning port {port} (SCL={pin_scl} SDA={pin_sda})")
+        rec = await injector.i2c_scan(
+            uid, port=port, scl=pin_scl, sda=pin_sda, freq=freq, observe_s=observe_s
+        )
+        found = rec["found"]
+        results[port] = found
+        hexs = " ".join(f"0x{a:02x}" for a in found) or "(none)"
+        ctx.log_line(f"I2C_SCAN_VERDICT port={port} found=[{hexs}] uid={uid}")
+        ctx.transcript.append(
+            {
+                "at": _now_iso(),
+                "cmd": f"protomq echo → v1 I2C scan (port {port})",
+                "exit": 0,
+                "stdout": f"found=[{hexs}]\nreq(hex)={rec['payload_hex']}\nresp(hex)={rec['response_hex']}",
+                "stderr": "",
+            }
+        )
+    ctx.i2c_scan_v1_results = results  # type: ignore[attr-defined]
+
+
 async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> None:
     """Verify the freshly-flashed+configured DUT checks in to the broker.
 
@@ -1281,6 +1336,7 @@ STAGE_HANDLERS: dict[str, Handler] = {
     "diagnose": _stage_diagnose,
     "inject_pixelwrite": _stage_inject_pixelwrite,
     "inject_i2c_probe": _stage_inject_i2c_probe,
+    "inject_i2c_scan_v1": _stage_inject_i2c_scan_v1,
     "verify_checkin": _stage_verify_checkin,
     "enter_bootloader": _stage_enter_bootloader,
     "bootloader_touch": _stage_bootloader_touch,

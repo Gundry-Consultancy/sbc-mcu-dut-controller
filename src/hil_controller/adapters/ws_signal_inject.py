@@ -89,6 +89,90 @@ def encode_pixels_write(
     return b"\x1a" + _varint(len(inner)) + bytes(inner)
 
 
+def encode_i2c_scan_request(*, port: int = 0, scl: int, sda: int, freq: int = 100000) -> bytes:
+    """Serialize a v1 ``signal.v1.I2CRequest{ req_i2c_scan: I2CBusScanRequest }``.
+
+    Drives the known-good v1 firmware's I2C bus scan, explicitly selecting the
+    TwoWire instance via ``i2c_port_number`` (+ a ``bus_init_request`` carrying
+    the pins/freq/port) so we can prove which port reaches the STEMMA sensors.
+
+    Wire layout (firmware ``wippersnapper/i2c/v1/i2c.pb.h``):
+    * ``I2CBusInitRequest`` = f1 ``i2c_pin_scl`` | f2 ``i2c_pin_sda`` |
+      f3 ``i2c_frequency`` | f4 ``i2c_port_number`` (all varint).
+    * ``I2CBusScanRequest`` = f1 ``i2c_port_number`` | f2 ``bus_init_request`` (msg).
+    * ``I2CRequest`` = f2 (``req_i2c_scan``) length-delimited message.
+    """
+    bus_init = (
+        b"\x08" + _varint(scl)   # f1 i2c_pin_scl
+        + b"\x10" + _varint(sda)  # f2 i2c_pin_sda
+        + b"\x18" + _varint(freq)  # f3 i2c_frequency
+        + b"\x20" + _varint(port)  # f4 i2c_port_number
+    )
+    scan_req = (
+        b"\x08" + _varint(port)  # f1 i2c_port_number
+        + b"\x12" + _varint(len(bus_init)) + bus_init  # f2 bus_init_request
+    )
+    # I2CRequest field 2 (req_i2c_scan), wiretype 2 → tag 0x12
+    return b"\x12" + _varint(len(scan_req)) + scan_req
+
+
+def _read_varint(buf: bytes, i: int) -> tuple[int, int]:
+    shift = 0
+    val = 0
+    while True:
+        b = buf[i]
+        i += 1
+        val |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return val, i
+        shift += 7
+
+
+def decode_i2c_scan_response(data: bytes) -> list[int]:
+    """Decode a v1 ``signal.v1.I2CResponse`` → list of found 7-bit addresses.
+
+    ``I2CResponse`` f2 (``resp_i2c_scan``) → ``I2CBusScanResponse`` f1
+    (``addresses_found``, repeated uint32; nanopb emits it packed). Tolerates
+    packed and unpacked. Returns ``[]`` if the message isn't a scan response."""
+
+    def walk(buf):
+        out = []
+        i = 0
+        while i < len(buf):
+            key, i = _read_varint(buf, i)
+            f, wt = key >> 3, key & 7
+            if wt == 0:
+                v, i = _read_varint(buf, i)
+                out.append((f, 0, v))
+            elif wt == 2:
+                ln, i = _read_varint(buf, i)
+                out.append((f, 2, buf[i : i + ln]))
+                i += ln
+            elif wt == 5:
+                out.append((f, 5, buf[i : i + 4]))
+                i += 4
+            elif wt == 1:
+                out.append((f, 1, buf[i : i + 8]))
+                i += 8
+            else:
+                raise ValueError(f"bad wiretype {wt}")
+        return out
+
+    found: list[int] = []
+    for f, wt, v in walk(data):
+        if f == 2 and wt == 2:  # resp_i2c_scan -> I2CBusScanResponse
+            for f2, wt2, v2 in walk(v):
+                if f2 == 1:  # addresses_found
+                    if wt2 == 2:  # packed
+                        j = 0
+                        while j < len(v2):
+                            a, j = _read_varint(v2, j)
+                            found.append(a)
+                    elif wt2 == 0:  # unpacked
+                        found.append(v2)
+    return found
+
+
 class WsInjectError(RuntimeError):
     """The signal injection could not be completed."""
 
@@ -240,3 +324,67 @@ class WsSignalInjector:
         except Exception as exc:  # noqa: BLE001
             log.warning("observe_reboot error: %s", exc)
         return False
+
+    # ---- v1 I2C bus scan (Wire0/Wire1 reachability test on known-good v1) ----
+    def i2c_broker_topic(self, device_uid: str) -> str:
+        return f"{self._prefix}{device_uid}/signals/broker/i2c"
+
+    def i2c_device_topic(self, device_uid: str) -> str:
+        return f"{self._prefix}{device_uid}/signals/device/i2c"
+
+    async def i2c_scan(
+        self,
+        device_uid: str,
+        *,
+        port: int = 0,
+        scl: int,
+        sda: int,
+        freq: int = 100000,
+        observe_s: float = 15.0,
+    ) -> dict[str, Any]:
+        """Fire a v1 I2C bus scan on *port* (pins scl/sda) and capture the reply.
+
+        Subscribes to the device's i2c response topic BEFORE publishing the
+        request via ``POST /api/echo`` to the broker i2c topic, then decodes the
+        ``I2CBusScanResponse``. Returns found addresses + the wire payloads."""
+        if not _AIOMQTT_AVAILABLE:
+            raise WsInjectError("aiomqtt not installed; cannot capture i2c scan reply")
+        payload = encode_i2c_scan_request(port=port, scl=scl, sda=sda, freq=freq)
+        dev_topic = self.i2c_device_topic(device_uid)
+        brkr_topic = self.i2c_broker_topic(device_uid)
+        found: list[int] = []
+        raw_hex = ""
+        deadline = asyncio.get_event_loop().time() + observe_s
+        async with aiomqtt.Client(hostname=self.broker_host, port=self.mqtt_port) as client:
+            await client.subscribe(dev_topic)
+            body = {"topic": brkr_topic, "payload": payload.decode("latin1")}
+            async with httpx.AsyncClient(timeout=10) as http:
+                r = await http.post(f"{self.api_url}/api/echo", json=body)
+                r.raise_for_status()
+            messages = aiter(client.messages)
+            while asyncio.get_event_loop().time() < deadline:
+                remaining = deadline - asyncio.get_event_loop().time()
+                try:
+                    message = await asyncio.wait_for(anext(messages), timeout=remaining)
+                except (TimeoutError, StopAsyncIteration):
+                    break
+                data = message.payload
+                if not isinstance(data, bytes):
+                    continue
+                try:
+                    addrs = decode_i2c_scan_response(data)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("decode_i2c_scan_response skip: %s", exc)
+                    continue
+                if addrs:
+                    found = addrs
+                    raw_hex = data.hex(" ")
+                    break
+                raw_hex = data.hex(" ")  # a scan response with no devices still arrives
+                break
+        return {
+            "found": sorted(set(found)),
+            "port": port,
+            "payload_hex": payload.hex(" "),
+            "response_hex": raw_hex,
+        }
