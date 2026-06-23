@@ -239,7 +239,10 @@ def parse_probed(signal_bytes: bytes) -> list[dict[str, Any]] | None:
             for f3, wt3, v3 in _walk(v2):  # ws.i2c.Probed
                 if f3 != 1 or wt3 != 2:  # results (AddressSpaceResult)
                     continue
-                entry: dict[str, Any] = {"mux_address": 0, "mux_channel": None, "found": []}
+                # proto3 omits zero-valued scalars, so an echoed mux_channel of 0
+                # is absent on the wire — default to 0 (not None) so channel-0
+                # results match a channel-0 request.
+                entry: dict[str, Any] = {"mux_address": 0, "mux_channel": 0, "found": []}
                 for f4, wt4, v4 in _walk(v3):
                     if f4 == 1 and wt4 == 2:  # address_space
                         for f5, wt5, v5 in _walk(v4):
@@ -389,9 +392,20 @@ class WsI2cProbeInjector:
         d2b = self.d2b_topic(uid)
 
         def _match(results: list[dict[str, Any]]) -> list[int]:
+            # Each probe sends exactly one AddressSpace, so the reply has at most
+            # one result — fall back to it if the channel/bus key doesn't match
+            # (defensive; the keys normally do once channel 0 defaults to 0).
+            if not results:
+                return []
             if mux_address == 0:
-                return next((e["found"] for e in results if not e.get("mux_address")), [])
-            return next((e["found"] for e in results if e.get("mux_channel") == mux_channel), [])
+                return next(
+                    (e["found"] for e in results if not e.get("mux_address")),
+                    results[0]["found"],
+                )
+            return next(
+                (e["found"] for e in results if e.get("mux_channel") == mux_channel),
+                results[0]["found"],
+            )
 
         loop = asyncio.get_event_loop()
         for attempt in range(1, attempts + 1):
