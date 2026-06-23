@@ -44,6 +44,7 @@ from hil_controller.adapters.msc_secrets import (
     write_secrets_to_msc,
 )
 from hil_controller.adapters.solenoid_hub import SolenoidHubAdapter, SolenoidHubError
+from hil_controller.adapters.ws_i2c_inject import WsI2cInjectError, WsI2cProbeInjector
 from hil_controller.adapters.ws_signal_inject import WsInjectError, WsSignalInjector
 from hil_controller.redact import mask_values
 
@@ -1116,6 +1117,101 @@ async def _stage_inject_pixelwrite(stage: dict[str, Any], ctx: BenchContext) -> 
     ctx.pixelwrite_rebooted = rebooted  # type: ignore[attr-defined]
 
 
+async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Drive a v2 I2C bus scan + per-mux-channel probe at the checked-in DUT.
+
+    Proves the muxed-sensor read end-to-end over protomq: wait for the DUT to
+    check in, register the TCA9548A on its bus (``Add`` ``pca9548``), then
+    ``Probe`` the bare bus and each requested mux channel — the v2 firmware
+    selects the channel itself (``SelectMuxChannel``) per Probe, so a different
+    ``channel`` is a different scan with no CircuitPython mux-latch. Logs a
+    machine-greppable ``I2C_PROBE_VERDICT channel=<n|bus> found=[0x..]`` per scan.
+
+    Stage params: ``channels`` (list, default ``[0, 1]``), ``mux_address`` (int,
+    default ``0x77``), ``pin_scl``/``pin_sda`` (ints, the bus GPIOs — QT Py S3
+    STEMMA = 40/41), ``scan_bus`` (bool, default true — a bare-bus scan first),
+    ``checkin_timeout_s``, ``observe_s``. Requires protomq up + secrets pointing
+    at it.
+    """
+    if not ctx.protomq_host or not ctx.protomq_port:
+        raise StageError(
+            "inject_i2c_probe needs protomq running (launch_protomq before this stage)"
+        )
+    channels = [int(c) for c in stage.get("channels", [0, 1])]
+    mux_address = int(stage.get("mux_address", 0x77))
+    pin_scl = int(stage.get("pin_scl", 40))
+    pin_sda = int(stage.get("pin_sda", 41))
+    scan_bus = bool(stage.get("scan_bus", True))
+    checkin_timeout = float(stage.get("checkin_timeout_s", 150.0))
+    observe_s = float(stage.get("observe_s", 15.0))
+    io_user = ctx.secrets.get("IO_USERNAME") or "hil"
+    api_url = stage.get("protomq_api_url") or getattr(ctx, "protomq_api_url", "") or None
+    injector = WsI2cProbeInjector(
+        broker_host=ctx.protomq_host,
+        mqtt_port=ctx.protomq_port,
+        api_url=api_url,
+        io_username=io_user,
+    )
+    ctx.log_line(
+        f"inject_i2c_probe: waiting ≤{checkin_timeout:.0f}s for DUT checkin on {io_user}/ws-d2b/#"
+    )
+    try:
+        uid = await injector.wait_for_checkin(timeout=checkin_timeout)
+    except WsI2cInjectError as exc:
+        raise StageError(f"inject_i2c_probe: cannot observe checkin ({exc})") from exc
+    if not uid:
+        raise StageError(
+            f"inject_i2c_probe: no DUT checkin on {io_user}/ws-d2b/# within {checkin_timeout:.0f}s "
+            "(device booted with secrets pointing at protomq?)"
+        )
+    ctx.log_line(f"inject_i2c_probe: device checked in (uid={uid})")
+    results: dict[str, list[int]] = {}
+
+    def _record(label: str, rec: dict[str, Any]) -> None:
+        found = rec["found"]
+        results[label] = found
+        hexs = " ".join(f"0x{a:02x}" for a in found) or "(none)"
+        ctx.log_line(f"I2C_PROBE_VERDICT scan={label} found=[{hexs}] uid={uid}")
+        ctx.transcript.append(
+            {
+                "at": _now_iso(),
+                "cmd": f"protomq echo → i2c Probe ({label})",
+                "exit": 0,
+                "stdout": f"found=[{hexs}]\npayload(hex)={rec['payload_hex']}\nraw={rec['raw']}",
+                "stderr": "",
+            }
+        )
+
+    # 1) bare-bus scan (shows direct devices + the mux itself).
+    if scan_bus:
+        ctx.log_line("inject_i2c_probe: scanning bare bus (no mux)")
+        rec = await injector.probe(
+            uid, pin_scl=pin_scl, pin_sda=pin_sda, mux_address=0, observe_s=observe_s
+        )
+        _record("bus", rec)
+
+    # 2) register the mux (required before any channel probe).
+    ctx.log_line(f"inject_i2c_probe: registering pca9548 @ 0x{mux_address:02x}")
+    add = await injector.add_mux(uid, mux_address=mux_address, pin_scl=pin_scl, pin_sda=pin_sda)
+    ctx.log_line(f"$ POST {injector.api_url}/api/echo  topic={add['topic']}  (Add pca9548)")
+    await asyncio.sleep(1.0)
+
+    # 3) probe each requested channel — the firmware latches the channel per Probe.
+    for ch in channels:
+        ctx.log_line(f"inject_i2c_probe: selecting + scanning mux channel {ch}")
+        rec = await injector.probe(
+            uid,
+            pin_scl=pin_scl,
+            pin_sda=pin_sda,
+            mux_address=mux_address,
+            mux_channel=ch,
+            observe_s=observe_s,
+        )
+        _record(f"ch{ch}", rec)
+
+    ctx.i2c_probe_results = results  # type: ignore[attr-defined]
+
+
 async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> None:
     """Verify the freshly-flashed+configured DUT checks in to the broker.
 
@@ -1184,6 +1280,7 @@ async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> Non
 STAGE_HANDLERS: dict[str, Handler] = {
     "diagnose": _stage_diagnose,
     "inject_pixelwrite": _stage_inject_pixelwrite,
+    "inject_i2c_probe": _stage_inject_i2c_probe,
     "verify_checkin": _stage_verify_checkin,
     "enter_bootloader": _stage_enter_bootloader,
     "bootloader_touch": _stage_bootloader_touch,
