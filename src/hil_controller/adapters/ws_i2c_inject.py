@@ -219,11 +219,15 @@ def _walk(buf: bytes) -> list[tuple[int, int, Any]]:
     return out
 
 
-def parse_probed(signal_bytes: bytes) -> list[dict[str, Any]]:
-    """Decode a ``ws.signal.DeviceToBroker`` and return the Probed results.
+def parse_probed(signal_bytes: bytes) -> list[dict[str, Any]] | None:
+    """Decode a ``ws.signal.DeviceToBroker`` Probed reply.
 
-    Returns a list of ``{"mux_address", "mux_channel", "found": [addr, ...]}``.
-    Returns ``[]`` if the message is not an i2c Probed (e.g. a checkin/event)."""
+    Returns the list of ``{"mux_address", "mux_channel", "found": [addr, ...]}``
+    results **if the message is an i2c Probed** — the list may be empty (the
+    device scanned and found nothing, since the proto omits no-find spaces).
+    Returns ``None`` if the message is NOT an i2c Probed (checkin/event/etc.), so
+    the caller can distinguish "scanned-empty" from "no response yet"."""
+    saw_probed = False
     results: list[dict[str, Any]] = []
     for f, wt, v in _walk(signal_bytes):
         if f != _SIGNAL_D2B_I2C or wt != 2:
@@ -231,6 +235,7 @@ def parse_probed(signal_bytes: bytes) -> list[dict[str, Any]]:
         for f2, wt2, v2 in _walk(v):  # ws.i2c.D2B
             if f2 != 1 or wt2 != 2:  # probed
                 continue
+            saw_probed = True
             for f3, wt3, v3 in _walk(v2):  # ws.i2c.Probed
                 if f3 != 1 or wt3 != 2:  # results (AddressSpaceResult)
                     continue
@@ -251,7 +256,7 @@ def parse_probed(signal_bytes: bytes) -> list[dict[str, Any]]:
                                 a, j = _read_varint(v4, j)
                                 entry["found"].append(a)
                 results.append(entry)
-    return results
+    return results if saw_probed else None
 
 
 # --------------------------------------------------------------------------- #
@@ -355,12 +360,22 @@ class WsI2cProbeInjector:
         mux_address: int = 0,
         mux_channel: int = 0,
         observe_s: float = 15.0,
+        attempts: int = 3,
+        settle_s: float = 0.4,
     ) -> dict[str, Any]:
         """Fire one Probe (bare bus if ``mux_address==0``, else that channel) and
-        capture the Probed reply on ``ws-d2b/<uid>``.
+        capture the Probed reply on ``ws-d2b/<uid>`` — reliably.
 
-        Returns ``{"found": [addr...], "channel", "payload_hex", "raw": [...]}``.
-        Subscribes BEFORE publishing so the reply is never missed."""
+        Returns ``{"found": [addr...], "channel", "payload_hex", "raw", "got_reply"}``.
+
+        Reliability: subscribe and **settle** before publishing (so the
+        subscription is live before the device can answer — a fast Probed reply
+        was otherwise raced/dropped at QoS 0), then wait specifically for an i2c
+        Probed D2B (``parse_probed`` returns non-None), ignoring checkin/event/
+        PING traffic. A Probed with empty results is a valid "scanned, nothing
+        found" answer (``got_reply=True, found=[]``). If NO Probed arrives within
+        ``observe_s``, re-fire — up to ``attempts`` — so a dropped reply never
+        masquerades as an empty scan."""
         addrs = list(addresses) if addresses is not None else list(DEFAULT_PROBE_ADDRESSES)
         payload = build_probe(
             pin_scl=pin_scl,
@@ -372,44 +387,57 @@ class WsI2cProbeInjector:
         if not _AIOMQTT_AVAILABLE:
             raise WsI2cInjectError("aiomqtt not installed; cannot capture probed reply")
         d2b = self.d2b_topic(uid)
-        found: list[int] = []
-        raw: list[dict[str, Any]] = []
-        deadline = asyncio.get_event_loop().time() + observe_s
-        async with aiomqtt.Client(hostname=self.broker_host, port=self.mqtt_port) as client:
-            await client.subscribe(d2b)
-            # Publish only after the subscription is live.
-            await self._echo(self.b2d_topic(uid), payload)
-            messages = aiter(client.messages)
-            while asyncio.get_event_loop().time() < deadline:
-                remaining = deadline - asyncio.get_event_loop().time()
-                try:
-                    message = await asyncio.wait_for(anext(messages), timeout=remaining)
-                except (TimeoutError, StopAsyncIteration):
-                    break
-                payload_in = message.payload
-                if not isinstance(payload_in, bytes):
-                    continue
-                try:
-                    entries = parse_probed(payload_in)
-                except Exception as exc:  # noqa: BLE001 - tolerate non-probed D2B traffic
-                    log.debug("parse_probed skip: %s", exc)
-                    continue
-                if not entries:
-                    continue
-                # Keep the result matching the channel we asked for (mux) or any
-                # bare-bus result (mux_address==0).
-                for e in entries:
-                    raw.append(e)
-                    if mux_address == 0:
-                        if not e.get("mux_address"):
-                            found = e["found"]
-                    elif e.get("mux_channel") == mux_channel:
-                        found = e["found"]
-                if found:
-                    break
+
+        def _match(results: list[dict[str, Any]]) -> list[int]:
+            if mux_address == 0:
+                return next((e["found"] for e in results if not e.get("mux_address")), [])
+            return next((e["found"] for e in results if e.get("mux_channel") == mux_channel), [])
+
+        loop = asyncio.get_event_loop()
+        for attempt in range(1, attempts + 1):
+            async with aiomqtt.Client(hostname=self.broker_host, port=self.mqtt_port) as client:
+                await client.subscribe(d2b)
+                if settle_s > 0:
+                    await asyncio.sleep(settle_s)  # subscription live before the device answers
+                await self._echo(self.b2d_topic(uid), payload)
+                messages = aiter(client.messages)
+                deadline = loop.time() + observe_s
+                while loop.time() < deadline:
+                    remaining = deadline - loop.time()
+                    try:
+                        message = await asyncio.wait_for(anext(messages), timeout=remaining)
+                    except (TimeoutError, StopAsyncIteration):
+                        break
+                    data = message.payload
+                    if not isinstance(data, bytes):
+                        continue
+                    try:
+                        results = parse_probed(data)
+                    except Exception as exc:  # noqa: BLE001 - tolerate odd D2B traffic
+                        log.debug("parse_probed skip: %s", exc)
+                        continue
+                    if results is None:
+                        continue  # not an i2c Probed (checkin/event/ping) — keep waiting
+                    # This IS the Probed reply (results may be empty = scanned-empty).
+                    return {
+                        "found": sorted(set(_match(results))),
+                        "channel": mux_channel if mux_address else None,
+                        "payload_hex": payload.hex(" "),
+                        "raw": results,
+                        "got_reply": True,
+                        "attempt": attempt,
+                    }
+            log.warning(
+                "i2c probe: no Probed reply within %.0fs (attempt %d/%d) — re-firing",
+                observe_s,
+                attempt,
+                attempts,
+            )
         return {
-            "found": sorted(set(found)),
+            "found": [],
             "channel": mux_channel if mux_address else None,
             "payload_hex": payload.hex(" "),
-            "raw": raw,
+            "raw": [],
+            "got_reply": False,
+            "attempt": attempts,
         }

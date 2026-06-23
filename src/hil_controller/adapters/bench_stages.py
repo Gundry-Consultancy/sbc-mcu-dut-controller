@@ -1171,14 +1171,24 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
         found = rec["found"]
         results[label] = found
         hexs = " ".join(f"0x{a:02x}" for a in found) or "(none)"
-        ctx.log_line(f"I2C_PROBE_VERDICT scan={label} found=[{hexs}] uid={uid}")
+        # A verdict must be unambiguous: only report found/empty when the device
+        # actually replied. no_reply means the probe got no Probed back (a
+        # capture/transport miss) — NOT an empty bus.
+        got_reply = rec.get("got_reply", True)
+        status = "ok" if got_reply else "NO_REPLY"
+        ctx.log_line(
+            f"I2C_PROBE_VERDICT scan={label} status={status} found=[{hexs}] uid={uid}"
+        )
         ctx.transcript.append(
             {
                 "at": _now_iso(),
                 "cmd": f"protomq echo → i2c Probe ({label})",
-                "exit": 0,
-                "stdout": f"found=[{hexs}]\npayload(hex)={rec['payload_hex']}\nraw={rec['raw']}",
-                "stderr": "",
+                "exit": 0 if got_reply else 1,
+                "stdout": (
+                    f"status={status} found=[{hexs}]\n"
+                    f"payload(hex)={rec['payload_hex']}\nraw={rec['raw']}"
+                ),
+                "stderr": "" if got_reply else "no Probed reply received after retries",
             }
         )
 
