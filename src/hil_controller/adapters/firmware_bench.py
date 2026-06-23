@@ -566,9 +566,19 @@ class FirmwareBenchAdapter:
             )
 
             dest_dir = str(Path(self.jobs_dir) / self.job_id / "firmware")
+            tok = _os.environ.get("HIL_FIRMWARE_FETCH_TOKEN")
+            self._sink(
+                "bench",
+                f"resolving firmware url={self._fw.get('url')} member={self._fw.get('member') or '(default *combined.bin)'} "  # noqa: E501
+                f"offset={self._fw.get('offset') or '0x0'} sha256={self._fw.get('sha256') or '(none)'} "
+                f"fetch_token={'present' if tok else 'absent'}",
+            )
             try:
                 self._fw_local_path = await resolve_firmware_local(
-                    self._fw, dest_dir=dest_dir, token=_os.environ.get("HIL_FIRMWARE_FETCH_TOKEN")
+                    self._fw,
+                    dest_dir=dest_dir,
+                    token=tok,
+                    on_line=lambda m: self._sink("bench", m),
                 )
             except FirmwareFetchError as exc:
                 raise RuntimeError(f"firmware-bench: {exc}") from exc
