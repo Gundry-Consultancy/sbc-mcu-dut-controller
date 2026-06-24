@@ -20,8 +20,6 @@ different secrets-delivery mechanism later without touching the stage pipeline.
 
 from __future__ import annotations
 
-import asyncio
-
 import fnmatch
 import json
 import logging
@@ -204,17 +202,6 @@ async def write_secrets_to_msc(
         if getattr(write_res, "exit_status", 0) != 0:
             raise MscError(f"writing {dest} failed: {(write_res.stderr or '').strip()[:200]}")
         await transport.exec(["sync"])
-        # The DUT's TinyUSB MSC only commits the host's writes to flash on a
-        # SCSI eject/STOP (a plain unmount or cache-sync does NOT fire its flush
-        # callback, so a hard power-cycle would lose the write). Eject, then
-        # SETTLE so the board finishes writing flash before the next power-cycle
-        # cuts power mid-flush (which corrupts its FATFS). Proven on LilyGo.
-        rl = await transport.exec(["readlink", "-f", dev])
-        realdev = (getattr(rl, "stdout", "") or dev).strip() or dev
-        await transport.exec(
-            ["bash", "-c", f"sudo eject {shlex.quote(realdev)}"], check=False
-        )
-        await asyncio.sleep(5.0)
     finally:
         await transport.exec(unmount)
     log.info("wrote %s to MSC volume %s (%s)", filename, device_used, mountpoint)
