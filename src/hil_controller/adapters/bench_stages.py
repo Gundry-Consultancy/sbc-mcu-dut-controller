@@ -1315,18 +1315,41 @@ async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> Non
         raise StageError("verify_checkin needs protomq running (launch_protomq before this stage)")
     io_user = ctx.secrets.get("IO_USERNAME") or "hil"
     checkin_timeout = float(stage.get("checkin_timeout_s", 120.0))
-    injector = WsSignalInjector(
-        broker_host=ctx.protomq_host, mqtt_port=ctx.protomq_port, io_username=io_user
-    )
+    # Watch for a check-in on EITHER the v1 topic (<user>/wprsnpr/# pinConfig
+    # Complete) or the v2 topic (<user>/ws-d2b/<uid> ws.checkin) and take the
+    # first that lands. WipperSnapper v2 publishes its checkin on ws-d2b, which
+    # the v1-only watcher never saw (=> false ok=false). proto: v1|v2|auto.
+    from hil_controller.adapters.ws_i2c_inject import WsI2cProbeInjector
+    proto = str(stage.get("proto", "auto")).lower()
+    watchers: dict[Any, str] = {}
+    if proto in ("v1", "auto"):
+        w1 = WsSignalInjector(broker_host=ctx.protomq_host, mqtt_port=ctx.protomq_port, io_username=io_user)
+        watchers[asyncio.create_task(w1.wait_for_checkin(timeout=checkin_timeout))] = "v1"
+    if proto in ("v2", "auto"):
+        w2 = WsI2cProbeInjector(broker_host=ctx.protomq_host, mqtt_port=ctx.protomq_port, io_username=io_user)
+        watchers[asyncio.create_task(w2.wait_for_checkin(timeout=checkin_timeout))] = "v2"
     ctx.log_line(
-        f"verify_checkin: waiting ≤{checkin_timeout:.0f}s for DUT checkin on {io_user}/wprsnpr/#"
+        f"verify_checkin: waiting <={checkin_timeout:.0f}s for DUT checkin "
+        f"(proto={proto}; v1 {io_user}/wprsnpr/#, v2 {io_user}/ws-d2b/#)"
     )
-    try:
-        uid = await injector.wait_for_checkin(timeout=checkin_timeout)
-    except WsInjectError as exc:
-        raise StageError(f"verify_checkin: cannot observe checkin ({exc})") from exc
+    uid = None
+    matched = None
+    pending = set(watchers)
+    while pending and not uid:
+        done, pending = await asyncio.wait(
+            pending, timeout=checkin_timeout + 5.0, return_when=asyncio.FIRST_COMPLETED
+        )
+        if not done:
+            break  # overall timeout
+        for t in done:
+            r = None if t.cancelled() or t.exception() else t.result()
+            if r:
+                uid, matched = r, watchers[t]
+                break
+    for t in pending:
+        t.cancel()
     ok = bool(uid)
-    ctx.log_line(f"CHECKIN_VERDICT ok={'true' if ok else 'false'} uid={uid or ''}")
+    ctx.log_line(f"CHECKIN_VERDICT ok={'true' if ok else 'false'} uid={uid or ''} proto={matched or proto}")
     ctx.checkin_ok = ok  # type: ignore[attr-defined]
     # ``soft``: log the verdict but DON'T fail the job on a no-checkin. This lets a
     # caller (e.g. the version-bisection runner) distinguish a *broken firmware*
