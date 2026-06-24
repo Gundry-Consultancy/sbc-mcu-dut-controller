@@ -222,4 +222,4 @@ __marimo__/
 .playwright-mcp/
 
 # rubbish
-.scratch/
+.scratch/run/jobs/
