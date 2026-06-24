@@ -1472,7 +1472,7 @@ async def _stage_capture_display(stage: dict[str, Any], ctx: BenchContext) -> No
     cam_url = stage.get("camera_url")
     if not cam_url:
         raise StageError("capture_display needs camera_url")
-    exposure = int(stage.get("exposure_us", 3500))
+    exposure = int(stage.get("exposure_us", 6000))
     gain = float(stage.get("gain", 1.0))
     out = stage.get("out", "/tmp/hil-display-capture.jpg")
     base = cam_url.rstrip("/")
