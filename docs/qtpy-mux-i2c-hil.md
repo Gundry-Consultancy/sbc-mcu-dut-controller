@@ -44,14 +44,14 @@ One **TCA9548A @ 0x77** (8-ch). All on the QT Py **STEMMA QT** bus = MicroPython
 | direct | `0x58` | **SGP30** | ✅ `drvSgp30` | — |
 | direct | `0x12` | PMSA003I (high-current, currently **removed**) | existing | — |
 | ch0 | `0x52` | APDS9999 | in v2 | — |
-| ch0 | `0x59` | **SGP41** | ✅ `drvSgp41` | — |
+| ch0 | `0x59` | **SGP40** (shares 0x59 w/ SGP41) | ✅ `drvSgp40` | — |
 | ch0 | `0x74` | **AS7331** (UV) | ✅ `drvAs7331` | ✅ as7331 |
 | ch0 | `0x76` | **BME280** | existing | ✅ sea_level_pressure |
 | ch0 | `0x61` | SCD30 (high-current, currently **removed**) | existing | — |
 | ch1 | `0x48` | **TMP119** | ✅ `drvTmp119` | — |
 | ch1 | `0x53` | ENS160 | existing | — |
 
-IDs confirmed by register reads (TMP119 `0x0F`=`0x2117`; AS7331 AGEN `0x21`; BME280 `0xD0`=`0x60`; SGP41 featureset `0x202F`=`0x3240`; SGP30 serial-cmd ACK; ENS160 PART_ID `0x0160`).
+IDs confirmed by register reads (TMP119 `0x0F`=`0x2117`; AS7331 AGEN `0x21`; BME280 `0xD0`=`0x60`; SGP40 (0x59, shares addr w/ SGP41) featureset `0x202F`=`0x3240`; SGP30 serial-cmd ACK; ENS160 PART_ID `0x0160`).
 **Power note:** the high-current sensors (SCD30 CO2, PMSA003I fan) were physically removed to reduce inrush during re-enumeration.
 
 ---
