@@ -18,8 +18,9 @@ It is intentionally a small, self-contained unit so it can be swapped for a
 different secrets-delivery mechanism later without touching the stage pipeline.
 """
 
-import asyncio
 from __future__ import annotations
+
+import asyncio
 
 import fnmatch
 import json
