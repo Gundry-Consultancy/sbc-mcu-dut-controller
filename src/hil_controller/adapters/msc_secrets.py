@@ -196,14 +196,24 @@ async def write_secrets_to_msc(
     """
     dev = await resolve_msc_device(transport, msc_filter)
     device_used, mountpoint, unmount = await _mount_msc(transport, dev, read_only=False)
+    ejected = False
     try:
         dest = f"{mountpoint.rstrip('/')}/{filename}"
         write_res = await transport.exec(["tee", dest], stdin=secrets_json.encode())
         if getattr(write_res, "exit_status", 0) != 0:
             raise MscError(f"writing {dest} failed: {(write_res.stderr or '').strip()[:200]}")
         await transport.exec(["sync"])
+        # Eject (SCSI STOP) so the DUT's TinyUSB MSC flushes its RAM cache to
+        # flash. A plain unmount does NOT fire the device's msc_flush callback,
+        # so a following hard power-cycle loses the write and the board boots on
+        # the default secrets template. Proven on the LilyGo T-Display-S3.
+        rl = await transport.exec(["readlink", "-f", dev])
+        realdev = (getattr(rl, "stdout", "") or dev).strip() or dev
+        await transport.exec(["bash", "-c", f"sudo eject {shlex.quote(realdev)}"])
+        ejected = True
     finally:
-        await transport.exec(unmount)
+        if not ejected:
+            await transport.exec(unmount)
     log.info("wrote %s to MSC volume %s (%s)", filename, device_used, mountpoint)
     return device_used, mountpoint
 
