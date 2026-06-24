@@ -1343,10 +1343,96 @@ async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> Non
 
 #: Registry of stage type → handler. Extend (don't edit the orchestrator) to
 #: add new mechanisms — e.g. ``tinyuf2_install``, ``picotool``.
+
+async def _stage_inject_protobuf(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Publish an arbitrary v2 ``ws.signal.BrokerToDevice`` protobuf to the DUT.
+
+    Generic component-injection over protomq ``POST /api/echo`` on
+    ``<io_user>/ws-b2d/<uid>`` (the same transport the i2c/pixel injectors use).
+    Reusable for any component: pass raw ``payload_hex`` (a full BrokerToDevice
+    message), or a convenience ``kind`` builder that constructs it from params.
+
+    Params:
+      payload_hex   raw BrokerToDevice bytes (hex; spaces ok). OR
+      kind          a known builder: "display_add_i8080".
+      params        kwargs for the builder.
+      uid / topic   target override; otherwise wait_for_checkin derives the uid.
+      checkin_timeout_s (150), settle_s (0), io_username ("hil").
+
+    Emits ``INJECT_VERDICT published=true topic=<t> bytes=<n> kind=<k>``.
+    """
+    if not ctx.protomq_host or not ctx.protomq_port:
+        raise StageError(
+            "inject_protobuf needs protomq running (launch_protomq before this stage)"
+        )
+    from hil_controller.adapters.ws_i2c_inject import WsI2cProbeInjector
+
+    io_user = stage.get("io_username") or "hil"
+    checkin_timeout = float(stage.get("checkin_timeout_s", 150.0))
+    settle = float(stage.get("settle_s", 0.0))
+    api_url = stage.get("protomq_api_url") or getattr(ctx, "protomq_api_url", "") or None
+    inj = WsI2cProbeInjector(
+        broker_host=ctx.protomq_host,
+        mqtt_port=ctx.protomq_port,
+        api_url=api_url,
+        io_username=io_user,
+    )
+
+    payload_hex = stage.get("payload_hex")
+    kind = stage.get("kind")
+    if payload_hex:
+        payload = bytes.fromhex(payload_hex.replace(" ", ""))
+    elif kind == "display_add_i8080":
+        from hil_controller.adapters.ws_display_inject import build_display_add_i8080
+
+        p = stage.get("params", {})
+        payload = build_display_add_i8080(
+            name=p.get("name", "tft-i8080"),
+            driver=p.get("driver", "ST7789"),
+            data_pins=p["data_pins"],
+            cs=p["cs"],
+            dc=p["dc"],
+            rst=p["rst"],
+            width=int(p.get("width", 320)),
+            height=int(p.get("height", 170)),
+            rotation=int(p.get("rotation", 1)),
+            text_size=int(p.get("text_size", 2)),
+            status_bar=bool(p.get("status_bar", True)),
+        )
+    else:
+        raise StageError("inject_protobuf needs payload_hex or a known kind")
+
+    topic = stage.get("topic")
+    uid = stage.get("uid")
+    if not topic:
+        if not uid:
+            ctx.log_line(
+                f"inject_protobuf: waiting <={checkin_timeout:.0f}s for checkin on "
+                f"{io_user}/ws-d2b/#"
+            )
+            uid = await inj.wait_for_checkin(timeout=checkin_timeout)
+            if not uid:
+                raise StageError("inject_protobuf: no DUT checkin observed")
+        topic = inj.b2d_topic(uid)
+
+    resp = await inj._echo(topic, payload)
+    ctx.log_line(
+        f"INJECT_VERDICT published=true topic={topic} bytes={len(payload)} "
+        f"kind={kind or 'raw'} resp={resp}"
+    )
+    ctx.log_line(f"inject payload hex: {payload.hex(' ')}")
+    if settle > 0:
+        ctx.log_line(
+            f"holding {settle:.0f}s post-inject (panel paint / camera capture window)"
+        )
+        await asyncio.sleep(settle)
+
+
 STAGE_HANDLERS: dict[str, Handler] = {
     "diagnose": _stage_diagnose,
     "inject_pixelwrite": _stage_inject_pixelwrite,
     "inject_i2c_probe": _stage_inject_i2c_probe,
+    "inject_protobuf": _stage_inject_protobuf,
     "inject_i2c_scan_v1": _stage_inject_i2c_scan_v1,
     "verify_checkin": _stage_verify_checkin,
     "enter_bootloader": _stage_enter_bootloader,
