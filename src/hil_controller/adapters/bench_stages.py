@@ -1451,11 +1451,72 @@ async def _stage_inject_protobuf(stage: dict[str, Any], ctx: BenchContext) -> No
         await asyncio.sleep(settle)
 
 
+
+async def _stage_capture_display(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Capture a camera proof of the DUT panel and write it for harvesting.
+
+    Triggers continuous autofocus, grabs a sensor-native frame at a *manual
+    exposure* (so a bright self-lit TFT does not blow out), optionally crops to
+    the device ROI, and writes a JPEG to ``out`` (default ``/tmp/hil-display-
+    <ts>.jpg``). Pair with ``params.collect_artifacts`` to surface it as a job
+    asset (the CI proof). Params: camera_url, exposure_us (3500), gain (1.0),
+    autofocus (true), roi [x,y,w,h,frame_w,frame_h] (skip to keep full frame),
+    out, settle_s.
+
+    Emits ``DISPLAY_CAPTURE_VERDICT saved=<path> ...``.
+    """
+    import httpx
+    import numpy as np
+    import cv2
+
+    cam_url = stage.get("camera_url")
+    if not cam_url:
+        raise StageError("capture_display needs camera_url")
+    exposure = int(stage.get("exposure_us", 3500))
+    gain = float(stage.get("gain", 1.0))
+    out = stage.get("out", "/tmp/hil-display-capture.jpg")
+    base = cam_url.rstrip("/")
+    if stage.get("autofocus", True):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                await c.post(f"{base}/lens", json={"mode": "auto"})
+            await asyncio.sleep(float(stage.get("af_settle_s", 3.0)))
+            ctx.log_line("capture_display: continuous autofocus triggered")
+        except Exception as exc:  # noqa: BLE001
+            ctx.log_line(f"capture_display: autofocus push failed ({exc}); continuing")
+    url = f"{base}/?full=1&exposure={exposure}&gain={gain}"
+    async with httpx.AsyncClient(timeout=40.0) as c:
+        r = await c.get(url)
+        r.raise_for_status()
+    im = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
+    if im is None:
+        raise StageError("capture_display: could not decode camera frame")
+    H, W = im.shape[:2]
+    roi = stage.get("roi")
+    if roi and len(roi) >= 6:
+        x, y, w, h, fw, fh = roi[:6]
+        sx, sy = W / float(fw), H / float(fh)
+        x, y, w, h = int(x * sx), int(y * sy), int(w * sx), int(h * sy)
+        x, y = max(0, x), max(0, y)
+        crop = im[y : y + h, x : x + w]
+        if crop.size:
+            im = cv2.resize(crop, (crop.shape[1] * 2, crop.shape[0] * 2), interpolation=cv2.INTER_CUBIC)
+    cv2.imwrite(out, im, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    ctx.log_line(
+        f"DISPLAY_CAPTURE_VERDICT saved={out} exposure_us={exposure} gain={gain} "
+        f"frame={W}x{H} cropped={'yes' if (roi and len(roi) >= 6) else 'no'}"
+    )
+    settle = float(stage.get("settle_s", 0.0))
+    if settle > 0:
+        await asyncio.sleep(settle)
+
+
 STAGE_HANDLERS: dict[str, Handler] = {
     "diagnose": _stage_diagnose,
     "inject_pixelwrite": _stage_inject_pixelwrite,
     "inject_i2c_probe": _stage_inject_i2c_probe,
     "inject_protobuf": _stage_inject_protobuf,
+    "capture_display": _stage_capture_display,
     "inject_i2c_scan_v1": _stage_inject_i2c_scan_v1,
     "verify_checkin": _stage_verify_checkin,
     "enter_bootloader": _stage_enter_bootloader,
