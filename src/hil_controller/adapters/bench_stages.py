@@ -901,10 +901,11 @@ async def _stage_write_secrets_msc(stage: dict[str, Any], ctx: BenchContext) -> 
                 f"waiting for MSC volume {msc_filter!r} to enumerate (attempt {i}/{attempts})"
             )
             await asyncio.sleep(settle_s)
+    fname = stage.get("filename", "secrets.json")
     dev, mnt = await write_secrets_to_msc(
-        ctx.dut_transport, msc_filter=msc_filter, secrets_json=body
+        ctx.dut_transport, msc_filter=msc_filter, secrets_json=body, filename=fname
     )
-    ctx.log_line(f"secrets.json written to {dev} ({mnt}); volume unmounted")
+    ctx.log_line(f"{fname} written to {dev} ({mnt}); volume unmounted")
 
 
 async def _stage_print_boot_log(stage: dict[str, Any], ctx: BenchContext) -> None:
