@@ -3,7 +3,8 @@
 Architecture, setup and process flow for the **USB-IP HIL Controller** — the hardware-in-the-loop test
 platform behind the device check-in and pixelWrite regression runs in
 [Wippersnapper Arduino PR #930](https://github.com/adafruit/Adafruit_Wippersnapper_Arduino/pull/930),
-and the basis for extending the same machinery to **Wippersnapper Python** testing and manual bench work.
+the on-board **display camera proofs** (flash → v2 check-in → display Add/Write → camera capture), and the
+basis for extending the same machinery to **Wippersnapper Python** testing and manual bench work.
 
 > A richer, illustrated version of this overview (hand-drawn SVG diagrams + tables) is in
 > [`hil_platform_overview.html`](hil_platform_overview.html). This file is the GitHub-renderable summary.
@@ -81,7 +82,8 @@ The bearer token / GitHub OIDC is what *authorises* a job — independent of the
 | **DUT host** | hil-usbipd | `3240` | USB/IP attach target — down ⇒ flash fails |
 | **DUT host** | usbip-autobind (udev) | — | keeps DUT bound to `usbip-host` across resets |
 | **DUT host** | solenoid control (`usb_hub.py`) | I²C `0x20` | MCP23017 on bus 1 + HID solenoid hub — USB power plane |
-| **DUT host** | CSI camera | `v4l2:0` | read over SSH; + `esptool`/`picotool`/`uf2-msc`, `/dev/serial/by-id/…` |
+| **DUT host** (e.g. rpi-hil006) | pi-camera-server (picamera2) | `8080` | CSI imx708 still/MJPEG over HTTP — autofocus + **manual exposure/gain** (`GET /?full=1&exposure=&gain=`), `POST /lens` focus, `/illuminator`; lets a bright self-lit TFT be photographed without auto-exposure crushing it to black |
+| **DUT host** | flash + serial tools | — | `esptool`/`picotool`/`uf2-msc` over SSH, `/dev/serial/by-id/…` (legacy benches also read a CSI cam as `v4l2:0` over SSH) |
 | **SBC fleet** (rpi-hil001–007) | sshd | `22` | shared fleet key; per-port power planned |
 | **ProtoMQ broker** *(per-session)* | MQTT | `1884` / `8883` | DUT connects as client; bench `1884`, live IO `8883` |
 | **ProtoMQ broker** | HTTP control API | `api_port` | `/api/echo`, `/api/autoresponse` (signal injection) |
@@ -138,6 +140,7 @@ The CI submits a **test array** (each test = its own driver, reported individual
 |---|---|---|
 | Device check-in *(default gate)* | `hil-checkin-run.sh` — flash → secrets → power-cycle → verify_checkin | `CHECKIN_VERDICT ok=true` |
 | pixelWrite regression *(#926, fixed by #927)* | `hil-pixelwrite-run.sh` — A/B low vs high | LOW `rebooted=true` · HIGH `rebooted=false` |
+| Display proof *(spec-driven)* | `hil_display_test.py` + `specs/*.json` — flash → checkin → display Add/Write → `capture_display` | `DISPLAY_CAPTURE_VERDICT` + a camera image embedded in the PR comment |
 
 Inside **firmware-bench** (pluggable `STAGE_HANDLERS`, so a new regression is just a new stage list + assertion):
 
@@ -146,6 +149,17 @@ Inside **firmware-bench** (pluggable `STAGE_HANDLERS`, so a new regression is ju
 Signal injection (`ws_signal_inject`) encodes the exact 11-byte nanopb `PixelsWriteRequest`, fires it via the
 broker's `POST /api/echo`, then watches MQTT: a reboot in-window = crash; silence = survived. The broker
 host:port is **not** a CI input — the `write_secrets_msc` stage fills `io_url`/`io_port` from the per-session broker.
+
+**Generic injection + visual proof.** `inject_protobuf` is the general stage: it publishes ANY
+`ws.signal.BrokerToDevice` to the broker — a builder `kind` the controller encodes from params
+(e.g. `display_add_i8080`), or a raw `payload_hex` — so display Adds/Writes and component/I²C adds all
+reuse the same `/api/echo` path. `verify_checkin` is **v2-aware**: it watches both the v1
+(`…/wprsnpr/#`) and v2 (`…/ws-d2b/#`) check-in topics concurrently. For displays, **`capture_display`**
+then photographs the lit panel — it locks the autofocus-converged dioptre (continuous AF drifts mid-grab and
+blurs text), grabs a manual-exposure still bright enough for a self-lit TFT, crops the device ROI (scaled
+frame-relative from the warm frame to the native `?full=1` frame), and white-patch white-balances off the lit
+text — emitting `DISPLAY_CAPTURE_VERDICT` + a JPEG asset. A display-proof job is just a different stage list:
+`… → verify_checkin → inject_protobuf (display Add) → inject_protobuf (display Write) → capture_display`.
 
 ## Job lifecycle
 
@@ -190,7 +204,7 @@ eyeballing a display. From the dashboard (or `solenoid_hub_cli.py` / `turn_on.sh
 - **Log in to a device** — SSH to its owning host, open a serial console, browse the device detail page.
 - **Toggle USB power / reset** — per MCP23017 solenoid channel, with per-board timing profiles; learn USB IDs.
 - **Flash / deploy on demand** — `esptool` · `picotool` · `uf2-msc` · `git-source`, the same adapters jobs use.
-- **Camera control** — snapshot, set ROI, QR-assisted calibration, focus/brightness preview (CSI + IP-webcam).
+- **Camera control** — snapshot, set ROI, QR-assisted calibration, autofocus + **manual exposure/gain** and focus-lock for bright self-lit panels (CSI pi-camera-server + IP-webcam); `capture_display` yields the cropped, white-balanced proof.
 - **Submit ad-hoc jobs** — `raw-firmware-smoke` / `git-clone-and-run` behind the `trusted-firmware` gate.
 
 Feedback streams back live: serial tail (HTMX SSE), camera frames/ROI, flash + protomq logs, and
