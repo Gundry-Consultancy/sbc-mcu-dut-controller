@@ -46,6 +46,25 @@ sudo apt install -y python3-opencv v4l-utils
 # then the same systemd steps; --backend auto picks v4l2 when picamera2 isn't installed
 ```
 
+### Keeping the deployment in sync
+
+The service runs from `/home/pi/hil-camera-server` (see `hil-camera.service`), but
+the canonical source is this repo's `tools/camera-server/`. **Don't hand-edit the
+deployed copy** — that drifts as untracked in-place edits. Push the repo version
+with the deploy helper instead, from any checkout that can SSH the host (the
+controller reaches the CSI hosts directly):
+
+```bash
+scripts/deploy-camera-server.sh rpi-hil006     # [pi@]<host>
+```
+
+It backs up `/home/pi/hil-camera-server`, untars the repo's **runtime code**
+(`server.py`, `backends/`, `illuminators/`, `tuning/`) over it, restarts
+`hil-camera.service`, and prints `/health`. It deliberately does **not** sync
+`README.md` or `hil-camera.service`: the systemd unit is **host-specific** —
+hosts without a NeoPixel ring (e.g. **rpi-hil006**, imx708) run with
+`--no-neopixel` in `ExecStart`, so manage the unit per host and keep that flag.
+
 ## CLI
 
 ```
