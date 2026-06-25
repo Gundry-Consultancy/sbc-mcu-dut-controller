@@ -96,8 +96,12 @@ class Backend(ABC):
             self._thread.join(timeout=2.0)
         self._close()
 
-    def capture_full_jpeg(self) -> bytes:
+    def capture_full_jpeg(self, controls_override: dict | None = None) -> bytes:
         """Capture a one-shot snapshot at sensor-native resolution.
+
+        ``controls_override`` optionally pins manual sensor controls (e.g.
+        ``{"AeEnable": False, "ExposureTime": us, "AnalogueGain": x}``) for the
+        still — backends that support it apply them around the capture.
 
         Default: not implemented (caller falls back to ``read_jpeg``).
         Backends that can reconfigure to a still-capture mode for max

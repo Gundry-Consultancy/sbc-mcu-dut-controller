@@ -461,26 +461,37 @@ the HIL host also needs `python3-opencv` (or a venv with `opencv-python`).
 
 These were scoped alongside the frame-relative ROI work and deliberately deferred.
 
-### 15.1 Manual sensor settings for bright TFT / eInk screens
+### 15.1 Manual sensor settings for bright TFT / eInk screens — IMPLEMENTED (Pi camera-server)
 
 Bright self-lit displays (TFT) and high-contrast eInk fool auto-exposure/auto-ISO,
-washing out or crushing the very region we crop. The fix is per-camera/per-device
-**capture profiles** (e.g. a `bright_screen` preset) applied before a full-res
-capture, then reverted.
+washing out or crushing the very region we crop.
 
-- **Pi camera-server** (`tools/camera-server`): add a `POST /controls` endpoint
-  wrapping picamera2 `set_controls` — `ExposureTime` (µs), `AnalogueGain` (≈ISO/100),
-  `FrameDurationLimits` (min/max µs), `AeEnable=False` for manual. The backend
-  already does `set_controls` for AF/lens, so this is additive; apply the controls
-  around the `capture_full_jpeg` still reconfigure and restore afterwards.
-- **Android IP Webcam** cameras: passthrough via `GET /settings/{key}?set={value}`.
-  Observed manual setup (from a real bright-TFT `status.json`):
-  `manual_sensor=on`, `iso=524`, `exposure_ns=7170511`, `frame_duration=16665880`
-  (≈60 fps cap). Valid per-device value ranges differ by phone — use the
+- **Pi camera-server** (`tools/camera-server`) — **DONE**, but as a per-request
+  **query param** rather than the `POST /controls` profile originally sketched:
+  `GET /?full=1&exposure=<us>&gain=<x>` pins `{AeEnable:False, ExposureTime,
+  AnalogueGain}` for that one still (`capture_full_jpeg(controls_override=…)`,
+  with a ~0.6 s settle so the fixed AE/gain takes effect), then the video
+  pipeline + lens controls are restored as before. No persisted profile/table —
+  the **caller** owns the values (the controller's `capture_display` stage and
+  the LilyGo CI driver pass them per job), which is simpler and avoids per-device
+  state. Tuned for a dim bench (imx708, lights off): a 170×320 i8080 ST7789 reads
+  well at **exposure 32000 µs / gain 3.0** (the earlier 6000/1.0 default came out
+  near-black — that was the "very dark" proof).
+- **White balance is NOT a knob** — the server applies no `AwbEnable`/`ColourGains`
+  override and **ignores** any `awb`/`colour_gains` query params (verified: no
+  effect). Neutralise the imx708 green cast in the consumer instead — `capture_display`
+  does a **white-patch** balance off the brightest pixels (the lit text). A
+  per-request WB passthrough remains a possible follow-up if camera-side control
+  is ever wanted.
+- **Full-res ROI pitfall:** `?full=1` returns the sensor-native frame (**4608×2592**
+  on imx708) while ROIs are calibrated against the warm `/` frame (**2304×1296**).
+  Consumers must scale the ROI by `target_dims / roi_frame_dims` (the
+  frame-relative `roi_frame_*` design in §6) — `capture_display` does this; a raw
+  crop with warm-frame coordinates lands on empty bench.
+- **Android IP Webcam** cameras (still as designed, not built here): passthrough via
+  `GET /settings/{key}?set={value}` — `manual_sensor=on`, `iso`, `exposure_ns`,
+  `frame_duration`. Valid ranges differ by phone — use the
   `anthropic-skills:ip-webcam-api-reference` skill to validate before sending.
-- **Storage**: a `capture_settings_json` column (per-camera default + optional
-  per-device override), or a small `capture_profiles` table keyed by name. The
-  controller sends the profile to the camera before `res=full` capture.
 
 ### 15.2 Auto-focus window from the ROI — IMPLEMENTED
 

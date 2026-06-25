@@ -7,7 +7,7 @@ A small HTTP server that keeps a camera pipeline warm and serves fresh JPEG snap
 | Path                | Response                                                                 |
 |---------------------|--------------------------------------------------------------------------|
 | `GET /`             | `image/jpeg` — latest frame from the warm pipeline (sub-100ms when warm) |
-| `GET /?full=1`      | `image/jpeg` at sensor-native resolution (reconfigures pipeline; ~1-2s)  |
+| `GET /?full=1`      | `image/jpeg` at sensor-native resolution (reconfigures pipeline; ~1-2s). Add `&exposure=<us>&gain=<x>` to pin manual exposure/gain (`AeEnable=False`) — a bright self-lit TFT on a dark bench is crushed to black by auto-exposure. |
 | `GET /stream`       | `multipart/x-mixed-replace` MJPEG stream (record + split frames client-side) |
 | `GET /health`       | JSON: backend, AF, lens state, illuminator state                         |
 | `POST /lens`        | `{"mode": "auto"\|"manual", "position": float}` — override continuous AF |
@@ -77,6 +77,20 @@ The default `neopixel` library uses DMA/PWM and requires root. The `hil-camera.s
 The warm-pipeline `/` snapshot serves from the largest full-FoV mode the sensor can sustain continuously (2328×1748 on the IMX519). For sensor-native resolution (4656×3496 on the IMX519) call `GET /?full=1` — the server briefly stops the video pipeline, configures a still capture at native resolution, takes one shot, then restores the video pipeline. Expect 1–2 seconds per call. AF / lens state is preserved across the reconfigure.
 
 `--width 0 --height 0` (the default) means "use the camera's native resolution". For picamera2 backends the raw stream is always pinned to the sensor's full resolution so FoV stays full even when `--width/--height` are dialled down for lower bandwidth — without this, libcamera silently picks a centre-cropped sensor mode to match smaller main-stream sizes (the IMX519 at 1280×720 reads only the middle ~55%×41% of the active area).
+
+### Manual exposure / gain (bright self-lit panels)
+
+A self-lit TFT on an otherwise dark bench fools auto-exposure into crushing the
+panel to near-black. Pass `GET /?full=1&exposure=<microseconds>&gain=<analogue>`
+to pin manual sensor controls (`AeEnable=False`, `ExposureTime`, `AnalogueGain`)
+for that one still; the server settles ~0.6 s after applying them so the fixed
+exposure takes effect. Tuned values for a dim bench (imx708, lights off): a
+170×320 i8080 ST7789 reads well at **`exposure=32000&gain=3.0`** (6000/1.0 came
+out near-black). **White balance is not a query knob** — the server applies no
+`AwbEnable`/`ColourGains` override, so neutralise any colour cast in the
+consumer (white-patch off the lit text); see the controller's `capture_display`
+stage. Note `?full=1` returns the **native** frame (4608×2592 on imx708), so a
+ROI calibrated against the warm `/` frame (2304×1296) must be scaled up ×2.
 
 ## Architecture
 

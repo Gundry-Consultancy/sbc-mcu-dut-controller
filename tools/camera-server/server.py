@@ -3,7 +3,10 @@
 
 Endpoints:
     GET  /            -> image/jpeg (latest frame from the warm pipeline)
-    GET  /?full=1     -> image/jpeg at sensor-native resolution (slow ~1-2s)
+    GET  /?full=1     -> image/jpeg at sensor-native resolution (slow ~1-2s);
+                         &exposure=<us>&gain=<x> pins manual exposure/gain
+                         (AeEnable=False) for a bright self-lit TFT that
+                         auto-exposure would crush to black on a dark bench
     GET  /stream      -> multipart/x-mixed-replace MJPEG stream
     GET  /health      -> JSON: backend, AF, lens state, illuminator state
     POST /lens        -> JSON body {"mode": "auto"|"manual", "position": float}
@@ -41,7 +44,7 @@ class SnapshotHandler(BaseHTTPRequestHandler):
         query = parse_qs(parts.query)
         if path in ("", "/"):
             if query.get("full", ["0"])[0] in ("1", "true", "yes"):
-                self._serve_snapshot_full()
+                self._serve_snapshot_full(query)
             else:
                 self._serve_snapshot()
         elif path == "/health":
@@ -77,10 +80,17 @@ class SnapshotHandler(BaseHTTPRequestHandler):
             return
         self._send_jpeg(jpeg)
 
-    def _serve_snapshot_full(self) -> None:
+    def _serve_snapshot_full(self, query: dict | None = None) -> None:
         backend: Backend = self.server.backend  # type: ignore[attr-defined]
+        co = None
+        if query:
+            exp = query.get("exposure", [None])[0]
+            if exp:
+                gain = query.get("gain", ["1.0"])[0]
+                co = {"AeEnable": False, "ExposureTime": int(exp),
+                      "AnalogueGain": float(gain)}
         try:
-            jpeg = backend.capture_full_jpeg()
+            jpeg = backend.capture_full_jpeg(controls_override=co) if co else backend.capture_full_jpeg()
         except NotImplementedError:
             # Backend can't do native-res; fall back to the warm pipeline frame.
             jpeg = backend.read_jpeg()

@@ -6,6 +6,7 @@ without per-request AF cycles.
 from __future__ import annotations
 
 import io
+import time
 
 from .base import Backend, BackendUnavailable, FrameConfig
 
@@ -220,11 +221,14 @@ class Picamera2Backend(Backend):
         except Exception as exc:
             raise BackendUnavailable(f"picamera2 open failed: {exc}") from exc
 
-    def capture_full_jpeg(self) -> bytes:
+    def capture_full_jpeg(self, controls_override: dict | None = None) -> bytes:
         """Reconfigure to sensor-native still mode, capture, restore video.
 
         Costs ~1-2s per call (two reconfigures); guarded by ``self._lock``
-        so it won't race the grabber thread.
+        so it won't race the grabber thread. ``controls_override`` (e.g.
+        ``{"AeEnable": False, "ExposureTime": us, "AnalogueGain": x}``) sets
+        manual sensor controls for the still — needed for a bright self-lit
+        TFT on a dark bench, which auto-exposure crushes to near-black.
         """
         if self._cam is None:
             raise RuntimeError("camera not open")
@@ -239,6 +243,12 @@ class Picamera2Backend(Backend):
                 )
                 self._cam.configure(still_cfg)
                 self._cam.start()
+                if controls_override:
+                    # Manual exposure/gain (e.g. for bright self-lit TFT panels
+                    # that blow out auto-exposure). Settle a few frames so the
+                    # fixed AE/gain takes effect before the still is grabbed.
+                    self._cam.set_controls(controls_override)
+                    time.sleep(0.6)
                 buf = io.BytesIO()
                 self._cam.options["quality"] = self.cfg.jpeg_quality
                 self._cam.capture_file(buf, format="jpeg")

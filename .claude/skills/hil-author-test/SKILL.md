@@ -128,6 +128,29 @@ curl -H "Authorization: Bearer $TOK" \
   like a Zero 2 W). Capture one-shot, ideally driven by a serial "demo done" line,
   and validate *after* the refresh settles rather than racing the live stream.
 
+### Bright self-lit panels (TFT) — use the `capture_display` stage
+
+The `snapshot?res=full` crop above runs the camera on **auto-exposure**, which a
+bright self-lit TFT on an otherwise dark bench crushes to near-black (the panel
+is a small bright region in a mostly-dark frame). For a readable proof, add a
+**`capture_display` stage** to the job instead — it pins a manual exposure, locks
+the autofocus-converged dioptre (continuous AF drifts mid-grab and blurs text),
+crops the device ROI, and white-patch white-balances off the lit text (the
+camera-server ignores `awb`/`colour_gains`, so WB is post-only):
+
+```jsonc
+{ "type": "capture_display", "camera_url": "http://rpi-hil006:8080/",
+  "exposure_us": 32000, "gain": 3.0,          // 6000/1.0 is near-black on a dark bench
+  "roi": [1270, 770, 235, 135, 2304, 1296],   // x,y,w,h,frame_w,frame_h — scaled to the 4608 full frame
+  "out": "/tmp/hil-display-capture.jpg" }      // pair with params.collect_artifacts
+```
+
+Emits `DISPLAY_CAPTURE_VERDICT saved=… exposure_us=… focus=… wb=yes`. Defaults:
+exposure 32000 µs, gain 3.0, `autofocus`+`focus_lock` on, `white_balance` on.
+Gotcha: `?full=1` returns the sensor-native 4608×2592 frame while ROIs are
+calibrated against the warm 2304×1296 frame — the stage scales by
+`roi_frame_*`, so always include the frame size in the ROI.
+
 ## Wiring a test into the CI test array
 
 `hil-test-suite.yml` runs an **array of tests**, each its own driver script,
