@@ -263,6 +263,145 @@ def parse_probed(signal_bytes: bytes) -> list[dict[str, Any]] | None:
 
 
 # --------------------------------------------------------------------------- #
+# Settings test path: Add-with-settings (encode) + Event/Error (decode)        #
+# --------------------------------------------------------------------------- #
+# ws.config.Value oneof tags (firmware config.pb.h): str=1, int=2, float=3, bool=4.
+import struct  # noqa: E402
+
+_CFG_STR, _CFG_INT, _CFG_FLOAT, _CFG_BOOL = 1, 2, 3, 4
+_SIGNAL_D2B_ERROR = 10  # ws.signal.DeviceToBroker.error (ws.error.D2B)
+
+
+def _f32_field(field: int, value: float) -> bytes:
+    """A 32-bit float (wiretype 5) field: tag + little-endian float32."""
+    return _tag(field, 5) + struct.pack("<f", float(value))
+
+
+def encode_config_value(value: Any) -> bytes:
+    """Serialize ws.config.Value (oneof str=1/int=2/float=3/bool=4). bool BEFORE int."""
+    if isinstance(value, bool):
+        return _vint_field(_CFG_BOOL, 1 if value else 0)
+    if isinstance(value, int):
+        return _vint_field(_CFG_INT, value)
+    if isinstance(value, float):
+        return _f32_field(_CFG_FLOAT, value)
+    if isinstance(value, str):
+        return _len_field(_CFG_STR, value.encode("ascii"))
+    raise ValueError(f"unsupported setting value type: {type(value)!r}")
+
+
+def encode_settings(settings: dict[str, Any]) -> bytes:
+    """ws.config.Settings { settings = 1 (repeated SettingsEntry{key=1 str, value=2 Value}) } — a proto map."""
+    b = bytearray()
+    for key, value in settings.items():
+        entry = _len_field(1, key.encode("ascii")) + _len_field(2, encode_config_value(value))
+        b += _len_field(1, entry)
+    return bytes(b)
+
+
+def encode_add_sensor(
+    descriptor: bytes, name: str, period: float, types: list[int], settings: dict[str, Any] | None
+) -> bytes:
+    """ws.i2c.Add { descriptor=1, name=2, period=3 float-sec, types=4 (repeated {idx,SensorType}), settings=5 }.
+
+    'name' is the component dir string the controller factory keys on (e.g. 'bmp581').
+    'types' are ws.sensor.Type enum ints (e.g. PRESSURE=6, ALTITUDE=27, AMBIENT_TEMPERATURE=13)."""
+    b = bytearray()
+    b += _len_field(1, descriptor)
+    b += _len_field(2, name.encode("ascii"))
+    if period:
+        b += _f32_field(3, period)
+    for i, t in enumerate(types):
+        b += _len_field(4, _vint_field(1, i) + _vint_field(2, t))  # TypesEntry{key=idx, value=type}
+    if settings:
+        b += _len_field(5, encode_settings(settings))
+    return bytes(b)
+
+
+def build_add_sensor(
+    *,
+    pin_scl: int,
+    pin_sda: int,
+    address: int,
+    name: str,
+    period: float,
+    types: list[int],
+    mux_address: int = 0,
+    mux_channel: int = 0,
+    settings: dict[str, Any] | None = None,
+) -> bytes:
+    """BrokerToDevice payload that adds (or REPLACES) a sensor component, with optional settings."""
+    space = encode_address_space(
+        pin_scl=pin_scl, pin_sda=pin_sda, mux_address=mux_address, mux_channel=mux_channel
+    )
+    descriptor = encode_descriptor(space, address=address)
+    return encode_signal_i2c(encode_b2d_add(encode_add_sensor(descriptor, name, period, types, settings)))
+
+
+def parse_i2c_event(signal_bytes: bytes) -> dict[str, Any] | None:
+    """Decode a ws.signal.DeviceToBroker -> i2c(34) -> D2B.event(2) -> ws.i2c.Event.
+
+    Returns {"address", "mux_channel", "readings": {sensor_type_int: float|bool}} if the
+    message is an i2c Event, else None. ws.sensor.Event uses type=1, float_value=2 (fixed32),
+    bool_value=7."""
+    for f, wt, v in _walk(signal_bytes):
+        if f != _SIGNAL_D2B_I2C or wt != 2:
+            continue
+        for f2, wt2, v2 in _walk(v):  # ws.i2c.D2B
+            if f2 != 2 or wt2 != 2:  # event
+                continue
+            ev: dict[str, Any] = {"address": 0, "mux_channel": None, "readings": {}}
+            for f3, wt3, v3 in _walk(v2):  # ws.i2c.Event
+                if f3 == 1 and wt3 == 2:  # descriptor
+                    for f4, wt4, v4 in _walk(v3):
+                        if f4 == 2 and wt4 == 0:
+                            ev["address"] = v4
+                        elif f4 == 1 and wt4 == 2:  # address_space
+                            for f5, wt5, v5 in _walk(v4):
+                                if f5 == 4 and wt5 == 0:
+                                    ev["mux_channel"] = v5
+                elif f3 == 2 and wt3 == 2:  # events entry (map<type, ws.sensor.Event>)
+                    stype = None
+                    val: Any = None
+                    for f4, wt4, v4 in _walk(v3):
+                        if f4 == 2 and wt4 == 2:  # value = ws.sensor.Event
+                            for f5, wt5, v5 in _walk(v4):
+                                if f5 == 1 and wt5 == 0:  # sensor type
+                                    stype = v5
+                                elif f5 == 2 and wt5 == 5:  # float_value
+                                    val = struct.unpack("<f", v5)[0]
+                                elif f5 == 7 and wt5 == 0:  # bool_value
+                                    val = bool(v5)
+                    if stype is not None:
+                        ev["readings"][stype] = val
+            return ev
+    return None
+
+
+def parse_component_error(signal_bytes: bytes) -> list[str] | None:
+    """ws.signal.DeviceToBroker.error = field 10 (ws.error.D2B). Returns the human-readable
+    string(s) found in the error payload, or None if this isn't an error message."""
+    for f, wt, v in _walk(signal_bytes):
+        if f != _SIGNAL_D2B_ERROR or wt != 2:
+            continue
+        msgs: list[str] = []
+
+        def _strings(buf: bytes) -> None:
+            for ff, ww, vv in _walk(buf):
+                if ww == 2:
+                    try:
+                        text = vv.decode("utf-8")
+                        if text.isprintable() and text.strip():
+                            msgs.append(text)
+                    except UnicodeDecodeError:
+                        _strings(vv)  # nested message — recurse
+
+        _strings(v)
+        return msgs or [""]
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Injector                                                                    #
 # --------------------------------------------------------------------------- #
 class WsI2cInjectError(RuntimeError):
@@ -454,4 +593,83 @@ class WsI2cProbeInjector:
             "raw": [],
             "got_reply": False,
             "attempt": attempts,
+        }
+
+    async def add_and_observe(
+        self,
+        uid: str,
+        *,
+        pin_scl: int,
+        pin_sda: int,
+        address: int,
+        name: str,
+        types: list[int],
+        period: float = 1.0,
+        mux_address: int = 0,
+        mux_channel: int = 0,
+        settings: dict[str, Any] | None = None,
+        observe_s: float = 12.0,
+        collect: int = 2,
+    ) -> dict[str, Any]:
+        """Add (or REPLACE) a sensor component with optional ``settings``, then capture the
+        device's i2c ``Event`` readings AND any ``DeviceToBroker.error`` (a rejected/failed
+        setting) on ``ws-d2b/<uid>``.
+
+        Returns ``{"readings": {type:int -> value}, "events": [...], "errors": [str...],
+        "got_event": bool, "payload_hex"}``. ``errors`` non-empty means the firmware published
+        a component error (e.g. an out-of-range or unsupported setting key)."""
+        if not _AIOMQTT_AVAILABLE:
+            raise WsI2cInjectError("aiomqtt not installed; cannot capture event/error reply")
+        payload = build_add_sensor(
+            pin_scl=pin_scl,
+            pin_sda=pin_sda,
+            address=address,
+            name=name,
+            period=period,
+            types=types,
+            mux_address=mux_address,
+            mux_channel=mux_channel,
+            settings=settings,
+        )
+        d2b = self.d2b_topic(uid)
+        events: list[dict[str, Any]] = []
+        errors: list[str] = []
+        loop = asyncio.get_event_loop()
+        async with aiomqtt.Client(hostname=self.broker_host, port=self.mqtt_port) as client:
+            await client.subscribe(d2b)
+            await asyncio.sleep(0.4)  # subscription live before the device answers
+            await self._echo(self.b2d_topic(uid), payload)
+            messages = aiter(client.messages)
+            deadline = loop.time() + observe_s
+            while loop.time() < deadline:
+                remaining = deadline - loop.time()
+                try:
+                    message = await asyncio.wait_for(anext(messages), timeout=remaining)
+                except (TimeoutError, StopAsyncIteration):
+                    break
+                data = message.payload
+                if not isinstance(data, bytes):
+                    continue
+                try:
+                    errs = parse_component_error(data)
+                    if errs is not None:
+                        errors.extend(errs)
+                        continue
+                    ev = parse_i2c_event(data)
+                except Exception as exc:  # noqa: BLE001 - tolerate odd D2B traffic
+                    log.debug("event/error parse skip: %s", exc)
+                    continue
+                if ev is not None and ev["readings"]:
+                    events.append(ev)
+                    if len(events) >= collect:
+                        break
+        merged: dict[int, Any] = {}
+        for ev in events:
+            merged.update(ev["readings"])
+        return {
+            "readings": merged,
+            "events": events,
+            "errors": errors,
+            "got_event": bool(events),
+            "payload_hex": payload.hex(" "),
         }

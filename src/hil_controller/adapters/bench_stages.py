@@ -1278,6 +1278,101 @@ async def _stage_inject_i2c_scan_v1(stage: dict[str, Any], ctx: BenchContext) ->
     ctx.i2c_scan_v1_results = results  # type: ignore[attr-defined]
 
 
+async def _stage_inject_i2c_settings(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Add v2 I2C sensor components WITH custom settings and capture readings + errors.
+
+    Proves the driver custom-settings path end-to-end over protomq: for each test, (re)``Add``
+    the component (``Add`` replaces, so changing a setting is just another Add) with the given
+    ``settings`` map, then observe the device's i2c ``Event`` readings AND any
+    ``DeviceToBroker.error`` (a rejected/unsupported/out-of-range setting). Logs a
+    machine-greppable ``I2C_SETTINGS_VERDICT label=<> status=ok|error|no_event readings={..}
+    errors=[..]`` per test.
+
+    Stage params:
+      ``tests``: list of dicts, each ``{label, name (component dir, e.g. "bmp581"),
+        address (int), mux_channel (int|null — null = direct bus), types (list of
+        ws.sensor.Type ints, e.g. [6,27] = PRESSURE,ALTITUDE), period (float s, optional),
+        settings (dict key->int|float|bool|str, optional), expect ("ok"|"error", optional doc)}``.
+      ``mux_address`` (default 0x77), ``pin_scl``/``pin_sda`` (40/41), ``period`` (default 1.0),
+      ``checkin_timeout_s``, ``observe_s`` (default 12). Requires protomq up + secrets pointing at it.
+    """
+    if not ctx.protomq_host or not ctx.protomq_port:
+        raise StageError("inject_i2c_settings needs protomq running (launch_protomq before this stage)")
+    tests = stage.get("tests") or []
+    if not tests:
+        raise StageError("inject_i2c_settings: no 'tests' provided")
+    mux_address = int(stage.get("mux_address", 0x77))
+    pin_scl = int(stage.get("pin_scl", 40))
+    pin_sda = int(stage.get("pin_sda", 41))
+    default_period = float(stage.get("period", 1.0))
+    checkin_timeout = float(stage.get("checkin_timeout_s", 150.0))
+    observe_s = float(stage.get("observe_s", 12.0))
+    io_user = ctx.secrets.get("IO_USERNAME") or "hil"
+    api_url = stage.get("protomq_api_url") or getattr(ctx, "protomq_api_url", "") or None
+    injector = WsI2cProbeInjector(
+        broker_host=ctx.protomq_host,
+        mqtt_port=ctx.protomq_port,
+        api_url=api_url,
+        io_username=io_user,
+    )
+    ctx.log_line(f"inject_i2c_settings: waiting ≤{checkin_timeout:.0f}s for DUT checkin on {io_user}/ws-d2b/#")
+    try:
+        uid = await injector.wait_for_checkin(timeout=checkin_timeout)
+    except WsI2cInjectError as exc:
+        raise StageError(f"inject_i2c_settings: cannot observe checkin ({exc})") from exc
+    if not uid:
+        raise StageError(f"inject_i2c_settings: no DUT checkin within {checkin_timeout:.0f}s")
+    ctx.log_line(f"inject_i2c_settings: device checked in (uid={uid})")
+
+    # Register the mux once if any test sits behind it (driver needs the mux on the bus).
+    if any(t.get("mux_channel") is not None for t in tests):
+        ctx.log_line(f"inject_i2c_settings: registering pca9548 @ 0x{mux_address:02x}")
+        await injector.add_mux(uid, mux_address=mux_address, pin_scl=pin_scl, pin_sda=pin_sda)
+        await asyncio.sleep(1.0)
+
+    results: list[dict[str, Any]] = []
+    for t in tests:
+        label = str(t.get("label") or t.get("name") or "test")
+        mux_ch = t.get("mux_channel")
+        rec = await injector.add_and_observe(
+            uid,
+            pin_scl=pin_scl,
+            pin_sda=pin_sda,
+            address=int(t["address"]),
+            name=str(t["name"]),
+            types=[int(x) for x in t.get("types", [])],
+            period=float(t.get("period", default_period)),
+            mux_address=(mux_address if mux_ch is not None else 0),
+            mux_channel=int(mux_ch) if mux_ch is not None else 0,
+            settings=t.get("settings"),
+            observe_s=observe_s,
+        )
+        readings = rec["readings"]
+        errors = rec["errors"]
+        got = rec["got_event"]
+        rd = ", ".join(f"{k}={v}" for k, v in sorted(readings.items())) or "(none)"
+        er = " | ".join(e for e in errors if e) or "(none)"
+        status = "error" if errors else ("ok" if got else "no_event")
+        ctx.log_line(
+            f"I2C_SETTINGS_VERDICT label={label} status={status} readings={{{rd}}} errors=[{er}] uid={uid}"
+        )
+        ctx.transcript.append(
+            {
+                "at": _now_iso(),
+                "cmd": f"protomq echo → i2c Add+settings ({label})",
+                "exit": 0 if (got and not errors) else 1,
+                "stdout": (
+                    f"status={status} readings={{{rd}}} errors=[{er}]\n"
+                    f"settings={t.get('settings')}\npayload(hex)={rec['payload_hex']}"
+                ),
+                "stderr": er if errors else ("" if got else "no event received"),
+            }
+        )
+        results.append({"label": label, "status": status, "readings": readings, "errors": errors})
+        await asyncio.sleep(0.5)
+    ctx.i2c_settings_results = results  # type: ignore[attr-defined]
+
+
 async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> None:
     """Verify the freshly-flashed+configured DUT checks in to the broker.
 
@@ -1558,6 +1653,7 @@ STAGE_HANDLERS: dict[str, Handler] = {
     "inject_protobuf": _stage_inject_protobuf,
     "capture_display": _stage_capture_display,
     "inject_i2c_scan_v1": _stage_inject_i2c_scan_v1,
+    "inject_i2c_settings": _stage_inject_i2c_settings,
     "verify_checkin": _stage_verify_checkin,
     "enter_bootloader": _stage_enter_bootloader,
     "bootloader_touch": _stage_bootloader_touch,
