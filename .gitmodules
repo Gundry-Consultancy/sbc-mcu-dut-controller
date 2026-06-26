@@ -4,11 +4,11 @@
 	branch = displays-v2-testing
 [submodule "vendor/usbip-autoattach"]
 	path = vendor/usbip-autoattach
-	url = https://github.com/tyeth-ai-assisted/usbip-autoattach.git
+	url = https://github.com/Gundry-Consultancy/sbc-mcu-dut-autoattach.git
 	branch = main
 [submodule "vendor/hil-detection"]
 	path = vendor/hil-detection
-	url = https://github.com/tyeth-ai-assisted/hil-detection.git
+	url = https://github.com/Gundry-Consultancy/sbc-mcu-dut-detection.git
 	branch = main
 [submodule "vendor/wippersnapper-arduino"]
 	path = vendor/wippersnapper-arduino

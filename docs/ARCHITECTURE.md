@@ -115,8 +115,8 @@ docs/
 vendor/                    # git submodules — see vendor/README.md
   protomq/                 # tyeth-ai-assisted/protomq @ displays-v2-testing
                            #   (dual-push to tyeth/protomq)
-  usbip-autoattach/        # tyeth-ai-assisted/usbip-autoattach @ main
-  hil-detection/           # tyeth-ai-assisted/hil-detection @ main
+  usbip-autoattach/        # Gundry-Consultancy/sbc-mcu-dut-autoattach @ main
+  hil-detection/           # Gundry-Consultancy/sbc-mcu-dut-detection @ main
   wippersnapper-arduino/   # tyeth-ai-assisted/adafruit-Adafruit_Wippersnapper_Arduino @ migrate-api-v2
                            #   (fetch-only upstream remote to adafruit/...)
                            # Python WS variant is private/unreleased — not vendored;
@@ -1307,7 +1307,7 @@ cross-references (e.g. "§15 OQ11") still resolve.
    **Directive:** "We can consider this one acknowledged and
    accounted for."
    **Implementation:** acknowledged. A separate upstream PR
-   against `tyeth-ai-assisted/hil-detection` will switch the
+   against `Gundry-Consultancy/sbc-mcu-dut-detection` will switch the
    conftest to key-based auth and parameterise the host from
    the controller's transport context. Do not hot-fix inside
    this repo.

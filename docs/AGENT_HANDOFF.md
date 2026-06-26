@@ -262,7 +262,7 @@ These travel with M4 but are independent:
   re-attaches usbip, re-probes. UI button.
 - **OQ8 hardcoded-password cleanup** — see `vendor/README.md`
   hil-detection row. Two-PR plan:
-  (a) upstream PR against `tyeth-ai-assisted/hil-detection`
+  (a) upstream PR against `Gundry-Consultancy/sbc-mcu-dut-detection`
   replacing the `RPI_PASSWORD` constant with a `HIL_BENCH_TOKEN`
   env lookup;
   (b) `scripts/setup-hil-detection-secret.sh` here that provisions
