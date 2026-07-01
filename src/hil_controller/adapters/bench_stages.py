@@ -800,11 +800,18 @@ async def _stage_power_cycle(stage: dict[str, Any], ctx: BenchContext) -> None:
     rather than failing the run.
     """
     channel = ctx.device.get("solenoid_channel")
-    if channel is None:
-        ctx.log_line(
-            "WARNING: device has no solenoid_channel mapped; falling back to "
-            "esptool soft reset (not a true power cycle)"
-        )
+    force_esptool = str(stage.get("reset_via") or "").lower() in ("esptool", "soft_reset", "reset")
+    if channel is None or force_esptool:
+        if force_esptool and channel is not None:
+            ctx.log_line(
+                f"power_cycle: reset via esptool (reset_via set); solenoid channel "
+                f"{channel} left mapped — a native-USB board resets more reliably this way"
+            )
+        else:
+            ctx.log_line(
+                "WARNING: device has no solenoid_channel mapped; falling back to "
+                "esptool soft reset (not a true power cycle)"
+            )
         # The esptool reset needs the DUT's single CDC port, which a running serial
         # capture is holding — pause it for the reset, then resume to catch the
         # boot/checkin log (no-op when no capture is active, e.g. before stage 5).

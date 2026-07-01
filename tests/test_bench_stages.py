@@ -317,6 +317,18 @@ async def test_power_cycle_no_solenoid_pauses_serial_around_esptool_reset() -> N
     assert any("--after" in a and "watchdog_reset" in a and a[-1] == "flash_id" for a in _argvs(tp))
 
 
+@pytest.mark.asyncio
+async def test_power_cycle_reset_via_esptool_ignores_mapped_solenoid_channel() -> None:
+    """reset_via=esptool forces the esptool watchdog-reset even when a
+    solenoid_channel is mapped (kept for the usb-ip UI) — reliable for native-USB."""
+    tp = _transport()
+    ctx = _ctx(tp, device={"solenoid_channel": 3})
+    await run_stages([{"type": "power_cycle", "reset_via": "esptool"}], ctx)
+    # esptool reset ran; the solenoid CLI was NOT invoked despite the mapped channel
+    assert any("--after" in a and "watchdog_reset" in a and a[-1] == "flash_id" for a in _argvs(tp))
+    assert not any("solenoid_hub_cli" in " ".join(a) for a in _argvs(tp))
+
+
 # --------------------------------------------------------------------------- #
 # power_cycle with a real solenoid channel                                    #
 # --------------------------------------------------------------------------- #
