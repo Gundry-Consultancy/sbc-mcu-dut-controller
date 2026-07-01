@@ -127,6 +127,56 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     except Exception:
         pass
 
+    # I2C component *strands*: a shared I2C chain the analog strand-mux (an aux)
+    # routes to one DUT at a time. A strand may itself carry an on-strand TCA9548
+    # (8-ch I2C address mux) for its components — modelled here, driven later.
+    # See adapters/analog_mux.py and the select_i2c_strand bench stage.
+    try:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strands (
+                id          TEXT PRIMARY KEY,
+                mux_aux_id  TEXT,                       -- analog strand-mux aux (auxes.id)
+                mux_group   TEXT,                       -- switch group on that mux (e.g. "muxA")
+                tca_address INTEGER,                    -- on-strand TCA9548 addr (NULL = none)
+                pool        TEXT NOT NULL DEFAULT 'public',
+                status      TEXT NOT NULL DEFAULT 'available',
+                notes       TEXT
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strand_components (
+                id                TEXT PRIMARY KEY,
+                strand_id         TEXT NOT NULL REFERENCES strands(id) ON DELETE CASCADE,
+                model             TEXT NOT NULL DEFAULT '',   -- e.g. "pmsa003i", "sgp41"
+                address           INTEGER,                    -- I2C address (e.g. 0x12, 0x59)
+                tca_channel       INTEGER,                    -- NULL=direct; else TCA ch
+                ws_types_json     TEXT NOT NULL DEFAULT '[]', -- WS sensor Type ints
+                capabilities_json TEXT NOT NULL DEFAULT '[]', -- e.g. ["sensor:pm25","sensor:voc"]
+                notes             TEXT
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_strands (
+                device_id   TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                strand_id   TEXT NOT NULL REFERENCES strands(id) ON DELETE CASCADE,
+                mux_channel INTEGER NOT NULL,           -- analog-mux channel for this DUT
+                PRIMARY KEY (device_id, strand_id)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_strand_components_strand "
+            "ON strand_components(strand_id)"
+        )
+        await db.commit()
+    except Exception:
+        pass
+
     # Migrate existing auxes (kind='camera') to the cameras table.
     try:
         await db.execute(

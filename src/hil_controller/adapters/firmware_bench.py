@@ -285,6 +285,7 @@ class FirmwareBenchAdapter:
                 or _msc_filter_from_serial(self.device.get("serial_port", ""))
             ),
             device=self.device,
+            db_path=self._db_path,
             artifact=Artifact(path=str(remote_bin), kind="combined_bin", offset=self._fw_offset),
             workspace_dir=self.params.get("workspace_dir", ""),
             pio_env=self.params.get("pio_env", ""),

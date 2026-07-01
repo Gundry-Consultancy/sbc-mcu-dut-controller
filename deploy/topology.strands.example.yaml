@@ -1,0 +1,90 @@
+# Example: an I2C component STRAND muxed between DUTs on rpi-hil006.
+#
+# A *strand* is a shared I2C component chain. The analog strand-mux — an Adafruit
+# ADG729 exposed as an `aux` running sbc-dut-analog-mux-api — routes the strand's
+# SDA/SCL to exactly one DUT at a time. Jobs request a strand's components as
+# prerequisites (target.requires with kind: i2c_strand + capabilities); the
+# controller then only considers DUTs that can receive a strand providing them,
+# and a `select_i2c_strand` bench stage muxes it onto the chosen DUT.
+#
+# Two levels of muxing are in play:
+#   1. analog strand-mux (ADG729)  — routes the whole strand to one DUT   (this file)
+#   2. on-strand I2C mux (TCA9548) — routes among the strand's components  (modelled
+#      via strand_components.tca_channel; driven later by the WS inject stages)
+#
+# rpi-hil006 also mux's its OWN I2C bus in, so the Pi itself is a DUT (channel 3).
+
+hosts:
+  - id: rpi-hil006
+    role: microcontroller-fleet
+    addr: rpi-hil006.local
+    transport: ssh
+    ssh_user: pi
+    ssh_key_path: /etc/hil/keys/rpi-hil-fleet
+    max_concurrent_jobs: 1
+    capabilities: [i2c-strand-mux]
+
+auxes:
+  - id: mux-hil006
+    kind: i2c_strand_mux
+    model: adg729
+    interface: "http://192.168.1.155:8080"   # sbc-dut-analog-mux-api base URL
+    capabilities: [i2c-strand-mux]
+    pool: public
+    status: available
+
+devices:
+  - id: mcu-qtpy-esp32s3-hil006
+    host_id: rpi-hil006
+    kind: microcontroller
+    model: esp32-s3
+    capabilities: [arduino, wippersnapper, i2c]
+    pool: public
+    status: available
+  - id: mcu-feather-esp8266-hil006
+    host_id: rpi-hil006
+    kind: microcontroller
+    model: esp8266
+    capabilities: [arduino, wippersnapper, i2c]
+    pool: public
+    status: available
+  - id: mcu-lilygo-tdisplay-s3-hil006
+    host_id: rpi-hil006
+    kind: microcontroller
+    model: esp32-s3
+    capabilities: [arduino, wippersnapper, i2c, tft-display]
+    pool: public
+    status: available
+  - id: sbc-rpi-hil006-self          # the Pi itself is also a DUT (its I2C is muxed in on ch3)
+    host_id: rpi-hil006
+    kind: sbc
+    model: pi
+    capabilities: [blinka, i2c]
+    pool: public
+    status: available
+
+strands:
+  - id: strand-hil006-air
+    mux_aux: mux-hil006
+    mux_group: muxA
+    tca_address: 0x70                # on-strand TCA9548 (fronting the sgp41)
+    pool: public
+    notes: "air-quality strand: PMSA003i (direct bus) + SGP41 (behind on-strand TCA ch0)"
+    components:
+      - id: strand-hil006-air-pmsa003i
+        model: pmsa003i
+        address: 0x12
+        tca_channel: null            # direct on the strand's I2C bus
+        ws_types: []                 # WipperSnapper sensor Type ints (fill per driver)
+        capabilities: [sensor:pm10, sensor:pm25, sensor:pm100, air-quality]
+      - id: strand-hil006-air-sgp41
+        model: sgp41
+        address: 0x59
+        tca_channel: 0               # behind the strand's on-strand TCA9548
+        ws_types: []
+        capabilities: [sensor:voc, sensor:nox, air-quality]
+    routes:                          # which DUT each analog-mux channel connects the strand to
+      - { device: mcu-qtpy-esp32s3-hil006,       channel: 0 }
+      - { device: mcu-feather-esp8266-hil006,    channel: 1 }
+      - { device: mcu-lilygo-tdisplay-s3-hil006, channel: 2 }
+      - { device: sbc-rpi-hil006-self,           channel: 3 }

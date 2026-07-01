@@ -13,11 +13,16 @@ log = logging.getLogger(__name__)
 
 
 class HostRegistry:
+    #: target.requires[].kind values that denote an I2C-strand prerequisite.
+    STRAND_REQUIRE_KINDS = frozenset({"i2c_strand", "strand", "component"})
+
     def __init__(self, topology_file: str) -> None:
         self.topology_file = topology_file
         self._hosts: list[dict[str, Any]] = []
         self._devices: list[dict[str, Any]] = []
         self._semaphores: dict[str, Any] = {}
+        #: device_id -> list of {strand_id, caps:set, channel} routes it can receive.
+        self._device_strand_routes: dict[str, list[dict[str, Any]]] = {}
 
     def load(self) -> None:
         if not self.topology_file:
@@ -29,6 +34,7 @@ class HostRegistry:
         data = yaml.safe_load(path.read_text())
         self._hosts = data.get("hosts", [])
         self._devices = data.get("devices", [])
+        self._index_strands(data.get("strands", []))
         import asyncio
 
         for h in self._hosts:
@@ -39,6 +45,42 @@ class HostRegistry:
                 self._semaphores[h["id"]] = None  # unbounded
 
         log.info("Loaded %d hosts, %d devices from %s", len(self._hosts), len(self._devices), path)
+
+    def _index_strands(self, strands: list[dict[str, Any]]) -> None:
+        """Build device_id -> routed-strand capability index from topology strands.
+
+        A strand's capabilities are the union of its components' ``capabilities``.
+        Each ``routes`` entry maps a device to the analog-mux channel that
+        connects the strand to it.
+        """
+        self._device_strand_routes = {}
+        for s in strands:
+            caps: set[str] = set()
+            for c in s.get("components", []):
+                caps.update(c.get("capabilities") or [])
+            for r in s.get("routes", []):
+                dev_id = r.get("device")
+                if not dev_id:
+                    continue
+                self._device_strand_routes.setdefault(dev_id, []).append(
+                    {"strand_id": s["id"], "caps": caps, "channel": r.get("channel")}
+                )
+
+    @staticmethod
+    def _required_strand_caps(target: dict[str, Any]) -> set[str]:
+        """Union of capabilities from target.requires entries that name a strand."""
+        want: set[str] = set()
+        for req in target.get("requires") or []:
+            if (req.get("kind") or "") in HostRegistry.STRAND_REQUIRE_KINDS:
+                want.update(req.get("capabilities") or [])
+        return want
+
+    def strand_for_device(self, device_id: str, caps: set[str]) -> dict[str, Any] | None:
+        """First strand routed to ``device_id`` whose capabilities cover ``caps``."""
+        for route in self._device_strand_routes.get(device_id, []):
+            if caps.issubset(route["caps"]):
+                return route
+        return None
 
     def find_device_for_job(self, request: dict[str, Any]) -> tuple[dict, dict] | None:
         """Return (host, device) for the given job request, or None if no seat.
@@ -54,6 +96,7 @@ class HostRegistry:
         pool = target.get("pool", "public")
         want_id = device_sel.get("id")
         want_caps = set(device_sel.get("capabilities") or [])
+        want_strand_caps = self._required_strand_caps(target)
 
         for device in self._devices:
             if device.get("status", "available") != "available":
@@ -74,6 +117,11 @@ class HostRegistry:
             if device_sel.get("model") and device["model"] != device_sel["model"]:
                 continue
             if want_caps and not want_caps.issubset(set(device.get("capabilities") or [])):
+                continue
+            # I2C-strand prerequisite: the device must be able to receive a strand
+            # that provides every required strand capability (one strand is muxed
+            # onto the DUT at a time, so a single strand must cover them all).
+            if want_strand_caps and self.strand_for_device(device["id"], want_strand_caps) is None:
                 continue
             return host, device
 

@@ -70,6 +70,19 @@ async def get_topology(request: Request, _auth: Auth) -> dict[str, Any]:
             "FROM device_usb_ids ORDER BY device_id, id"
         ) as cur:
             usb_id_rows = await cur.fetchall()
+        strand_rows = comp_rows = route_rows = []
+        try:
+            async with db.execute("SELECT * FROM strands ORDER BY id") as cur:
+                strand_rows = await cur.fetchall()
+            async with db.execute("SELECT * FROM strand_components ORDER BY strand_id, id") as cur:
+                comp_rows = await cur.fetchall()
+            async with db.execute(
+                "SELECT device_id, strand_id, mux_channel FROM device_strands "
+                "ORDER BY strand_id, mux_channel"
+            ) as cur:
+                route_rows = await cur.fetchall()
+        except Exception:  # noqa: BLE001 - strands tables absent on an old DB
+            strand_rows = comp_rows = route_rows = []
 
     # Build device→peripheral_ids lookup
     device_peripheral_ids: dict[str, list[str]] = {}
@@ -110,12 +123,31 @@ async def get_topology(request: Request, _auth: Auth) -> dict[str, Any]:
         dev["usb_ids"] = device_usb_ids.get(dev["id"], [])
         devices_out.append(dev)
 
+    # Assemble strands with their components + per-DUT analog-mux routes.
+    strand_components: dict[str, list[dict[str, Any]]] = {}
+    for c in comp_rows:
+        strand_components.setdefault(c["strand_id"], []).append(
+            _parse(c, ["ws_types_json", "capabilities_json"])
+        )
+    strand_routes: dict[str, list[dict[str, Any]]] = {}
+    for r in route_rows:
+        strand_routes.setdefault(r["strand_id"], []).append(
+            {"device": r["device_id"], "channel": r["mux_channel"]}
+        )
+    strands_out = []
+    for s in strand_rows:
+        strand = dict(s)
+        strand["components"] = strand_components.get(strand["id"], [])
+        strand["routes"] = strand_routes.get(strand["id"], [])
+        strands_out.append(strand)
+
     return {
         "hosts": [_parse(h, ["capabilities_json"]) for h in host_rows],
         "devices": devices_out,
         "auxes": [_parse(a, ["capabilities_json"]) for a in aux_rows],
         "connections": [dict(c) for c in conn_rows],
         "peripherals": [_parse(p, ["specs_json"]) for p in periph_rows],
+        "strands": strands_out,
     }
 
 

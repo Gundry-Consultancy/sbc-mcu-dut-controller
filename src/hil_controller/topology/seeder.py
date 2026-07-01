@@ -27,6 +27,15 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _addr(value: Any) -> int | None:
+    """Parse an I2C address from YAML: int, ``"0x59"`` hex string, or None."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    return int(str(value).strip(), 0)
+
+
 async def seed_topology(db_path: str, topology_file: str) -> None:
     if not topology_file:
         return
@@ -42,6 +51,7 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
     cameras = data.get("cameras", [])
     connections = data.get("connections", [])
     peripherals = data.get("peripherals", [])
+    strands = data.get("strands", [])
 
     async with aiosqlite.connect(db_path) as db:
         await db.execute("PRAGMA foreign_keys=OFF")
@@ -231,6 +241,57 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     (d["id"], pid),
                 )
 
+        # Seed I2C component strands + their components + per-DUT analog-mux routes.
+        for s in strands:
+            await db.execute(
+                """
+                INSERT INTO strands (id, mux_aux_id, mux_group, tca_address, pool, status, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    mux_aux_id=excluded.mux_aux_id, mux_group=excluded.mux_group,
+                    tca_address=excluded.tca_address, pool=excluded.pool, notes=excluded.notes
+                """,
+                (
+                    s["id"],
+                    s.get("mux_aux"),
+                    s.get("mux_group"),
+                    _addr(s.get("tca_address")),
+                    s.get("pool", "public"),
+                    s.get("status", "available"),
+                    s.get("notes"),
+                ),
+            )
+            # Rebuild this strand's components each seed (declarative source of truth).
+            await db.execute("DELETE FROM strand_components WHERE strand_id = ?", (s["id"],))
+            for c in s.get("components", []):
+                await db.execute(
+                    """
+                    INSERT INTO strand_components
+                        (id, strand_id, model, address, tca_channel, ws_types_json,
+                         capabilities_json, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        c["id"],
+                        s["id"],
+                        c.get("model", ""),
+                        _addr(c.get("address")),
+                        c.get("tca_channel"),
+                        json.dumps(c.get("ws_types", [])),
+                        json.dumps(c.get("capabilities", [])),
+                        c.get("notes"),
+                    ),
+                )
+            for r in s.get("routes", []):
+                await db.execute(
+                    """
+                    INSERT INTO device_strands (device_id, strand_id, mux_channel)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(device_id, strand_id) DO UPDATE SET mux_channel=excluded.mux_channel
+                    """,
+                    (r["device"], s["id"], int(r["channel"])),
+                )
+
         if connections:
             await db.execute("DELETE FROM connections")
             for c in connections:
@@ -243,12 +304,13 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
         await db.commit()
 
     log.info(
-        "Seeded %d hosts, %d devices, %d auxes, %d cameras, %d peripherals from %s",
+        "Seeded %d hosts, %d devices, %d auxes, %d cameras, %d peripherals, %d strands from %s",
         len(hosts),
         len(devices),
         len(auxes),
         len(cameras),
         len(peripherals),
+        len(strands),
         path,
     )
 

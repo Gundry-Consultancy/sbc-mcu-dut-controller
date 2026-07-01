@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timezone
 from typing import Any, Optional
 
+from hil_controller.adapters.analog_mux import AnalogMuxAdapter, AnalogMuxError
 from hil_controller.adapters.flashers.base import Artifact, FlasherError
 from hil_controller.adapters.flashers.bossac import SAMD51_APP_OFFSET, BossacFlasher
 from hil_controller.adapters.flashers.esptool import EsptoolFlasher, classify_boot_state
@@ -170,6 +171,9 @@ class BenchContext:
     log_serial_port: str = ""
     msc_filter: str = ""
     device: dict[str, Any] = field(default_factory=dict)
+    #: Controller DB path, so DB-backed stages (e.g. select_i2c_strand resolving a
+    #: strand's analog-mux route for this device) can query. "" disables lookup.
+    db_path: str = ""
     artifact: Artifact | None = None
     workspace_dir: str = ""
     pio_env: str = ""
@@ -1565,9 +1569,9 @@ async def _stage_capture_display(stage: dict[str, Any], ctx: BenchContext) -> No
 
     Emits ``DISPLAY_CAPTURE_VERDICT saved=<path> ...``.
     """
+    import cv2
     import httpx
     import numpy as np
-    import cv2
 
     cam_url = stage.get("camera_url")
     if not cam_url:
@@ -1646,6 +1650,100 @@ async def _stage_capture_display(stage: dict[str, Any], ctx: BenchContext) -> No
         await asyncio.sleep(settle)
 
 
+async def _resolve_strand_route(
+    ctx: BenchContext, strand_id: str
+) -> tuple[str | None, str | None, int | None] | None:
+    """Look up (base_url, mux_group, mux_channel) to route ``strand_id`` to ctx.device.
+
+    Joins strands → its analog-mux aux (for the API base_url) → the per-device
+    channel. Returns None if this device has no route to that strand.
+    """
+    if not ctx.db_path:
+        return None
+    from hil_controller.db.connection import get_db
+
+    device_id = ctx.device.get("id")
+    async with get_db(ctx.db_path) as db:
+        cur = await db.execute(
+            "SELECT s.mux_group AS mux_group, a.interface AS base_url, "
+            "       ds.mux_channel AS mux_channel "
+            "FROM strands s "
+            "JOIN device_strands ds ON ds.strand_id = s.id "
+            "LEFT JOIN auxes a ON a.id = s.mux_aux_id "
+            "WHERE s.id = ? AND ds.device_id = ?",
+            (strand_id, device_id),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return (row["base_url"], row["mux_group"], row["mux_channel"])
+
+
+async def _stage_select_i2c_strand(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Route a shared I2C component strand to THIS DUT via the analog strand-mux.
+
+    Resolves the mux API URL + group + channel either from explicit stage params
+    (``base_url``/``group``/``channel``) or by looking up ``strand_id`` against
+    this device's route (``strands``→aux + ``device_strands``). Performs an
+    exclusive break-before-make select and logs a greppable
+    ``I2C_STRAND_MUX_VERDICT`` line. (The on-strand TCA9548 muxing of individual
+    components is handled separately by the WipperSnapper inject stages.)
+    """
+    base_url = stage.get("base_url")
+    group = stage.get("group")
+    channel = stage.get("channel")
+    strand_id = stage.get("strand_id")
+    if (not base_url or not group or channel is None) and strand_id:
+        route = await _resolve_strand_route(ctx, strand_id)
+        if route is None:
+            raise StageError(
+                f"select_i2c_strand: no route for strand {strand_id!r} to device "
+                f"{ctx.device.get('id')!r}"
+            )
+        base_url = base_url or route[0]
+        group = group or route[1]
+        channel = route[2] if channel is None else channel
+    if not base_url or not group or channel is None:
+        raise StageError(
+            "select_i2c_strand: need a resolvable 'strand_id' or explicit "
+            "'base_url'+'group'+'channel'"
+        )
+    adapter = AnalogMuxAdapter(base_url, token=stage.get("token") or None)
+    label = f" {strand_id}" if strand_id else ""
+    ctx.log_line(f"select_i2c_strand: routing strand{label} -> {group} ch{channel} via {base_url}")
+    try:
+        result = await adapter.select(str(group), int(channel))
+    except AnalogMuxError as exc:
+        ctx.log_line(
+            f"I2C_STRAND_MUX_VERDICT status=error group={group} channel={channel} error={exc}"
+        )
+        raise StageError(f"select_i2c_strand: {exc}") from exc
+    active = result.get("active") if isinstance(result, dict) else None
+    ctx.log_line(
+        f"I2C_STRAND_MUX_VERDICT status=ok strand={strand_id} group={group} "
+        f"channel={channel} active={active}"
+    )
+
+
+async def _stage_isolate_i2c_strand(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Open every switch on the strand-mux (disconnect the strand from all DUTs)."""
+    base_url = stage.get("base_url")
+    strand_id = stage.get("strand_id")
+    if not base_url and strand_id:
+        route = await _resolve_strand_route(ctx, strand_id)
+        if route is not None:
+            base_url = route[0]
+    if not base_url:
+        raise StageError("isolate_i2c_strand: need a resolvable 'strand_id' or explicit 'base_url'")
+    adapter = AnalogMuxAdapter(base_url, token=stage.get("token") or None)
+    ctx.log_line(f"isolate_i2c_strand: opening all switches via {base_url}")
+    try:
+        await adapter.isolate()
+    except AnalogMuxError as exc:
+        raise StageError(f"isolate_i2c_strand: {exc}") from exc
+    ctx.log_line("I2C_STRAND_MUX_VERDICT status=isolated")
+
+
 STAGE_HANDLERS: dict[str, Handler] = {
     "diagnose": _stage_diagnose,
     "inject_pixelwrite": _stage_inject_pixelwrite,
@@ -1654,6 +1752,8 @@ STAGE_HANDLERS: dict[str, Handler] = {
     "capture_display": _stage_capture_display,
     "inject_i2c_scan_v1": _stage_inject_i2c_scan_v1,
     "inject_i2c_settings": _stage_inject_i2c_settings,
+    "select_i2c_strand": _stage_select_i2c_strand,
+    "isolate_i2c_strand": _stage_isolate_i2c_strand,
     "verify_checkin": _stage_verify_checkin,
     "enter_bootloader": _stage_enter_bootloader,
     "bootloader_touch": _stage_bootloader_touch,

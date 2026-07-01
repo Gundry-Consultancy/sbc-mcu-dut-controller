@@ -40,8 +40,29 @@ async def list_targets(request: Request, _auth: Auth) -> dict[str, Any]:
             "speed_score, speed_score_at, specs_detected_at FROM hosts"
         )
         host_hw = {r["id"]: host_hardware.host_hw_view(dict(r)) for r in await host_cur.fetchall()}
-    return {
-        "targets": [
-            availability.target_record(row, host_hw=host_hw.get(row.get("host_id"))) for row in rows
-        ]
-    }
+        # I2C-strand features a device can receive: the union of capabilities of
+        # every strand routed to it (so CI can request them as prerequisites).
+        strand_features: dict[str, set[str]] = {}
+        try:
+            import json as _json
+
+            fcur = await db.execute(
+                "SELECT ds.device_id AS device_id, sc.capabilities_json AS caps "
+                "FROM device_strands ds "
+                "JOIN strand_components sc ON sc.strand_id = ds.strand_id"
+            )
+            for r in await fcur.fetchall():
+                strand_features.setdefault(r["device_id"], set()).update(
+                    _json.loads(r["caps"] or "[]")
+                )
+        except Exception:  # noqa: BLE001 - strands tables may be absent on an old DB
+            strand_features = {}
+
+    records = []
+    for row in rows:
+        rec = availability.target_record(row, host_hw=host_hw.get(row.get("host_id")))
+        feats = strand_features.get(row.get("id"))
+        if feats:
+            rec["strand_features"] = sorted(feats)
+        records.append(rec)
+    return {"targets": records}
