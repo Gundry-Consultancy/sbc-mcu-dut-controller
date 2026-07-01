@@ -50,6 +50,23 @@
         {% if b.matched_device_id %}
           <a href="/ui/devices/{{ b.matched_device_id }}/form"
              class="btn btn-sm btn-outline">Edit device</a>
+          {% set sch = (device_solenoid | default({})).get(b.matched_device_id) %}
+          {% if sch is not none %}
+          <div style="display:flex;gap:0.25rem;margin-top:0.3rem;align-items:center;flex-wrap:wrap;">
+            <span class="form-hint" style="font-size:0.72rem;">sol ch {{ sch }}</span>
+            <button class="btn btn-sm" title="Solenoid power ON"
+              hx-post="/ui/devices/{{ b.matched_device_id }}/power/on"
+              hx-target="#pwr-{{ b.matched_device_id }}" hx-swap="innerHTML">On</button>
+            <button class="btn btn-sm" title="Solenoid power OFF"
+              hx-post="/ui/devices/{{ b.matched_device_id }}/power/off"
+              hx-target="#pwr-{{ b.matched_device_id }}" hx-swap="innerHTML">Off</button>
+            <button class="btn btn-sm btn-outline" title="Power-cycle (off then on)"
+              hx-post="/ui/devices/{{ b.matched_device_id }}/reset"
+              hx-target="#pwr-{{ b.matched_device_id }}" hx-swap="innerHTML"
+              hx-confirm="Power-cycle channel {{ sch }} on {{ host_id }}?">Cycle</button>
+          </div>
+          <div id="pwr-{{ b.matched_device_id }}"></div>
+          {% endif %}
         {% elif assignable_devices %}
           <form hx-post="/ui/usbip/assign"
                 hx-target="#usbip-section-{{ host_id }}"

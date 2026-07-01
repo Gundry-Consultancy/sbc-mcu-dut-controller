@@ -177,6 +177,46 @@ async def test_reset_redirects_without_auth(bench_client) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# /ui/devices/{id}/power/on|off  (usb-ip page solenoid controls)              #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_power_on_presses_port_on(bench_client) -> None:
+    client, app = bench_client
+    r = await client.post("/ui/devices/mcu-revtft/power/on", cookies=COOKIE)
+    assert r.status_code == 200
+    assert "Powered ON channel 3" in r.text
+    argvs = [c.args[0] for c in app.state.stub_transport.exec.call_args_list]
+    assert any(a[2:4] == ["port_on", "3"] for a in argvs if len(a) > 3)
+
+
+@pytest.mark.asyncio
+async def test_power_off_presses_port_off(bench_client) -> None:
+    client, app = bench_client
+    r = await client.post("/ui/devices/mcu-revtft/power/off", cookies=COOKIE)
+    assert r.status_code == 200
+    assert "Powered OFF channel 3" in r.text
+    argvs = [c.args[0] for c in app.state.stub_transport.exec.call_args_list]
+    assert any(a[2:4] == ["port_off", "3"] for a in argvs if len(a) > 3)
+
+
+@pytest.mark.asyncio
+async def test_power_on_refuses_when_solenoid_channel_unset(bench_client) -> None:
+    client, _ = bench_client
+    r = await client.post("/ui/devices/mcu-no-solenoid/power/on", cookies=COOKIE)
+    assert r.status_code == 200
+    assert "No solenoid channel configured" in r.text
+
+
+@pytest.mark.asyncio
+async def test_power_on_redirects_without_auth(bench_client) -> None:
+    client, _ = bench_client
+    r = await client.post("/ui/devices/mcu-revtft/power/on", follow_redirects=False)
+    assert r.status_code == 303
+
+
+# --------------------------------------------------------------------------- #
 # /ui/devices/{id}/install-tinyuf2                                            #
 # --------------------------------------------------------------------------- #
 

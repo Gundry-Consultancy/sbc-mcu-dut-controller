@@ -3900,6 +3900,20 @@ async def _assignable_devices_for_host(db_path: str, host_id: str) -> list[dict]
             return [dict(r) for r in await cur.fetchall()]
 
 
+async def _device_solenoid_map_for_host(db_path: str, host_id: str) -> dict[str, int]:
+    """{device_id: solenoid_channel} for devices on *host_id* that have a channel.
+
+    Feeds the usb-ip page's per-device power controls (On/Off/Cycle).
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id, solenoid_channel FROM devices "
+            "WHERE (hub_host_id = ? OR host_id = ?) AND solenoid_channel IS NOT NULL",
+            (host_id, host_id),
+        ) as cur:
+            return {r["id"]: r["solenoid_channel"] for r in await cur.fetchall()}
+
+
 @router.get("/usbip", response_class=HTMLResponse, include_in_schema=False)
 async def usbip_overview(
     request: Request,
@@ -3989,6 +4003,7 @@ async def usbip_host_fragment(
         timeout_s=timeout,
     )
     assignable = await _assignable_devices_for_host(db_path, host_id)
+    solenoid_map = await _device_solenoid_map_for_host(db_path, host_id)
     return _tr(
         request,
         "usbip_host_fragment.html",
@@ -4000,6 +4015,7 @@ async def usbip_host_fragment(
             "error": inventory.error,
             "assignable_devices": assignable,
             "dev_links": inventory.dev_links,
+            "device_solenoid": solenoid_map,
         },
     )
 
@@ -4063,71 +4079,96 @@ def _bench_result_panel(*, ok: bool, title: str, body_html: str) -> HTMLResponse
     )
 
 
-@router.post("/devices/{device_id}/reset", response_class=HTMLResponse, include_in_schema=False)
-async def device_reset_ui(
-    request: Request, device_id: str, hil_token: str = Cookie(default="")
-) -> HTMLResponse:
-    """Power-cycle a DUT via its hub host's solenoid channel.
+async def _solenoid_for_device(request: Request, device_id: str):
+    """Resolve a device's solenoid hub+channel for a UI power action.
 
-    Admin-only convenience for un-sticking a device outside a job. Calls
-    :class:`SolenoidHubAdapter`.power_cycle(channel) on the hub host's
-    transport. Refuses if the device has no ``solenoid_channel`` or if
-    ``host_registry`` isn't loaded.
+    Returns ``(hub, channel, hub_host_id)`` on success, or ``(None, panel)``
+    where ``panel`` is a ready-to-return error alert.
     """
-    if not (await _check_web_token(request, hil_token)):
-        return _login_redirect()
     db_path: str = request.app.state.db_path
     device = await _device_row(db_path, device_id)
     if device is None:
-        return _bench_result_panel(
+        return None, _bench_result_panel(
             ok=False, title="Device not found", body_html=html.escape(device_id)
         )
     channel = device.get("solenoid_channel")
     if channel is None:
-        return _bench_result_panel(
+        return None, _bench_result_panel(
             ok=False,
             title="No solenoid channel configured",
             body_html=(
                 "Set <code>solenoid_channel</code> on the device record before "
-                "trying to power-cycle from the UI."
+                "using power controls from the UI."
             ),
         )
     hub_host_id = device.get("hub_host_id") or device.get("host_id")
     registry = getattr(request.app.state, "host_registry", None)
     if registry is None:
-        return _bench_result_panel(
-            ok=False,
-            title="Host registry not configured",
-            body_html="No topology loaded.",
+        return None, _bench_result_panel(
+            ok=False, title="Host registry not configured", body_html="No topology loaded."
         )
     try:
         transport = registry.transport_for(hub_host_id)
     except KeyError:
-        return _bench_result_panel(
-            ok=False,
-            title="Unknown hub host",
-            body_html=html.escape(str(hub_host_id)),
+        return None, _bench_result_panel(
+            ok=False, title="Unknown hub host", body_html=html.escape(str(hub_host_id))
         )
+    from hil_controller.adapters.solenoid_hub import SolenoidHubAdapter
 
-    from hil_controller.adapters.solenoid_hub import (
-        SolenoidHubAdapter,
-        SolenoidHubError,
-    )
+    return (SolenoidHubAdapter(transport=transport), int(channel), hub_host_id), None
 
-    hub = SolenoidHubAdapter(transport=transport)
+
+async def _solenoid_action(request, device_id, hil_token, verb):
+    """Shared handler for the on/off/cycle solenoid UI buttons."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    got, err = await _solenoid_for_device(request, device_id)
+    if err is not None:
+        return err
+    hub, channel, hub_host_id = got
+    from hil_controller.adapters.solenoid_hub import SolenoidHubError
+
     try:
-        await hub.power_cycle(int(channel))
+        if verb == "on":
+            await hub.port_on(channel)
+            title = f"Powered ON channel {channel} on {hub_host_id}"
+            note = "Pressed the ON latch."
+        elif verb == "off":
+            await hub.port_off(channel)
+            title = f"Powered OFF channel {channel} on {hub_host_id}"
+            note = "Pressed the OFF latch."
+        else:  # cycle
+            await hub.power_cycle(channel)
+            title = f"Power-cycled channel {channel} on {hub_host_id}"
+            note = "Issued port_off then port_on. Allow a couple of seconds to re-enumerate."
     except (SolenoidHubError, ValueError) as exc:
-        return _bench_result_panel(ok=False, title="Reset failed", body_html=html.escape(str(exc)))
-    return _bench_result_panel(
-        ok=True,
-        title=f"Power-cycled channel {channel} on {hub_host_id}",
-        body_html=(
-            f"Issued port_off then port_on against channel "
-            f"<code>{channel}</code>. Allow a couple of seconds for the DUT "
-            f"to re-enumerate."
-        ),
-    )
+        fail_title = {"on": "Power ON failed", "off": "Power OFF failed"}.get(verb, "Reset failed")
+        return _bench_result_panel(ok=False, title=fail_title, body_html=html.escape(str(exc)))
+    return _bench_result_panel(ok=True, title=title, body_html=note)
+
+
+@router.post("/devices/{device_id}/power/on", response_class=HTMLResponse, include_in_schema=False)
+async def device_power_on_ui(
+    request: Request, device_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Solenoid power ON for a DUT (usb-ip page control)."""
+    return await _solenoid_action(request, device_id, hil_token, "on")
+
+
+@router.post("/devices/{device_id}/power/off", response_class=HTMLResponse, include_in_schema=False)
+async def device_power_off_ui(
+    request: Request, device_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Solenoid power OFF for a DUT (usb-ip page control)."""
+    return await _solenoid_action(request, device_id, hil_token, "off")
+
+
+@router.post("/devices/{device_id}/reset", response_class=HTMLResponse, include_in_schema=False)
+async def device_reset_ui(
+    request: Request, device_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Power-cycle a DUT via its hub host's solenoid channel (usb-ip page control)."""
+    return await _solenoid_action(request, device_id, hil_token, "cycle")
 
 
 @router.post(
