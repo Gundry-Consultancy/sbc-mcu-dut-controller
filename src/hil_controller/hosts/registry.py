@@ -293,6 +293,11 @@ class RealHostRegistry(HostRegistry):
             dut_host = next((h for h in self._hosts if h["id"] == hub_host_id), host)
             dut_transport = self._build_transport(dut_host)
             cfg = get_settings()
+            # If the job requires an I2C strand and this device is routed to one
+            # that provides it, hand the strand id to the adapter so it auto-mux's
+            # the strand onto the DUT (a select_i2c_strand stage) before flashing.
+            strand_caps = self._required_strand_caps(request.get("target", {}))
+            route = self.strand_for_device(device["id"], strand_caps) if strand_caps else None
             return FirmwareBenchAdapter(
                 controller_transport=LocalTransport(),
                 dut_transport=dut_transport,
@@ -306,6 +311,7 @@ class RealHostRegistry(HostRegistry):
                 protomq_repo=params.get("protomq_repo", ""),
                 protomq_ref=params.get("protomq_ref", ""),
                 jobs_dir=resolve_jobs_dir(),
+                auto_strand_id=(route["strand_id"] if route else None),
             )
 
         if not source:

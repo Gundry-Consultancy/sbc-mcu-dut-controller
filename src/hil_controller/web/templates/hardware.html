@@ -40,4 +40,41 @@
     </tbody>
   </table>
 </div>
+
+<div class="tbl-wrap" style="margin-top:2rem;">
+  <div class="tbl-header">
+    <h2>I2C Strands <span class="tbl-count">{{ strands|length }}</span></h2>
+    <button class="btn btn-primary"
+      hx-get="/ui/strands/form"
+      hx-target="#form-panel"
+      hx-swap="innerHTML">+ Add Strand</button>
+  </div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Mux Aux</th><th>Group</th><th>TCA</th><th>Components</th>
+      <th>Routes (DUT→ch)</th><th>Pool</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody id="strands-body">
+      {% for s in strands %}
+      <tr id="strand-row-{{ s.id }}">
+        <td>{{ s.id }}</td>
+        <td>{{ s.mux_aux or "" }}</td>
+        <td>{{ s.mux_group or "" }}</td>
+        <td>{% if s.tca_address is not none %}0x{{ "%02x"|format(s.tca_address) }}{% endif %}</td>
+        <td>{{ s.components | map(attribute="model") | join(", ") }}</td>
+        <td>{% for r in s.routes %}{{ r.device }}→{{ r.channel }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td>{{ s.pool }}</td>
+        <td>{{ s.status }}</td>
+        <td>
+          <button class="btn" hx-get="/ui/strands/{{ s.id }}/form"
+            hx-target="#form-panel" hx-swap="innerHTML">Edit</button>
+          <button class="btn btn-danger" hx-delete="/ui/strands/{{ s.id }}"
+            hx-target="#strand-row-{{ s.id }}" hx-swap="outerHTML"
+            hx-confirm="Delete strand {{ s.id }}?">Delete</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endblock %}

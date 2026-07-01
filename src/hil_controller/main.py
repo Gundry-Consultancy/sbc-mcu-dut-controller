@@ -177,6 +177,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     from hil_controller.api.hosts import router as hosts_router
     from hil_controller.api.jobs import router as jobs_router
     from hil_controller.api.leases import router as leases_router
+    from hil_controller.api.strands import router as strands_router
     from hil_controller.api.targets import router as targets_router
     from hil_controller.api.topology import router as topology_router
     from hil_controller.web.router import router as web_router
@@ -188,6 +189,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     app.include_router(aux_router)
     app.include_router(cameras_router)
     app.include_router(topology_router)
+    app.include_router(strands_router)
     app.include_router(leases_router)
     app.include_router(targets_router)
     app.include_router(firmware_router)

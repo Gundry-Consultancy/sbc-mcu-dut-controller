@@ -1204,6 +1204,7 @@ async def hardware_page(request: Request, hil_token: str = Cookie(default="")) -
     db_path: str = request.app.state.db_path
     hardware = await _aux_list(db_path)
     peripherals = await _peripherals_list(db_path)
+    strands = await _strands_web_list(db_path)
     return _tr(
         request,
         "hardware.html",
@@ -1212,6 +1213,7 @@ async def hardware_page(request: Request, hil_token: str = Cookie(default="")) -
             "active": "hardware",
             "hardware": hardware,
             "peripherals": peripherals,
+            "strands": strands,
         },
     )
 
@@ -1497,6 +1499,135 @@ async def delete_peripheral(
     async with get_db(db_path) as db:
         await db.execute("DELETE FROM device_peripherals WHERE peripheral_id = ?", (periph_id,))
         await db.execute("DELETE FROM peripherals WHERE id = ?", (periph_id,))
+        await db.commit()
+    return HTMLResponse("")
+
+
+# ---------------------------------------------------------------------------
+# I2C strand CRUD (strands / strand_components / device_strands)
+# ---------------------------------------------------------------------------
+
+
+async def _strands_web_list(db_path: str) -> list[dict]:
+    from hil_controller.api.strands import _load_strand
+
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT id FROM strands ORDER BY id") as cur:
+            ids = [r["id"] for r in await cur.fetchall()]
+        return [await _load_strand(db, sid) for sid in ids]
+
+
+def _parse_addr(value: str) -> int | None:
+    value = (value or "").strip()
+    return int(value, 0) if value else None
+
+
+@router.get("/strands/form", response_class=HTMLResponse, include_in_schema=False)
+async def new_strand_form(request: Request, hil_token: str = Cookie(default="")) -> HTMLResponse:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    return _tr(request, "strands_form.html", {"strand": None})
+
+
+@router.get("/strands/{strand_id}/form", response_class=HTMLResponse, include_in_schema=False)
+async def edit_strand_form(
+    request: Request, strand_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.api.strands import _load_strand
+
+    async with get_db(request.app.state.db_path) as db:
+        s = await _load_strand(db, strand_id)
+    if s is None:
+        return HTMLResponse("Strand not found", status_code=404)
+    s["components_json"] = json.dumps(s.get("components") or [], indent=2)
+    s["routes_json"] = json.dumps(s.get("routes") or [], indent=2)
+    return _tr(request, "strands_form.html", {"strand": s})
+
+
+async def _save_strand_web(request, strand_id, form, is_create):
+    from hil_controller.api.strands import Strand, _load_strand, _write_strand
+
+    def _render_err(msg: str) -> HTMLResponse:
+        ctx = dict(form)
+        ctx["error"] = msg
+        return _tr(request, "strands_form.html", {"strand": ctx})
+
+    sid = form["id"] if is_create else strand_id
+    if not sid:
+        return _render_err("ID is required")
+    try:
+        strand = Strand(
+            id=sid,
+            mux_aux=form.get("mux_aux") or None,
+            mux_group=form.get("mux_group") or None,
+            tca_address=_parse_addr(form.get("tca_address", "")),
+            pool=form.get("pool") or "public",
+            status=form.get("status") or "available",
+            notes=form.get("notes") or None,
+            components=json.loads(form.get("components_json") or "[]"),
+            routes=json.loads(form.get("routes_json") or "[]"),
+        )
+    except Exception as exc:  # noqa: BLE001 - surface JSON/validation errors in the form
+        return _render_err(f"invalid components/routes JSON or fields: {exc}")
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        if is_create and await _load_strand(db, sid) is not None:
+            return _render_err(f"strand {sid!r} already exists")
+        try:
+            await _write_strand(db, strand)
+        except Exception as exc:  # noqa: BLE001 - e.g. a route to an unknown device (FK)
+            return _render_err(str(exc))
+    return _redirect("/ui/hardware")
+
+
+@router.post("/strands", response_class=HTMLResponse, include_in_schema=False)
+async def create_strand_web(
+    request: Request,
+    hil_token: str = Cookie(default=""),
+    id: Annotated[str, Form()] = "",
+    mux_aux: Annotated[str, Form()] = "",
+    mux_group: Annotated[str, Form()] = "",
+    tca_address: Annotated[str, Form()] = "",
+    pool: Annotated[str, Form()] = "public",
+    status: Annotated[str, Form()] = "available",
+    notes: Annotated[str, Form()] = "",
+    components_json: Annotated[str, Form()] = "[]",
+    routes_json: Annotated[str, Form()] = "[]",
+) -> HTMLResponse:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    return await _save_strand_web(request, id, locals(), is_create=True)
+
+
+@router.post("/strands/{strand_id}", response_class=HTMLResponse, include_in_schema=False)
+async def update_strand_web(
+    request: Request,
+    strand_id: str,
+    hil_token: str = Cookie(default=""),
+    mux_aux: Annotated[str, Form()] = "",
+    mux_group: Annotated[str, Form()] = "",
+    tca_address: Annotated[str, Form()] = "",
+    pool: Annotated[str, Form()] = "public",
+    status: Annotated[str, Form()] = "available",
+    notes: Annotated[str, Form()] = "",
+    components_json: Annotated[str, Form()] = "[]",
+    routes_json: Annotated[str, Form()] = "[]",
+) -> HTMLResponse:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    return await _save_strand_web(request, strand_id, locals(), is_create=False)
+
+
+@router.delete("/strands/{strand_id}", response_class=HTMLResponse, include_in_schema=False)
+async def delete_strand_web(
+    request: Request, strand_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    async with get_db(request.app.state.db_path) as db:
+        await db.execute("DELETE FROM strands WHERE id = ?", (strand_id,))
         await db.commit()
     return HTMLResponse("")
 

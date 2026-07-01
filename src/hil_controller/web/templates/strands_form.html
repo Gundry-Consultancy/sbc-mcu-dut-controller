@@ -1,0 +1,54 @@
+<div class="form-panel">
+  <h2>{% if strand %}Edit Strand — {{ strand.id }}{% else %}New I2C Strand{% endif %}</h2>
+  {% if strand and strand.error %}<div class="alert alert-error">{{ strand.error }}</div>{% endif %}
+  <form hx-post="/ui/strands{% if strand and strand.id %}/{{ strand.id }}{% endif %}"
+        hx-target="#form-panel"
+        hx-swap="innerHTML">
+    <div class="form-grid">
+      {% if not strand %}
+      <div class="form-group">
+        <label for="f-strand-id">ID *</label>
+        <input type="text" id="f-strand-id" name="id" value="" required placeholder="strand-hil006-air">
+      </div>
+      {% endif %}
+      <div class="form-group">
+        <label for="f-strand-aux">Mux aux (analog strand-mux id)</label>
+        <input type="text" id="f-strand-aux" name="mux_aux" value="{{ strand.mux_aux or '' if strand else '' }}" placeholder="mux-hil006">
+      </div>
+      <div class="form-group">
+        <label for="f-strand-group">Mux group</label>
+        <input type="text" id="f-strand-group" name="mux_group" value="{{ strand.mux_group or '' if strand else '' }}" placeholder="muxA">
+      </div>
+      <div class="form-group">
+        <label for="f-strand-tca">On-strand TCA9548 address</label>
+        <input type="text" id="f-strand-tca" name="tca_address" value="{% if strand and strand.tca_address is not none %}{% if strand.tca_address is number %}0x{{ '%02x'|format(strand.tca_address) }}{% else %}{{ strand.tca_address }}{% endif %}{% endif %}" placeholder="0x70">
+        <span class="form-hint">Leave blank if the strand has no on-strand I2C mux.</span>
+      </div>
+      <div class="form-group">
+        <label for="f-strand-pool">Pool</label>
+        <input type="text" id="f-strand-pool" name="pool" value="{{ strand.pool if strand else 'public' }}">
+      </div>
+      <div class="form-group">
+        <label for="f-strand-status">Status</label>
+        <input type="text" id="f-strand-status" name="status" value="{{ strand.status if strand else 'available' }}">
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="f-strand-notes">Notes</label>
+        <input type="text" id="f-strand-notes" name="notes" value="{{ strand.notes or '' if strand else '' }}">
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="f-strand-components">Components (JSON list)</label>
+        <textarea id="f-strand-components" name="components_json" rows="7" style="width:100%;font-family:monospace;" placeholder='[{"id":"strand-air-pmsa003i","model":"pmsa003i","address":18,"tca_channel":null,"ws_types":[],"capabilities":["sensor:pm25","air-quality"]}]'>{{ strand.components_json if strand else '' }}</textarea>
+        <span class="form-hint">Each: id, model, address (int), tca_channel (null=direct bus), ws_types, capabilities.</span>
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="f-strand-routes">Routes (JSON list)</label>
+        <textarea id="f-strand-routes" name="routes_json" rows="5" style="width:100%;font-family:monospace;" placeholder='[{"device":"mcu-qtpy-esp32s3-hil006","channel":0}]'>{{ strand.routes_json if strand else '' }}</textarea>
+        <span class="form-hint">Which DUT each analog-mux channel connects this strand to.</span>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">{% if strand %}Save{% else %}Create{% endif %}</button>
+    </div>
+  </form>
+</div>

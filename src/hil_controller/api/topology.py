@@ -6,6 +6,7 @@ import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from hil_controller.auth.principal import Principal
@@ -149,6 +150,15 @@ async def get_topology(request: Request, _auth: Auth) -> dict[str, Any]:
         "peripherals": [_parse(p, ["specs_json"]) for p in periph_rows],
         "strands": strands_out,
     }
+
+
+@router.get("/export", response_class=PlainTextResponse, include_in_schema=True)
+async def export_topology(request: Request, _auth: Auth) -> PlainTextResponse:
+    """Backport the live DB to reseedable topology YAML (commit to topology.yaml)."""
+    from hil_controller.topology.export import build_export_yaml
+
+    yaml_text = await build_export_yaml(request.app.state.db_path)
+    return PlainTextResponse(yaml_text, media_type="application/yaml")
 
 
 @router.post("/resolve", response_model=ResolveResponse)

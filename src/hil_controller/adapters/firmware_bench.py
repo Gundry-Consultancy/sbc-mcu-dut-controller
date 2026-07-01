@@ -118,6 +118,7 @@ class FirmwareBenchAdapter:
         protomq_repo: str = "",
         protomq_ref: str = "",
         jobs_dir: str = "/tmp/hil-jobs",
+        auto_strand_id: str | None = None,
     ) -> None:
         self.controller_transport = controller_transport
         self.dut_transport = dut_transport
@@ -131,6 +132,9 @@ class FirmwareBenchAdapter:
         self.protomq_repo = protomq_repo
         self.protomq_ref = protomq_ref
         self.jobs_dir = jobs_dir
+        # Strand this job requires + this device is routed to (from target.requires
+        # matching). When set, _build_stages auto-prepends a select_i2c_strand.
+        self._auto_strand_id = auto_strand_id
 
         fw = self.params.get("firmware") or self.payload.get("firmware") or {}
         self._fw: dict = dict(fw)
@@ -447,6 +451,14 @@ class FirmwareBenchAdapter:
         Both are skipped if the operator already placed them explicitly.
         """
         stages = [dict(s) for s in (self.params.get("stages") or DEFAULT_FLASH_STAGES)]
+
+        # Auto-mux: the job required an I2C strand and this device is routed to
+        # one — connect it up-front so the sensor chain is present before the DUT
+        # boots its app (unless the operator already placed a select stage).
+        if self._auto_strand_id and not any(
+            s.get("type") == "select_i2c_strand" for s in stages
+        ):
+            stages.insert(0, {"type": "select_i2c_strand", "strand_id": self._auto_strand_id})
 
         # Only launch the local protomq for a write_secrets_msc that relies on it
         # (no explicit io_url). A write_secrets_msc pointing at an EXTERNAL broker
