@@ -47,14 +47,16 @@ async def list_targets(request: Request, _auth: Auth) -> dict[str, Any]:
             import json as _json
 
             fcur = await db.execute(
-                "SELECT ds.device_id AS device_id, sc.capabilities_json AS caps "
+                "SELECT ds.device_id AS device_id, sc.capabilities_json AS caps, "
+                "       sc.model AS model "
                 "FROM device_strands ds "
                 "JOIN strand_components sc ON sc.strand_id = ds.strand_id"
             )
             for r in await fcur.fetchall():
-                strand_features.setdefault(r["device_id"], set()).update(
-                    _json.loads(r["caps"] or "[]")
-                )
+                feats = strand_features.setdefault(r["device_id"], set())
+                feats.update(_json.loads(r["caps"] or "[]"))
+                if r["model"]:
+                    feats.add(r["model"])  # requestable by component model short-name too
         except Exception:  # noqa: BLE001 - strands tables may be absent on an old DB
             strand_features = {}
 

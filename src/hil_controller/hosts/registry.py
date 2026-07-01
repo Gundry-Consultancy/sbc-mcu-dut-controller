@@ -57,7 +57,12 @@ class HostRegistry:
         for s in strands:
             caps: set[str] = set()
             for c in s.get("components", []):
-                caps.update(c.get("capabilities") or [])
+                # Match on both the declared capability tags AND the component's
+                # model short-name (e.g. "pmsa003i", "scd30"), case-insensitively.
+                caps.update((cap or "").strip().lower() for cap in (c.get("capabilities") or []))
+                model = (c.get("model") or "").strip().lower()
+                if model:
+                    caps.add(model)
             for r in s.get("routes", []):
                 dev_id = r.get("device")
                 if not dev_id:
@@ -72,7 +77,7 @@ class HostRegistry:
         want: set[str] = set()
         for req in target.get("requires") or []:
             if (req.get("kind") or "") in HostRegistry.STRAND_REQUIRE_KINDS:
-                want.update(req.get("capabilities") or [])
+                want.update((cap or "").strip().lower() for cap in (req.get("capabilities") or []))
         return want
 
     def strand_for_device(self, device_id: str, caps: set[str]) -> dict[str, Any] | None:

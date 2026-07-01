@@ -13,8 +13,8 @@ _STRANDS = [
         "mux_aux": "mux1",
         "mux_group": "muxA",
         "components": [
-            {"id": "c1", "capabilities": ["sensor:pm25", "air-quality"]},
-            {"id": "c2", "capabilities": ["sensor:voc"]},
+            {"id": "c1", "model": "pmsa003i", "capabilities": ["sensor:pm25", "air-quality"]},
+            {"id": "c2", "model": "sgp41", "capabilities": ["sensor:voc"]},
         ],
         "routes": [{"device": "qtpy", "channel": 0}],  # only qtpy is wired to the strand
     }
@@ -51,6 +51,16 @@ def test_capabilities_may_span_components_of_one_strand():
                                     "capabilities": ["sensor:pm25", "sensor:voc"]}]}}
     host, device = reg.find_device_for_job(req)
     assert device["id"] == "qtpy"
+
+
+def test_matches_by_component_model_case_insensitive():
+    reg = _reg()
+    # Request the sensor by its model short-name, in mixed case.
+    req = {"target": {"device": {},
+                      "requires": [{"kind": "i2c_strand", "capabilities": ["PMSA003i"]}]}}
+    host, device = reg.find_device_for_job(req)
+    assert device["id"] == "qtpy"
+    assert reg.strand_for_device("qtpy", {"sgp41"}) is not None  # other model too
 
 
 def test_no_strand_requirement_matches_any():
