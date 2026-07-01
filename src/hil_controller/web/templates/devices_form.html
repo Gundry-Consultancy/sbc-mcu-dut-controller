@@ -82,10 +82,25 @@
       </div>
       <div class="form-group">
         <label for="f-dev-solenoid">Solenoid channel</label>
-        <input type="number" id="f-dev-solenoid" name="solenoid_channel" min="0" max="7" step="1"
+        <input type="number" id="f-dev-solenoid" name="solenoid_channel" min="0" max="15" step="1"
                value="{{ device.solenoid_channel if device and device.solenoid_channel is not none else '' }}"
-               placeholder="0–7">
-        <span class="form-hint">MCP23017 channel driving this port's power button.</span>
+               placeholder="0–15">
+        <span class="form-hint">MCP23017 channel driving this port's power button (0–15).</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-bootsel">BOOTSEL channel</label>
+        <input type="number" id="f-dev-bootsel" name="bootsel_channel" min="0" max="15" step="1"
+               value="{{ device.bootsel_channel if device and device.bootsel_channel is not none else '' }}"
+               placeholder="blank → power+8">
+        <span class="form-hint">MCP23017 channel pressing Pico BOOTSEL. Blank = power channel + 8.</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-bootsel-inv">BOOTSEL polarity</label>
+        <label style="display:flex;align-items:center;gap:0.4rem;font-weight:400;">
+          <input type="checkbox" id="f-dev-bootsel-inv" name="bootsel_inverted" value="1"
+                 {% if device and device.bootsel_inverted %}checked{% endif %}>
+          Inverted (attachment presses on OFF)
+        </label>
       </div>
       <div class="form-group">
         <label for="f-dev-usb-serial">USB iSerial</label>

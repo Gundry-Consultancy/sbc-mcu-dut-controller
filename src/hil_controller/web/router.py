@@ -776,6 +776,8 @@ async def create_device(
     hub_port_path: Annotated[str, Form()] = "",
     solenoid_channel: Annotated[str, Form()] = "",
     usb_serial: Annotated[str, Form()] = "",
+    bootsel_channel: Annotated[str, Form()] = "",
+    bootsel_inverted: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -798,6 +800,8 @@ async def create_device(
     focus_val = _parse_optional_float(manual_focus)
     brightness_val = _parse_optional_int(illuminator_brightness)
     solenoid_val = _parse_optional_int(solenoid_channel)
+    bootsel_val = _parse_optional_int(bootsel_channel)
+    bootsel_inv = 1 if bootsel_inverted else 0
     hub_host_val = hub_host_id or host_id  # default to device host
     async with get_db(db_path) as db:
         try:
@@ -806,8 +810,9 @@ async def create_device(
                    (id, host_id, kind, model, capabilities_json, usb_json,
                     pool, status, serial_port, flasher, camera_id, qr_identifier,
                     manual_focus, illuminator_brightness,
-                    hub_host_id, hub_port_path, solenoid_channel, usb_serial)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    hub_host_id, hub_port_path, solenoid_channel, usb_serial,
+                    bootsel_channel, bootsel_inverted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     id,
                     host_id,
@@ -827,6 +832,8 @@ async def create_device(
                     hub_port_path or None,
                     solenoid_val,
                     usb_serial or None,
+                    bootsel_val,
+                    bootsel_inv,
                 ),
             )
             await db.commit()
@@ -880,6 +887,8 @@ async def update_device(
     hub_port_path: Annotated[str, Form()] = "",
     solenoid_channel: Annotated[str, Form()] = "",
     usb_serial: Annotated[str, Form()] = "",
+    bootsel_channel: Annotated[str, Form()] = "",
+    bootsel_inverted: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -888,6 +897,8 @@ async def update_device(
     focus_val = _parse_optional_float(manual_focus)
     brightness_val = _parse_optional_int(illuminator_brightness)
     solenoid_val = _parse_optional_int(solenoid_channel)
+    bootsel_val = _parse_optional_int(bootsel_channel)
+    bootsel_inv = 1 if bootsel_inverted else 0
     hub_host_val = hub_host_id or host_id
     async with get_db(db_path) as db:
         async with db.execute("SELECT id FROM devices WHERE id = ?", (device_id,)) as cur:
@@ -898,7 +909,8 @@ async def update_device(
                usb_json=?, pool=?, status=?, serial_port=?, flasher=?,
                camera_id=?, qr_identifier=?,
                manual_focus=?, illuminator_brightness=?,
-               hub_host_id=?, hub_port_path=?, solenoid_channel=?, usb_serial=?
+               hub_host_id=?, hub_port_path=?, solenoid_channel=?, usb_serial=?,
+               bootsel_channel=?, bootsel_inverted=?
                WHERE id=?""",
             (
                 host_id,
@@ -918,6 +930,8 @@ async def update_device(
                 hub_port_path or None,
                 solenoid_val,
                 usb_serial or None,
+                bootsel_val,
+                bootsel_inv,
                 device_id,
             ),
         )
@@ -4311,10 +4325,12 @@ async def host_solenoid_bootsel_ui(
     channel: int,
     hil_token: str = Cookie(default=""),
 ) -> HTMLResponse:
-    """Attempt a Pico BOOTSEL entry on bank-A ``channel``.
+    """Attempt a Pico BOOTSEL entry on bank-A power ``channel``.
 
-    Holds the matching bank-B button (channel + 8), power-cycles the A channel
-    (off → on) so the RP2040/RP2350 boots with BOOTSEL held, then releases B.
+    Resolves the device mapped to this power channel and uses its
+    ``bootsel_channel`` (falling back to ``channel + 8``) and ``bootsel_inverted``
+    polarity. Holds BOOTSEL, power-cycles the A channel (off → on) so the
+    RP2040/RP2350 boots with BOOTSEL held, then releases it.
     """
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -4322,23 +4338,39 @@ async def host_solenoid_bootsel_ui(
         return _bench_result_panel(
             ok=False, title="Bad channel", body_html="BOOTSEL uses a bank-A channel (0..7)"
         )
+    # Look up the device on this power channel for its bootsel wiring/polarity.
+    bootsel_ch, inverted = channel + 8, False
+    async with get_db(request.app.state.db_path) as db:
+        async with db.execute(
+            "SELECT bootsel_channel, bootsel_inverted FROM devices "
+            "WHERE (hub_host_id = ? OR host_id = ?) AND solenoid_channel = ?",
+            (host_id, host_id, channel),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is not None:
+        if row["bootsel_channel"] is not None:
+            bootsel_ch = int(row["bootsel_channel"])
+        inverted = bool(row["bootsel_inverted"])
     hub, err = _solenoid_hub_for_host(request, host_id)
     if err is not None:
         return err
     from hil_controller.adapters.solenoid_hub import SolenoidHubError
 
-    bootsel = channel + 8
+    # Inverted polarity: the attachment presses on OFF, so hold==off / release==on.
+    hold = hub.port_off if inverted else hub.port_on
+    release = hub.port_on if inverted else hub.port_off
     try:
-        await hub.port_on(bootsel)  # hold BOOTSEL
+        await hold(bootsel_ch)  # hold BOOTSEL
         await hub.power_cycle(channel, off_s=1.0, settle_s=1.5)  # cold boot with it held
-        await hub.port_off(bootsel)  # release BOOTSEL
+        await release(bootsel_ch)  # release BOOTSEL
     except (SolenoidHubError, ValueError) as exc:
         return _bench_result_panel(
             ok=False, title=f"BOOTSEL ch {channel} failed", body_html=html.escape(str(exc))
         )
+    pol = " (inverted)" if inverted else ""
     return _bench_result_panel(
         ok=True,
-        title=f"BOOTSEL attempted on ch {channel} (held B{bootsel}) on {host_id}",
+        title=f"BOOTSEL attempted on ch {channel} (held ch {bootsel_ch}{pol}) on {host_id}",
         body_html="Cold-booted with BOOTSEL held; check for the RPI-RP2 drive.",
     )
 

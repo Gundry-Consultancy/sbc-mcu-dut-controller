@@ -271,6 +271,40 @@ async def test_host_solenoid_bootsel_holds_bank_b_and_cycles_bank_a(bench_client
 
 
 @pytest.mark.asyncio
+async def test_bootsel_uses_device_bootsel_channel(bench_client) -> None:
+    """A device's explicit bootsel_channel overrides the power+8 fallback."""
+    client, app = bench_client
+    async with get_db(app.state.db_path) as db:
+        await db.execute(
+            "UPDATE devices SET bootsel_channel=13 WHERE id='mcu-revtft'"  # power ch is 3
+        )
+        await db.commit()
+    r = await client.post("/ui/hosts/rpi-displays/solenoid/bootsel/3", cookies=COOKIE)
+    assert r.status_code == 200
+    argvs = [c.args[0] for c in app.state.stub_transport.exec.call_args_list]
+    assert any(a[2:4] == ["port_on", "13"] for a in argvs if len(a) > 3)  # held ch13, not 11
+    assert any(a[2:4] == ["port_off", "13"] for a in argvs if len(a) > 3)  # released ch13
+
+
+@pytest.mark.asyncio
+async def test_bootsel_inverted_polarity_swaps_hold_and_release(bench_client) -> None:
+    """bootsel_inverted → hold presses OFF and release presses ON."""
+    client, app = bench_client
+    async with get_db(app.state.db_path) as db:
+        await db.execute(
+            "UPDATE devices SET bootsel_channel=11, bootsel_inverted=1 WHERE id='mcu-revtft'"
+        )
+        await db.commit()
+    r = await client.post("/ui/hosts/rpi-displays/solenoid/bootsel/3", cookies=COOKIE)
+    assert r.status_code == 200
+    assert "(inverted)" in r.text
+    argvs = [c.args[0] for c in app.state.stub_transport.exec.call_args_list]
+    # inverted: hold == port_off(11) happens, release == port_on(11) happens
+    assert any(a[2:4] == ["port_off", "11"] for a in argvs if len(a) > 3)
+    assert any(a[2:4] == ["port_on", "11"] for a in argvs if len(a) > 3)
+
+
+@pytest.mark.asyncio
 async def test_host_solenoid_redirects_without_auth(bench_client) -> None:
     client, _ = bench_client
     r = await client.post("/ui/hosts/rpi-displays/solenoid/ch/0/on", follow_redirects=False)

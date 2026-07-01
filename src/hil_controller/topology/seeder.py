@@ -17,6 +17,8 @@ _RUNTIME_PRESERVED_DEVICE_FIELDS = (
     "hub_port_path",
     "solenoid_channel",
     "usb_serial",
+    "bootsel_channel",
+    "bootsel_inverted",
     # Probed/assigned at runtime (e.g. a stable by-path set on the usbip page or
     # by a firmware-bench run); topology only fills it when the DB has none.
     "serial_port",
@@ -119,8 +121,9 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                 INSERT INTO devices
                     (id, host_id, kind, model, capabilities_json, usb_json,
                      pool, status, serial_port, flasher, camera_id, qr_identifier,
-                     hub_host_id, hub_port_path, solenoid_channel, usb_serial)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hub_host_id, hub_port_path, solenoid_channel, usb_serial,
+                     bootsel_channel, bootsel_inverted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     host_id=excluded.host_id, kind=excluded.kind,
                     model=excluded.model,
@@ -134,7 +137,9 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     hub_host_id=excluded.hub_host_id,
                     hub_port_path=excluded.hub_port_path,
                     solenoid_channel=excluded.solenoid_channel,
-                    usb_serial=excluded.usb_serial
+                    usb_serial=excluded.usb_serial,
+                    bootsel_channel=excluded.bootsel_channel,
+                    bootsel_inverted=excluded.bootsel_inverted
                 """,
                 (
                     d["id"],
@@ -153,6 +158,8 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     runtime_values["hub_port_path"],
                     runtime_values["solenoid_channel"],
                     runtime_values["usb_serial"],
+                    runtime_values["bootsel_channel"],
+                    runtime_values["bootsel_inverted"],
                 ),
             )
             if existing:
@@ -330,6 +337,8 @@ def _merge_runtime_device_fields(
         "hub_port_path": device.get("hub_port_path"),
         "solenoid_channel": device.get("solenoid_channel"),
         "usb_serial": device.get("usb_serial"),
+        "bootsel_channel": device.get("bootsel_channel"),
+        "bootsel_inverted": int(bool(device.get("bootsel_inverted", False))),
         "serial_port": device.get("serial_port"),
     }
     if not existing:
@@ -351,6 +360,8 @@ def _runtime_device_field_drift(
         "hub_port_path": device.get("hub_port_path"),
         "solenoid_channel": device.get("solenoid_channel"),
         "usb_serial": device.get("usb_serial"),
+        "bootsel_channel": device.get("bootsel_channel"),
+        "bootsel_inverted": int(bool(device.get("bootsel_inverted", False))),
         "serial_port": device.get("serial_port"),
     }
     for field in _RUNTIME_PRESERVED_DEVICE_FIELDS:

@@ -196,6 +196,11 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         ("hub_port_path", "TEXT"),
         ("solenoid_channel", "INTEGER"),
         ("usb_serial", "TEXT"),
+        # Pico BOOTSEL solenoid: the MCP23017 channel that presses BOOTSEL, and a
+        # polarity flag (some attachments press on OFF). NULL bootsel_channel =>
+        # fall back to the solenoid_channel + 8 (port-B) convention.
+        ("bootsel_channel", "INTEGER"),
+        ("bootsel_inverted", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         try:
             await db.execute(f"ALTER TABLE devices ADD COLUMN {col} {defn}")
