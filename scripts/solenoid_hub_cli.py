@@ -82,8 +82,10 @@ def _validate_channel(value: str) -> int:
         ch = int(value, 10)
     except ValueError:
         raise argparse.ArgumentTypeError(f"channel must be integer, got {value!r}")
-    if not (0 <= ch <= 7):
-        raise argparse.ArgumentTypeError(f"channel out of range (0..7): {ch}")
+    # MCP23017 has 16 GPIO: port A (0..7) + port B (8..15). Bank A drives the
+    # power-latch solenoids; bank B the matching Pico BOOTSEL presses (B = A + 8).
+    if not (0 <= ch <= 15):
+        raise argparse.ArgumentTypeError(f"channel out of range (0..15): {ch}")
     return ch
 
 

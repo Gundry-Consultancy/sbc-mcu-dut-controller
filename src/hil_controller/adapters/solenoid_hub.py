@@ -40,9 +40,13 @@ class SolenoidHubError(RuntimeError):
 
 
 def _channel_arg(channel: int) -> str:
-    """Stringify a channel index, with a validity check (0..7)."""
-    if not (0 <= channel <= 7):
-        raise ValueError(f"solenoid channel out of range (0..7): {channel}")
+    """Stringify a channel index, with a validity check (0..15).
+
+    MCP23017 port A = channels 0..7 (power-latch solenoids); port B = 8..15
+    (matching Pico BOOTSEL presses, B = A + 8).
+    """
+    if not (0 <= channel <= 15):
+        raise ValueError(f"solenoid channel out of range (0..15): {channel}")
     return str(channel)
 
 

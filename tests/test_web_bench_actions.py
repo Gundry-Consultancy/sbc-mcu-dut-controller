@@ -217,6 +217,67 @@ async def test_power_on_redirects_without_auth(bench_client) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# /ui/hosts/{id}/solenoid/...  (per-host bulk channel switching, 0..15)       #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_host_solenoid_channel_on(bench_client) -> None:
+    client, app = bench_client
+    r = await client.post("/ui/hosts/rpi-displays/solenoid/ch/5/on", cookies=COOKIE)
+    assert r.status_code == 200
+    assert "Channel 5 (A/power) ON" in r.text
+    argvs = [c.args[0] for c in app.state.stub_transport.exec.call_args_list]
+    assert any(a[2:4] == ["port_on", "5"] for a in argvs if len(a) > 3)
+
+
+@pytest.mark.asyncio
+async def test_host_solenoid_bank_b_channel_allowed(bench_client) -> None:
+    client, app = bench_client
+    r = await client.post("/ui/hosts/rpi-displays/solenoid/ch/15/on", cookies=COOKIE)
+    assert r.status_code == 200
+    assert "Channel 15 (B/bootsel) ON" in r.text  # 0..15 range accepted
+
+
+@pytest.mark.asyncio
+async def test_host_solenoid_bad_channel_rejected(bench_client) -> None:
+    client, _ = bench_client
+    r = await client.post("/ui/hosts/rpi-displays/solenoid/ch/99/on", cookies=COOKIE)
+    assert "Bad channel" in r.text
+
+
+@pytest.mark.asyncio
+async def test_host_solenoid_all_off(bench_client) -> None:
+    client, app = bench_client
+    r = await client.post("/ui/hosts/rpi-displays/solenoid/all-off", cookies=COOKIE)
+    assert r.status_code == 200
+    assert "All channels OFF" in r.text
+    argvs = [c.args[0] for c in app.state.stub_transport.exec.call_args_list]
+    assert any(a[-1] == "all_off" for a in argvs)
+
+
+@pytest.mark.asyncio
+async def test_host_solenoid_bootsel_holds_bank_b_and_cycles_bank_a(bench_client) -> None:
+    client, app = bench_client
+    r = await client.post("/ui/hosts/rpi-displays/solenoid/bootsel/2", cookies=COOKIE)
+    assert r.status_code == 200
+    assert "BOOTSEL attempted on ch 2" in r.text
+    argvs = [c.args[0] for c in app.state.stub_transport.exec.call_args_list]
+    # held B10 (2+8), cycled A2 (off then on), released B10
+    assert any(a[2:4] == ["port_on", "10"] for a in argvs if len(a) > 3)
+    assert any(a[2:4] == ["port_off", "2"] for a in argvs if len(a) > 3)
+    assert any(a[2:4] == ["port_on", "2"] for a in argvs if len(a) > 3)
+    assert any(a[2:4] == ["port_off", "10"] for a in argvs if len(a) > 3)
+
+
+@pytest.mark.asyncio
+async def test_host_solenoid_redirects_without_auth(bench_client) -> None:
+    client, _ = bench_client
+    r = await client.post("/ui/hosts/rpi-displays/solenoid/ch/0/on", follow_redirects=False)
+    assert r.status_code == 303
+
+
+# --------------------------------------------------------------------------- #
 # /ui/devices/{id}/install-tinyuf2                                            #
 # --------------------------------------------------------------------------- #
 

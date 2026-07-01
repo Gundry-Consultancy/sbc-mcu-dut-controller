@@ -1,3 +1,50 @@
+{% if solenoid_capable %}
+<div class="form-panel" style="margin:0.5rem;">
+  <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+    <strong>Solenoid channels — {{ host_id }}</strong>
+    <button class="btn btn-sm btn-danger"
+      hx-post="/ui/hosts/{{ host_id }}/solenoid/all-off"
+      hx-target="#sol-result-{{ host_id }}" hx-swap="innerHTML"
+      hx-confirm="Send OFF to ALL solenoid channels on {{ host_id }}?">All OFF</button>
+    <span class="form-hint" style="font-size:0.74rem;">Bank A (0–7) = power · Bank B (8–15) = Pico BOOTSEL (B = A+8)</span>
+  </div>
+  <div id="sol-result-{{ host_id }}" style="margin:0.4rem 0;"></div>
+
+  <div style="font-size:0.78rem;font-weight:600;">Bank A — power latch</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:0.4rem;margin-top:0.3rem;">
+    {% for ch in solenoid_bank_a %}
+    <div style="border:1px solid #e9ecef;border-radius:6px;padding:0.4rem 0.5rem;">
+      <div style="font-size:0.76rem;"><span class="mono">ch {{ ch }}</span>
+        {% set dev = solenoid_channel_labels.get(ch) %}
+        <span class="form-hint">{{ dev or "—" }}</span>
+      </div>
+      <div style="display:flex;gap:0.2rem;margin-top:0.25rem;flex-wrap:wrap;">
+        <button class="btn btn-sm" hx-post="/ui/hosts/{{ host_id }}/solenoid/ch/{{ ch }}/on" hx-target="#sol-result-{{ host_id }}" hx-swap="innerHTML">On</button>
+        <button class="btn btn-sm" hx-post="/ui/hosts/{{ host_id }}/solenoid/ch/{{ ch }}/off" hx-target="#sol-result-{{ host_id }}" hx-swap="innerHTML">Off</button>
+        <button class="btn btn-sm btn-outline" hx-post="/ui/hosts/{{ host_id }}/solenoid/ch/{{ ch }}/cycle" hx-target="#sol-result-{{ host_id }}" hx-swap="innerHTML">Cycle</button>
+        <button class="btn btn-sm btn-outline" title="Hold B{{ ch + 8 }} + power-cycle to enter BOOTSEL"
+          hx-post="/ui/hosts/{{ host_id }}/solenoid/bootsel/{{ ch }}" hx-target="#sol-result-{{ host_id }}" hx-swap="innerHTML"
+          hx-confirm="Attempt Pico BOOTSEL on ch {{ ch }} (hold B{{ ch + 8 }})?">BOOTSEL</button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div style="font-size:0.78rem;font-weight:600;margin-top:0.5rem;">Bank B — BOOTSEL buttons</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:0.4rem;margin-top:0.3rem;">
+    {% for ch in solenoid_bank_b %}
+    <div style="border:1px solid #e9ecef;border-radius:6px;padding:0.35rem 0.45rem;">
+      <span class="mono" style="font-size:0.74rem;">ch {{ ch }} · B{{ ch - 8 }}</span>
+      <div style="display:flex;gap:0.2rem;margin-top:0.2rem;">
+        <button class="btn btn-sm" hx-post="/ui/hosts/{{ host_id }}/solenoid/ch/{{ ch }}/on" hx-target="#sol-result-{{ host_id }}" hx-swap="innerHTML">Press</button>
+        <button class="btn btn-sm" hx-post="/ui/hosts/{{ host_id }}/solenoid/ch/{{ ch }}/off" hx-target="#sol-result-{{ host_id }}" hx-swap="innerHTML">Release</button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if not daemon_listening %}
 <div class="alert alert-error" style="margin:0.5rem;">
   <strong>usbipd not reachable on {{ host_id }}</strong>

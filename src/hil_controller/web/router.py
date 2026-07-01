@@ -3914,6 +3914,27 @@ async def _device_solenoid_map_for_host(db_path: str, host_id: str) -> dict[str,
             return {r["id"]: r["solenoid_channel"] for r in await cur.fetchall()}
 
 
+_SOLENOID_HOST_CAPS = {"mcp23017", "power-control", "solenoid", "solenoid-hub"}
+
+
+async def _host_is_solenoid_capable(db_path: str, host_id: str, solenoid_map: dict) -> bool:
+    """True if the host has a solenoid hub — by capability tag or a mapped channel."""
+    if solenoid_map:
+        return True
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT capabilities_json FROM hosts WHERE id = ?", (host_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    if not row or not row["capabilities_json"]:
+        return False
+    try:
+        caps = {str(c).lower() for c in json.loads(row["capabilities_json"])}
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(caps & _SOLENOID_HOST_CAPS)
+
+
 @router.get("/usbip", response_class=HTMLResponse, include_in_schema=False)
 async def usbip_overview(
     request: Request,
@@ -4004,6 +4025,8 @@ async def usbip_host_fragment(
     )
     assignable = await _assignable_devices_for_host(db_path, host_id)
     solenoid_map = await _device_solenoid_map_for_host(db_path, host_id)
+    channel_labels = {ch: dev for dev, ch in solenoid_map.items()}  # bank-A channel -> device
+    solenoid_capable = await _host_is_solenoid_capable(db_path, host_id, solenoid_map)
     return _tr(
         request,
         "usbip_host_fragment.html",
@@ -4016,6 +4039,10 @@ async def usbip_host_fragment(
             "assignable_devices": assignable,
             "dev_links": inventory.dev_links,
             "device_solenoid": solenoid_map,
+            "solenoid_capable": solenoid_capable,
+            "solenoid_channel_labels": channel_labels,
+            "solenoid_bank_a": list(range(0, 8)),
+            "solenoid_bank_b": list(range(8, 16)),
         },
     )
 
@@ -4169,6 +4196,151 @@ async def device_reset_ui(
 ) -> HTMLResponse:
     """Power-cycle a DUT via its hub host's solenoid channel (usb-ip page control)."""
     return await _solenoid_action(request, device_id, hil_token, "cycle")
+
+
+# --------------------------------------------------------------------------- #
+# Per-HOST solenoid channel controls (usb-ip page bulk/manual switching)      #
+# --------------------------------------------------------------------------- #
+#: MCP23017 layout: bank A (0..7) = power-latch; bank B (8..15) = Pico BOOTSEL.
+SOLENOID_BANK_A = range(0, 8)
+SOLENOID_BANK_B = range(8, 16)
+
+
+def _solenoid_hub_for_host(request: Request, host_id: str):
+    """Return ``(hub, None)`` for a host's solenoid, or ``(None, panel)`` on error."""
+    registry = getattr(request.app.state, "host_registry", None)
+    if registry is None:
+        return None, _bench_result_panel(
+            ok=False, title="Host registry not configured", body_html="No topology loaded."
+        )
+    try:
+        transport = registry.transport_for(host_id)
+    except KeyError:
+        return None, _bench_result_panel(
+            ok=False, title="Unknown host", body_html=html.escape(host_id)
+        )
+    from hil_controller.adapters.solenoid_hub import SolenoidHubAdapter
+
+    return SolenoidHubAdapter(transport=transport), None
+
+
+@router.post(
+    "/hosts/{host_id}/solenoid/ch/{channel}/{action}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def host_solenoid_channel_ui(
+    request: Request,
+    host_id: str,
+    channel: int,
+    action: str,
+    hil_token: str = Cookie(default=""),
+) -> HTMLResponse:
+    """Drive one solenoid channel on a host: action ∈ {on, off, cycle}.
+
+    Channel is the raw MCP23017 index (0..15) — bank A power, bank B BOOTSEL.
+    """
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    if not 0 <= channel <= 15:
+        return _bench_result_panel(
+            ok=False, title="Bad channel", body_html="channel must be 0..15"
+        )
+    hub, err = _solenoid_hub_for_host(request, host_id)
+    if err is not None:
+        return err
+    from hil_controller.adapters.solenoid_hub import SolenoidHubError
+
+    try:
+        if action == "on":
+            await hub.port_on(channel)
+            verb = "ON"
+        elif action == "off":
+            await hub.port_off(channel)
+            verb = "OFF"
+        elif action == "cycle":
+            await hub.power_cycle(channel)
+            verb = "cycled"
+        else:
+            return _bench_result_panel(
+                ok=False, title="Bad action", body_html="action must be on/off/cycle"
+            )
+    except (SolenoidHubError, ValueError) as exc:
+        return _bench_result_panel(
+            ok=False, title=f"Channel {channel} {action} failed", body_html=html.escape(str(exc))
+        )
+    bank = "A/power" if channel < 8 else "B/bootsel"
+    return _bench_result_panel(
+        ok=True, title=f"Channel {channel} ({bank}) {verb} on {host_id}", body_html=""
+    )
+
+
+@router.post(
+    "/hosts/{host_id}/solenoid/all-off",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def host_solenoid_all_off_ui(
+    request: Request, host_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Send OFF to every solenoid channel on a host (mass switch)."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    hub, err = _solenoid_hub_for_host(request, host_id)
+    if err is not None:
+        return err
+    from hil_controller.adapters.solenoid_hub import SolenoidHubError
+
+    try:
+        await hub.all_off()
+    except (SolenoidHubError, ValueError) as exc:
+        return _bench_result_panel(
+            ok=False, title="All-off failed", body_html=html.escape(str(exc))
+        )
+    return _bench_result_panel(ok=True, title=f"All channels OFF on {host_id}", body_html="")
+
+
+@router.post(
+    "/hosts/{host_id}/solenoid/bootsel/{channel}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def host_solenoid_bootsel_ui(
+    request: Request,
+    host_id: str,
+    channel: int,
+    hil_token: str = Cookie(default=""),
+) -> HTMLResponse:
+    """Attempt a Pico BOOTSEL entry on bank-A ``channel``.
+
+    Holds the matching bank-B button (channel + 8), power-cycles the A channel
+    (off → on) so the RP2040/RP2350 boots with BOOTSEL held, then releases B.
+    """
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    if not 0 <= channel <= 7:
+        return _bench_result_panel(
+            ok=False, title="Bad channel", body_html="BOOTSEL uses a bank-A channel (0..7)"
+        )
+    hub, err = _solenoid_hub_for_host(request, host_id)
+    if err is not None:
+        return err
+    from hil_controller.adapters.solenoid_hub import SolenoidHubError
+
+    bootsel = channel + 8
+    try:
+        await hub.port_on(bootsel)  # hold BOOTSEL
+        await hub.power_cycle(channel, off_s=1.0, settle_s=1.5)  # cold boot with it held
+        await hub.port_off(bootsel)  # release BOOTSEL
+    except (SolenoidHubError, ValueError) as exc:
+        return _bench_result_panel(
+            ok=False, title=f"BOOTSEL ch {channel} failed", body_html=html.escape(str(exc))
+        )
+    return _bench_result_panel(
+        ok=True,
+        title=f"BOOTSEL attempted on ch {channel} (held B{bootsel}) on {host_id}",
+        body_html="Cold-booted with BOOTSEL held; check for the RPI-RP2 drive.",
+    )
 
 
 @router.post(
