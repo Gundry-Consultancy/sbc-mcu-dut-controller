@@ -1,6 +1,6 @@
 ---
 name: hil-firmware-compare
-description: "General A/B firmware regression runner for the HIL controller. Use when you need to prove a behavioural difference between two firmware builds on real bench hardware — run the SAME flash+test pipeline (firmware-bench) on a low_ref and a high_ref, then assert an expected divergence in the captured logs/verdict. Drives the controller's GET /v1/targets availability matrix, POST /v1/jobs (script=firmware-bench), GET /v1/jobs/{id}/wait, and GET /v1/jobs/{id}/assets to fetch proof. The pixelWrite #927 crash-vs-graceful check is ONE example config — the runner is NOT hardcoded to it. Use for PR-vs-release firmware regression gating and posting the comparison as a PR comment. NOT for: a single one-off flash (use pico-hil-flash / a direct firmware-bench job)."
+description: "General A/B firmware regression runner for the HIL controller. Use when you need to prove a behavioural difference between two firmware builds on real bench hardware — run the SAME flash+test pipeline (firmware-bench) on a low_ref and a high_ref, then assert an expected divergence in the captured logs/verdict. Works for crash-vs-graceful checks, display checks, and i2c-strand-routed sensor checks (inject_i2c_settings / inject_i2c_probe). The pixelWrite #927 crash-vs-graceful check is ONE example config — the runner is NOT hardcoded to it. Use for PR-vs-release firmware regression gating and posting the comparison as a PR comment. NOT for: a single one-off flash (submit a firmware-bench job directly — see hil-job-api); authoring the underlying test pipeline (see hil-author-test)."
 ---
 
 # hil-firmware-compare
@@ -13,6 +13,14 @@ proof, and emits a comparison summary you can drop into a PR comment.
 
 It is **not** tied to any one regression. The pixelWrite crash-vs-graceful case
 is just the worked example in [Example config](#example-config-pixelwrite-927).
+The divergence can equally be a display proof (`capture_display` crops) or an
+**i2c-strand-routed sensor check** (`inject_i2c_settings` / `inject_i2c_probe`
+against a real sensor routed to the DUT) — not just crash checks.
+
+Endpoint mechanics (base URL, auth, upload, job shape, wait/assets) live in
+**hil-job-api** — this skill only adds the A/B contract on top. The runner
+touches four endpoints: `GET /v1/targets`, `POST /v1/jobs`,
+`GET /v1/jobs/{id}/wait`, `GET /v1/jobs/{id}/assets` (+ `…/download`).
 
 ## Inputs (the comparison spec)
 
@@ -20,8 +28,8 @@ is just the worked example in [Example config](#example-config-pixelwrite-927).
 |---|---|---|
 | `low_ref` | the "before" firmware. **CONTRACT: must be a published release** (e.g. tag `1.0.0-beta.127`). Sourced as the release's combined.bin. | — (required) |
 | `high_ref` | the "after" firmware. **CONTRACT: must be the current PR's build artifact** (a CI build job's uploaded artifact). | — (required) |
-| `targets` | build-job target names to run on, e.g. `qtpy_esp32s3_n4r2`. The `target` is the firmware-artifact name, mapped 1:1 to a bench device by `model`. | the single available board (today `qtpy_esp32s3_n4r2`); future callers pass the full matrix / a subset |
-| `stages` | the `firmware-bench` stage pipeline run identically on both builds. | `enter_bootloader, erase, flash@0x0, power_cycle, write_secrets_msc, power_cycle, inject_pixelwrite` (a `power_cycle` MUST precede `write_secrets_msc` — the MSC volume only enumerates once the app boots) |
+| `targets` | build-job target names to run on, e.g. `qtpy_esp32s3_n4r2`. The `target` is the firmware-artifact name, mapped 1:1 to a bench device by `model`. | the available intersection of the build matrix; callers may pass a subset |
+| `stages` | the `firmware-bench` stage pipeline run identically on both builds. | `enter_bootloader, erase, flash@0x0, power_cycle, write_secrets_msc, power_cycle, inject_pixelwrite` (a `power_cycle` MUST precede `write_secrets_msc` — the MSC volume only enumerates once the app boots; see hil-author-test for the proven order per chip family) |
 | `assertion` | the expected divergence over each run's log/verdict (low result ≠ high result, both as expected). | — (required; see example) |
 
 ### The low/high contract — and the fallback
@@ -38,20 +46,6 @@ standard matrix. Tell the user this falls outside the standard matrix and fall
 back to a **custom script run** — i.e. drive two ad-hoc `firmware-bench` jobs
 with whatever firmware paths they provide and compare them, clearly labelled as
 non-standard. Surface this in the summary so the gap is explicit.
-
-## Controller API
-
-- **Base URL:** `http://tachyon-16ee27b8.ostrich-escalator.ts.net:8080`
-  (reachable over Tailscale). All `/v1` calls use **Bearer token** auth:
-  `Authorization: Bearer $HIL_TOKEN`.
-
-The runner only touches four endpoints:
-
-1. `GET /v1/targets` — the availability matrix.
-2. `POST /v1/jobs` — submit a `firmware-bench` run.
-3. `GET /v1/jobs/{id}/wait` — block until the job reaches a terminal state.
-4. `GET /v1/jobs/{id}/assets` + `GET /v1/jobs/{id}/assets/{asset_id}/download` —
-   pull the proof (logs + boot version).
 
 ## Workflow
 
@@ -71,11 +65,9 @@ Request the matrix and reconcile it against `targets`. Each entry carries
   &lt;reason&gt;". Never retry — no retry can fix a board that isn't wired.
 
 Skipped targets (either kind) **never fail the comparison** — they are listed in
-the summary with reason + kind so the gap is visible. See
-`docs/device-availability.md` for the self-rectification model (the
-`HIL_AVAIL_RETRY_ATTEMPTS=3` / `HIL_AVAIL_RETRY_WINDOW_S=180` budget). Today every
-DUT except `qtpy_esp32s3_n4r2` is permanently unavailable (bench offline), so the
-matrix runs only the QT Py and reports the rest skipped.
+the summary **with reason + kind** so the gap is visible. See hil-bench-recovery
+/ `docs/device-availability.md` for the self-rectification model (the
+`HIL_AVAIL_RETRY_ATTEMPTS=3` / `HIL_AVAIL_RETRY_WINDOW_S=180` budget).
 
 ### 2. Source the two firmware images
 
@@ -100,8 +92,8 @@ Each target has its own combined.bin; pick the one whose name matches the
 
 ### 3. Run `firmware-bench` on each build — `POST /v1/jobs`
 
-For each `(target, build)` submit one job. Same `params.stages` for both builds —
-only `params.firmware.path` differs:
+For each `(target, build)` submit one job (shape + upload: hil-job-api). Same
+`params.stages` for both builds — only `params.firmware.path` differs:
 
 ```bash
 curl -sS -X POST "$BASE/v1/jobs" \
@@ -128,27 +120,28 @@ curl -sS -X POST "$BASE/v1/jobs" \
   }'
 ```
 
-Notes on the pipeline:
-- `launch_protomq` stands up a per-session broker the freshly-flashed firmware
-  connects back to (the controller auto-injects it after `erase` and a
-  `start_serial_log` before the first `power_cycle` if you omit them; a
-  `print_boot_log` is auto-appended after the last `power_cycle` to dump the FAT
-  `*boot_out.txt`). `write_secrets_msc` writes `secrets.json` onto the MSC drive
-  pointing at that broker.
-- `inject_pixelwrite` fires a v1 `pixelWrite` at the checked-in DUT and logs a
-  machine-greppable verdict line:
+Pipeline notes (details in hil-author-test / hil-job-api):
+- `launch_protomq` / `start_serial_log` / `print_boot_log` are auto-inserted;
+  `msc_filter` and the broker host:port are auto-derived — don't pass them.
+- `inject_pixelwrite` logs the machine-greppable
   **`PIXELWRITE_VERDICT rebooted=true|false ...`** (`true` = crashed/rebooted,
-  `false` = handled gracefully). Reboot is detected by racing a **serial
-  reset-banner** watcher against **MQTT re-checkin** (a crash shows in serial in
-  ~1–2s, before the device can reconnect to re-checkin). It does **not** itself
-  pass/fail on the reboot — the harness compares the two builds' verdicts.
-- `msc_filter` is **auto-derived** from the device's by-path serial — don't pass
-  it. The controller also supplies the protomq broker host:port.
+  `false` = handled gracefully), detected by racing a **serial reset-banner**
+  watcher against **MQTT re-checkin** (a crash shows in serial in ~1–2s, before
+  the device can reconnect). It does **not** itself pass/fail on the reboot —
+  the harness compares the two builds' verdicts.
 
-> For authoring a *non*-A/B test (a check-in smoke test, a custom signal), see the
-> **hil-author-test** skill and [`docs/api.md`](../../docs/api.md). The lightweight
-> default gate is a `verify_checkin` stage (logs `CHECKIN_VERDICT ok=…`) instead of
-> `inject_pixelwrite`.
+**Sensor comparisons over I2C strands:** to A/B a driver against a real sensor,
+add `target.requires: [{"kind": "i2c_strand", "capabilities": […]}]` (or model
+short-names) — the controller auto-prepends a `select_i2c_strand` stage routing
+the strand to the DUT — and finish the pipeline with `inject_i2c_settings`
+(asserts on `I2C_SETTINGS_VERDICT label=… status=ok|error|no_event` per test,
+including rejected-settings errors) or `inject_i2c_probe`. Use `power_cycle`
+`reset_via: "esptool"` for resets that must not drop a latched mux channel.
+Both jobs must carry the **same** `requires` so both builds see the same sensor.
+
+> For authoring a *non*-A/B test (a check-in smoke test, a custom signal), see
+> **hil-author-test**. The lightweight default gate is a `verify_checkin` stage
+> (logs `CHECKIN_VERDICT ok=…`) instead of `inject_pixelwrite`.
 
 **Never include secret values in this skill, memory, or any committed doc** —
 read them from the environment / the controller's configured secrets at runtime.
@@ -165,7 +158,7 @@ A/B run set a short window (it only needs flash + the inject stage, not the full
 List assets, then download the relevant ones via
 `GET /v1/jobs/{id}/assets/{asset_id}/download`:
 
-- **`serial.log`** — boot + runtime serial, incl. the `PIXELWRITE_VERDICT` line.
+- **`serial.log`** — boot + runtime serial, incl. the `*_VERDICT` line.
 - **`protomq.log`** — broker side (checkin, the injected message).
 - **`flash.log`** — full esptool transcript (chip id, MAC, erase, write, verify).
 - the firmware **version** from the FAT `*boot_out.txt`, surfaced by the
@@ -183,8 +176,9 @@ curl -H "Authorization: Bearer $TOK" \
 
 The ROI is frame-relative (`roi_frame_*`) so the crop is sharp at sensor res; one
 shot per build (don't poll — heavy on weak Pis), taken once the screen has
-refreshed. See [api.md](../../../docs/api.md#cameras--rois). Attach both crops to
-the PR comment alongside the log evidence.
+refreshed. For bright self-lit TFTs, prefer a `capture_display` stage in the
+pipeline (auto-exposure crushes them — see hil-author-test). Attach both crops
+to the PR comment alongside the log evidence.
 
 ### 6. Evaluate the assertion & summarise
 
@@ -225,10 +219,10 @@ the whole point of this skill.
   permanent → skip) — don't fake a verdict.
 - **Hold the low/high contract.** Release-vs-PR-artifact only; anything else →
   warn + custom run, never the standard matrix silently.
-- **Same `stages` on both builds** — the only intended difference is the firmware
-  image. Differing pipelines invalidate the comparison.
+- **Same `stages` (and `target.requires`) on both builds** — the only intended
+  difference is the firmware image. Differing pipelines invalidate the comparison.
 - **No secrets in committed files.** Pass `IO_USERNAME` / `IO_KEY` / `WIFI_SSID`
   / `WIFI_PASSWORD` from the environment at submit time.
-- ESP32 combined.bins flash at `0x0`; the `firmware-bench` flow into download mode
-  is handled by `enter_bootloader` (1200-touch / power-cycle recovery) — you don't
-  drive esptool directly here.
+- ESP32 combined.bins flash at `0x0`; bootloader entry is handled by
+  `enter_bootloader` (1200-touch / power-cycle recovery; BOOTSEL sequencing on
+  Pico-class boards) — you don't drive esptool directly here.
