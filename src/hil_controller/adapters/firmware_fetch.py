@@ -109,7 +109,10 @@ async def _extract_zip_member(
     log_fn(f"firmware: downloading zip {url} (token={'yes' if token else 'no'})")
     await download_to(url, zip_dest, token=token)
     zip_sha = _sha256_file(zip_dest)
-    log_fn(f"firmware: downloaded zip {zip_dest.name} ({zip_dest.stat().st_size} bytes) sha256={zip_sha}")
+    log_fn(
+        f"firmware: downloaded zip {zip_dest.name} "
+        f"({zip_dest.stat().st_size} bytes) sha256={zip_sha}"
+    )
     with zipfile.ZipFile(zip_dest) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/")]
         log_fn(f"firmware: zip contains {len(names)} member(s); selecting with glob {member!r}")
@@ -123,13 +126,19 @@ async def _extract_zip_member(
                 f"no zip member matching {member!r} in {url}; members={names}"
             )
         if len(matches) > 1:
-            log_fn(f"firmware: WARNING {len(matches)} members match {member!r}: {matches}; using {matches[0]}")
+            log_fn(
+                f"firmware: WARNING {len(matches)} members match {member!r}: "
+                f"{matches}; using {matches[0]}"
+            )
         chosen = matches[0]
         data = zf.read(chosen)
     out = Path(dest_dir) / os.path.basename(chosen)
     out.write_bytes(data)
     member_sha = hashlib.sha256(data).hexdigest()
-    log_fn(f"firmware: extracted member {chosen!r} → {out.name} ({len(data)} bytes) sha256={member_sha}")
+    log_fn(
+        f"firmware: extracted member {chosen!r} → {out.name} "
+        f"({len(data)} bytes) sha256={member_sha}"
+    )
     if sha256:
         if member_sha.lower() != sha256.lower():
             raise FirmwareFetchError(

@@ -78,7 +78,9 @@ def build_display_add_i8080(
         + _vint_field(2, _CLASS_TFT)              # Add.type = TFT
         + _str_field(3, driver)                   # Add.driver = "ST7789"
         + _len_field(5, iface)                    # Add.interface_type
-        + _len_field(9, encode_display_properties(width, height, rotation, text_size, status_bar))  # Add.config_display
+        + _len_field(  # Add.config_display
+            9, encode_display_properties(width, height, rotation, text_size, status_bar)
+        )
     )
     b2d = _len_field(1, add)                      # ws.display.B2D.add
     return _len_field(_SIGNAL_B2D_DISPLAY, b2d)   # ws.signal.BrokerToDevice.display

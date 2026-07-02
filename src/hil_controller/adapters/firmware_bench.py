@@ -582,8 +582,10 @@ class FirmwareBenchAdapter:
             tok = _os.environ.get("HIL_FIRMWARE_FETCH_TOKEN")
             self._sink(
                 "bench",
-                f"resolving firmware url={self._fw.get('url')} member={self._fw.get('member') or '(default *combined.bin)'} "  # noqa: E501
-                f"offset={self._fw.get('offset') or '0x0'} sha256={self._fw.get('sha256') or '(none)'} "
+                f"resolving firmware url={self._fw.get('url')} "
+                f"member={self._fw.get('member') or '(default *combined.bin)'} "
+                f"offset={self._fw.get('offset') or '0x0'} "
+                f"sha256={self._fw.get('sha256') or '(none)'} "
                 f"fetch_token={'present' if tok else 'absent'}",
             )
             try:

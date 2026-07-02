@@ -1282,7 +1282,8 @@ async def _stage_inject_i2c_scan_v1(stage: dict[str, Any], ctx: BenchContext) ->
                 "at": _now_iso(),
                 "cmd": f"protomq echo → v1 I2C scan (port {port})",
                 "exit": 0,
-                "stdout": f"found=[{hexs}]\nreq(hex)={rec['payload_hex']}\nresp(hex)={rec['response_hex']}",
+                "stdout": f"found=[{hexs}]\nreq(hex)={rec['payload_hex']}\n"
+                f"resp(hex)={rec['response_hex']}",
                 "stderr": "",
             }
         )
@@ -1305,10 +1306,13 @@ async def _stage_inject_i2c_settings(stage: dict[str, Any], ctx: BenchContext) -
         ws.sensor.Type ints, e.g. [6,27] = PRESSURE,ALTITUDE), period (float s, optional),
         settings (dict key->int|float|bool|str, optional), expect ("ok"|"error", optional doc)}``.
       ``mux_address`` (default 0x77), ``pin_scl``/``pin_sda`` (40/41), ``period`` (default 1.0),
-      ``checkin_timeout_s``, ``observe_s`` (default 12). Requires protomq up + secrets pointing at it.
+      ``checkin_timeout_s``, ``observe_s`` (default 12). Requires protomq up + secrets
+      pointing at it.
     """
     if not ctx.protomq_host or not ctx.protomq_port:
-        raise StageError("inject_i2c_settings needs protomq running (launch_protomq before this stage)")
+        raise StageError(
+            "inject_i2c_settings needs protomq running (launch_protomq before this stage)"
+        )
     tests = stage.get("tests") or []
     if not tests:
         raise StageError("inject_i2c_settings: no 'tests' provided")
@@ -1326,7 +1330,10 @@ async def _stage_inject_i2c_settings(stage: dict[str, Any], ctx: BenchContext) -
         api_url=api_url,
         io_username=io_user,
     )
-    ctx.log_line(f"inject_i2c_settings: waiting ≤{checkin_timeout:.0f}s for DUT checkin on {io_user}/ws-d2b/#")
+    ctx.log_line(
+        f"inject_i2c_settings: waiting ≤{checkin_timeout:.0f}s "
+        f"for DUT checkin on {io_user}/ws-d2b/#"
+    )
     try:
         uid = await injector.wait_for_checkin(timeout=checkin_timeout)
     except WsI2cInjectError as exc:
@@ -1365,7 +1372,8 @@ async def _stage_inject_i2c_settings(stage: dict[str, Any], ctx: BenchContext) -
         er = " | ".join(e for e in errors if e) or "(none)"
         status = "error" if errors else ("ok" if got else "no_event")
         ctx.log_line(
-            f"I2C_SETTINGS_VERDICT label={label} status={status} readings={{{rd}}} errors=[{er}] uid={uid}"
+            f"I2C_SETTINGS_VERDICT label={label} status={status} "
+            f"readings={{{rd}}} errors=[{er}] uid={uid}"
         )
         ctx.transcript.append(
             {
@@ -1429,10 +1437,14 @@ async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> Non
     proto = str(stage.get("proto", "auto")).lower()
     watchers: dict[Any, str] = {}
     if proto in ("v1", "auto"):
-        w1 = WsSignalInjector(broker_host=ctx.protomq_host, mqtt_port=ctx.protomq_port, io_username=io_user)
+        w1 = WsSignalInjector(
+            broker_host=ctx.protomq_host, mqtt_port=ctx.protomq_port, io_username=io_user
+        )
         watchers[asyncio.create_task(w1.wait_for_checkin(timeout=checkin_timeout))] = "v1"
     if proto in ("v2", "auto"):
-        w2 = WsI2cProbeInjector(broker_host=ctx.protomq_host, mqtt_port=ctx.protomq_port, io_username=io_user)
+        w2 = WsI2cProbeInjector(
+            broker_host=ctx.protomq_host, mqtt_port=ctx.protomq_port, io_username=io_user
+        )
         watchers[asyncio.create_task(w2.wait_for_checkin(timeout=checkin_timeout))] = "v2"
     ctx.log_line(
         f"verify_checkin: waiting <={checkin_timeout:.0f}s for DUT checkin "
@@ -1455,7 +1467,9 @@ async def _stage_verify_checkin(stage: dict[str, Any], ctx: BenchContext) -> Non
     for t in pending:
         t.cancel()
     ok = bool(uid)
-    ctx.log_line(f"CHECKIN_VERDICT ok={'true' if ok else 'false'} uid={uid or ''} proto={matched or proto}")
+    ctx.log_line(
+        f"CHECKIN_VERDICT ok={'true' if ok else 'false'} uid={uid or ''} proto={matched or proto}"
+    )
     ctx.checkin_ok = ok  # type: ignore[attr-defined]
     # ``soft``: log the verdict but DON'T fail the job on a no-checkin. This lets a
     # caller (e.g. the version-bisection runner) distinguish a *broken firmware*
@@ -1604,7 +1618,9 @@ async def _stage_capture_display(stage: dict[str, Any], ctx: BenchContext) -> No
                         pos = None
                 if pos is not None:
                     async with httpx.AsyncClient(timeout=10.0) as c:
-                        await c.post(f"{base}/lens", json={"mode": "manual", "position": float(pos)})
+                        await c.post(
+                            f"{base}/lens", json={"mode": "manual", "position": float(pos)}
+                        )
                     locked_pos = float(pos)
                     await asyncio.sleep(1.0)
                     ctx.log_line(f"capture_display: focus locked at {locked_pos:.3f} dioptre")
@@ -1648,7 +1664,7 @@ async def _stage_capture_display(stage: dict[str, Any], ctx: BenchContext) -> No
     cv2.imwrite(out, im, [cv2.IMWRITE_JPEG_QUALITY, 90])
     ctx.log_line(
         f"DISPLAY_CAPTURE_VERDICT saved={out} exposure_us={exposure} gain={gain} "
-        f"focus={'%.3f' % locked_pos if locked_pos is not None else 'auto'} "
+        f"focus={f'{locked_pos:.3f}' if locked_pos is not None else 'auto'} "
         f"wb={'yes' if stage.get('white_balance', True) else 'no'} "
         f"frame={W}x{H} cropped={'yes' if cropped else 'no'}"
     )

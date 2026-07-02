@@ -291,7 +291,8 @@ def encode_config_value(value: Any) -> bytes:
 
 
 def encode_settings(settings: dict[str, Any]) -> bytes:
-    """ws.config.Settings { settings = 1 (repeated SettingsEntry{key=1 str, value=2 Value}) } — a proto map."""
+    """ws.config.Settings — a proto map:
+    ``{ settings = 1 (repeated SettingsEntry{key=1 str, value=2 Value}) }``."""
     b = bytearray()
     for key, value in settings.items():
         entry = _len_field(1, key.encode("ascii")) + _len_field(2, encode_config_value(value))
@@ -302,7 +303,8 @@ def encode_settings(settings: dict[str, Any]) -> bytes:
 def encode_add_sensor(
     descriptor: bytes, name: str, period: float, types: list[int], settings: dict[str, Any] | None
 ) -> bytes:
-    """ws.i2c.Add { descriptor=1, name=2, period=3 float-sec, types=4 (repeated {idx,SensorType}), settings=5 }.
+    """ws.i2c.Add { descriptor=1, name=2, period=3 float-sec,
+    types=4 (repeated {idx,SensorType}), settings=5 }.
 
     'name' is the component dir string the controller factory keys on (e.g. 'bmp581').
     'types' are ws.sensor.Type enum ints (e.g. PRESSURE=6, ALTITUDE=27, AMBIENT_TEMPERATURE=13)."""
@@ -335,7 +337,9 @@ def build_add_sensor(
         pin_scl=pin_scl, pin_sda=pin_sda, mux_address=mux_address, mux_channel=mux_channel
     )
     descriptor = encode_descriptor(space, address=address)
-    return encode_signal_i2c(encode_b2d_add(encode_add_sensor(descriptor, name, period, types, settings)))
+    return encode_signal_i2c(
+        encode_b2d_add(encode_add_sensor(descriptor, name, period, types, settings))
+    )
 
 
 def parse_i2c_event(signal_bytes: bytes) -> dict[str, Any] | None:
@@ -439,7 +443,9 @@ class WsI2cProbeInjector:
                 return uid or None
         return None
 
-    async def wait_for_checkin(self, *, timeout: float = 120.0, settle_s: float = 2.0) -> str | None:
+    async def wait_for_checkin(
+        self, *, timeout: float = 120.0, settle_s: float = 2.0
+    ) -> str | None:
         """Subscribe to ``#`` and return the device_uid once the DUT is on the bus.
 
         v2 has no per-component "pinConfigComplete"; the device publishing on its
