@@ -174,3 +174,22 @@ them as a proof artifact. Mirrors the Arduino PR #930 HIL intent for Python.
 - Assert on the **finished** `run.log` + camera ROI, not prose or a racing stream.
 - For MCU firmware flashing use `hil-author-test`; for A/B builds use
   `hil-firmware-compare`. This skill is display-on-a-python-snapper-host only.
+
+## Related ws_python display internals (bench-derived)
+
+Two docs in the ws_python repo capture hard-won EPD driver knowledge from this
+bench (currently on the `add-display-splash-image` / `hil-test-suite` PR
+branches, adafruit/Adafruit_Wippersnapper_Python#265 / #271):
+
+- `docs/display-epd-rotation.md` — the UC8253 rotation case study: panel
+  internal rotation vs user rotation composition, why a 416-wide canvas garbles
+  a 240-wide RAM, the bottom-band double-rotation bug, `vcom_cdi` contrast.
+- `docs/display-epd-followups.md` — the Blinka `displayio` background-thread
+  `time.sleep(0.0)` CPU spinner (root-caused + `relax_blinka_background_thread`
+  mitigation, ~76%→0.5%), the Add-splash router-serialization write stampede
+  (why writes flood after a ~30s EPD splash — pace tests with `WS_EPD_HOLD_S` /
+  `WS_PROTOBUF_TIMEOUT_S`), and `fill_area` compose cost (~10.5s/frame on a
+  Pi Zero).
+
+These explain most "EPD test is slow/flaky/black-banded" symptoms — read them
+before blaming the bench.
