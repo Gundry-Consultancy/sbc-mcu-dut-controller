@@ -178,8 +178,7 @@ them as a proof artifact. Mirrors the Arduino PR #930 HIL intent for Python.
 ## Related ws_python display internals (bench-derived)
 
 Two docs in the ws_python repo capture hard-won EPD driver knowledge from this
-bench (currently on the `add-display-splash-image` / `hil-test-suite` PR
-branches, adafruit/Adafruit_Wippersnapper_Python#265 / #271):
+bench (on `main` since adafruit/Adafruit_Wippersnapper_Python#280):
 
 - `docs/display-epd-rotation.md` — the UC8253 rotation case study: panel
   internal rotation vs user rotation composition, why a 416-wide canvas garbles
