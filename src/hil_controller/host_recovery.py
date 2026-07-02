@@ -53,6 +53,25 @@ USB_DMESG_ERROR_RE = re.compile(
 )
 
 
+def presence_node(device: dict) -> str | None:
+    """Resolve the filesystem path the presence probe should ``test -e``.
+
+    ``serial_port`` wins when set (a real ``/dev/serial/by-path`` node). The
+    fallback ``hub_port_path`` is a bare usb **busid** (``1-1.1.3``) — not a
+    path — so it's mapped to its sysfs node (``/sys/bus/usb/devices/<busid>``),
+    which exists exactly while the device is enumerated. Anything non-absolute
+    gets the same mapping; probing the raw busid string would never pass.
+    Returns None when the device has neither field (e.g. an SBC).
+    """
+    node = device.get("serial_port") or device.get("hub_port_path")
+    if not node:
+        return None
+    node = str(node)
+    if not node.startswith("/"):
+        return f"/sys/bus/usb/devices/{node}"
+    return node
+
+
 async def _node_present(transport: Any, node: str) -> bool:
     """True if the device's by-path serial node currently exists on its host."""
     try:

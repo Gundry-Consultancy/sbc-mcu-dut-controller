@@ -983,6 +983,33 @@ async def delete_device(
     return HTMLResponse("")
 
 
+@router.post(
+    "/devices/{device_id}/availability/retry",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def retry_device_availability_ui(
+    request: Request, device_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Reset the device's retry budget so the reconciler re-probes it promptly.
+
+    Only touches ``temporary`` outages — a ``permanent`` flag is a human
+    statement, changed via the edit form. HX-Refresh reloads the page so the
+    row reflects the reconciler's fresh verdict once it lands.
+    """
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE devices SET retry_attempts = 0, retry_after = NULL "
+            "WHERE id = ? AND status != 'available' AND unavailable_kind != 'permanent'",
+            (device_id,),
+        )
+        await db.commit()
+    return HTMLResponse("", headers={"HX-Refresh": "true"})
+
+
 # ---------------------------------------------------------------------------
 # Device USB IDs — HTMX partials
 # ---------------------------------------------------------------------------

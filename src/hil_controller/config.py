@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     avail_retry_attempts: int = 3
     avail_retry_window_s: int = 180
     avail_reconcile_s: int = 30
+    # After the burst above, keep re-probing every N seconds forever (a flagged
+    # device is rechecked on a schedule, never frozen). ≤0 disables the steady
+    # cadence (old give-up behaviour). Override via HIL_AVAIL_STEADY_RETRY_S.
+    avail_steady_retry_s: int = 900
     # Auto-reboot a DUT host when its USB stack wedges (dwc_otg, not
     # runtime-rebindable). OFF by default — rebooting a shared bench host is
     # disruptive; when off the controller flags the host reboot_required and logs

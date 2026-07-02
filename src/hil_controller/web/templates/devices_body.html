@@ -11,7 +11,16 @@
   <td><div class="caps">{% for c in d.capabilities %}<span class="badge badge-gray">{{ c }}</span>{% endfor %}</div></td>
   <td class="mono" style="font-size:0.73rem;">{{ d.serial_port or '—' }}</td>
   <td>{{ d.flasher or '—' }}</td>
-  <td><span class="badge {% if d.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ d.status }}</span></td>
+  <td>
+    <span class="badge {% if d.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}"
+      {% if d.status != 'available' and d.unavailable_reason %}title="{{ d.unavailable_reason }}"{% endif %}>{{ d.status }}</span>
+    {% if d.status != 'available' and d.unavailable_kind != 'permanent' %}
+    <button class="btn btn-sm btn-outline"
+      title="Reset the retry budget — the reconciler re-probes this device on its next tick"
+      hx-post="/ui/devices/{{ d.id }}/availability/retry"
+      hx-swap="none">Retry</button>
+    {% endif %}
+  </td>
   <td>
     <button class="btn btn-sm btn-outline"
       hx-get="/ui/devices/{{ d.id }}/form"

@@ -352,3 +352,31 @@ async def test_validate_presence_active_absent_node_off_and_false(monkeypatch):
 
 async def _noop_sleep(_s):  # fast tests — don't actually wait
     return None
+
+
+# ---------------------------------------------------------------------------
+# presence_node — resolving what the presence probe should `test -e`
+# ---------------------------------------------------------------------------
+
+
+def test_presence_node_prefers_serial_port() -> None:
+    node = hr.presence_node(
+        {
+            "serial_port": "/dev/serial/by-path/platform-x.usb-usb-0:1.2:1.0",
+            "hub_port_path": "1-1.2",
+        }
+    )
+    assert node == "/dev/serial/by-path/platform-x.usb-usb-0:1.2:1.0"
+
+
+def test_presence_node_maps_bare_busid_to_sysfs() -> None:
+    """A busid-only device used to be probed as `test -e 1-1.1.3` — never true.
+    It must map to the sysfs node that exists exactly while enumerated."""
+    assert hr.presence_node({"serial_port": None, "hub_port_path": "1-1.1.3"}) == (
+        "/sys/bus/usb/devices/1-1.1.3"
+    )
+
+
+def test_presence_node_none_when_no_fields() -> None:
+    assert hr.presence_node({"serial_port": None, "hub_port_path": None}) is None
+    assert hr.presence_node({}) is None

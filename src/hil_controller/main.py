@@ -104,13 +104,22 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
                 if host_registry is None:
                     return False
                 host_id = device.get("hub_host_id") or device.get("host_id")
-                node = device.get("serial_port") or device.get("hub_port_path")
+                node = host_recovery.presence_node(device)
                 channel = device.get("solenoid_channel")
-                if not host_id or not node:
+                if not host_id:
                     return False
                 try:
                     transport = host_registry.transport_for(host_id)
                 except KeyError:
+                    return False
+                if node is None:
+                    # An SBC has no USB node — the host being reachable IS the
+                    # presence signal. Anything else nodeless can't be probed.
+                    if device.get("kind") == "sbc":
+                        try:
+                            return bool(await transport.healthcheck())
+                        except Exception:  # noqa: BLE001 — unreachable host
+                            return False
                     return False
                 if channel is not None:
                     return await host_recovery.validate_presence_active(

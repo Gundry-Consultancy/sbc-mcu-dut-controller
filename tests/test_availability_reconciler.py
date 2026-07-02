@@ -102,8 +102,8 @@ async def test_waits_until_retry_after(db_path):
 
 
 @pytest.mark.asyncio
-async def test_gives_up_after_budget(db_path):
-    """Budget exhausted → probe never runs again, stays temporary."""
+async def test_gives_up_after_budget_when_steady_disabled(db_path):
+    """steady_retry_s=None restores the old behaviour: budget spent → frozen."""
     calls = []
 
     async def counting_probe(device):
@@ -111,13 +111,66 @@ async def test_gives_up_after_budget(db_path):
         return True  # would heal, but must not even be called
 
     await _seed(db_path, device_id="d1", retry_attempts=3)
-    await reconcile_once(db_path, probe=counting_probe, max_attempts=3, window_s=180, now=_t(999))
+    await reconcile_once(
+        db_path,
+        probe=counting_probe,
+        max_attempts=3,
+        window_s=180,
+        steady_retry_s=None,
+        now=_t(999),
+    )
 
     assert calls == []
     row = await _row(db_path, "d1")
     assert row["status"] == "unavailable"
     assert row["unavailable_kind"] == "temporary"
     assert row["retry_attempts"] == 3
+
+
+@pytest.mark.asyncio
+async def test_steady_recheck_after_budget(db_path):
+    """Budget spent + due → the device is STILL re-probed (steady cadence),
+    and a failed steady probe schedules the next check a steady interval out."""
+    await _seed(db_path, device_id="d1", retry_attempts=3, retry_after=_t(60).isoformat())
+    await reconcile_once(
+        db_path, probe=_never, max_attempts=3, window_s=180, steady_retry_s=900, now=_t(100)
+    )
+
+    row = await _row(db_path, "d1")
+    assert row["status"] == "unavailable"
+    assert row["retry_attempts"] == 4
+    assert row["retry_after"] == _t(100 + 900).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_steady_recheck_waits_between_checks(db_path):
+    """Budget spent but the steady retry_after is in the future → no probe."""
+    calls = []
+
+    async def counting_probe(device):
+        calls.append(device["id"])
+        return True
+
+    await _seed(db_path, device_id="d1", retry_attempts=5, retry_after=_t(500).isoformat())
+    await reconcile_once(
+        db_path, probe=counting_probe, max_attempts=3, window_s=180, steady_retry_s=900, now=_t(100)
+    )
+    assert calls == []
+    assert (await _row(db_path, "d1"))["retry_attempts"] == 5
+
+
+@pytest.mark.asyncio
+async def test_steady_recheck_heals(db_path):
+    """A steady-cadence probe that passes heals the device like a burst one."""
+    await _seed(db_path, device_id="d1", retry_attempts=7, retry_after=_t(0).isoformat())
+    await reconcile_once(
+        db_path, probe=_always, max_attempts=3, window_s=180, steady_retry_s=900, now=_t(10)
+    )
+
+    row = await _row(db_path, "d1")
+    assert row["status"] == "available"
+    assert row["retry_attempts"] == 0
+    assert row["retry_after"] is None
 
 
 @pytest.mark.asyncio
@@ -139,8 +192,8 @@ async def test_never_touches_permanent(db_path):
 
 
 @pytest.mark.asyncio
-async def test_full_budget_then_give_up(db_path):
-    """Three failing attempts spend the budget, then the device is left alone."""
+async def test_full_budget_then_steady_cadence(db_path):
+    """Three failing burst attempts, then the slow steady schedule takes over."""
     await _seed(db_path, device_id="d1")
 
     # Attempt 1 (due immediately): retry_attempts 0 -> 1, retry_after = now+60.
@@ -151,17 +204,17 @@ async def test_full_budget_then_give_up(db_path):
     await reconcile_once(db_path, probe=_never, max_attempts=3, window_s=180, now=_t(60))
     assert (await _row(db_path, "d1"))["retry_attempts"] == 2
 
-    # Attempt 3 at t=120: 2 -> 3.
-    await reconcile_once(db_path, probe=_never, max_attempts=3, window_s=180, now=_t(120))
-    assert (await _row(db_path, "d1"))["retry_attempts"] == 3
+    # Attempt 3 at t=120 spends the budget: 2 -> 3, and the NEXT check is a
+    # steady interval out (not a burst backoff).
+    await reconcile_once(
+        db_path, probe=_never, max_attempts=3, window_s=180, steady_retry_s=900, now=_t(120)
+    )
+    row = await _row(db_path, "d1")
+    assert row["retry_attempts"] == 3
+    assert row["retry_after"] == _t(120 + 900).isoformat()
 
-    # Now give_up: a healing probe must not be invoked.
-    calls = []
-
-    async def counting_probe(device):
-        calls.append(device["id"])
-        return True
-
-    await reconcile_once(db_path, probe=counting_probe, max_attempts=3, window_s=180, now=_t(999))
-    assert calls == []
-    assert (await _row(db_path, "d1"))["status"] == "unavailable"
+    # Still healable on the steady schedule: due at t=1020, probe passes → heals.
+    await reconcile_once(
+        db_path, probe=_always, max_attempts=3, window_s=180, steady_retry_s=900, now=_t(1020)
+    )
+    assert (await _row(db_path, "d1"))["status"] == "available"

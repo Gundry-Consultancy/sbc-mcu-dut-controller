@@ -52,11 +52,18 @@ A background reconciler periodically attempts to heal `temporary` outages:
   reconciler runs the device's **presence/recovery probe** (see below). On
   success → `status='available'`, clear the availability columns. On failure →
   `retry_attempts += 1`, set `retry_after = now + backoff`.
-- **Exhaustion:** once `retry_attempts >= AVAIL_RETRY_ATTEMPTS` the device stays
-  `unavailable/temporary` (it is *not* auto-promoted to `permanent` — permanence
-  is a human/config decision) but is no longer retried until something resets
-  the outage (a successful probe triggered elsewhere, an operator clear, or a
-  fresh fault that re-arms the budget).
+- **Steady cadence after the burst:** once `retry_attempts >=
+  AVAIL_RETRY_ATTEMPTS` the device stays `unavailable/temporary` (it is *not*
+  auto-promoted to `permanent` — permanence is a human/config decision) but it
+  **keeps being re-probed on a slow schedule**: every
+  `HIL_AVAIL_STEADY_RETRY_S` (default **900 s**). Spending the budget means
+  *slower*, never *frozen* — a host that comes back an hour later heals without
+  operator action. Set `HIL_AVAIL_STEADY_RETRY_S=0` to restore the old
+  give-up-after-burst behaviour.
+- **Operator retry-now:** `POST /v1/devices/{id}/availability/retry` (or the
+  bulk `POST /v1/devices/availability/retry`, or the **Retry** button on the
+  web UI devices page) zeroes the budget so the reconciler re-probes on its
+  next tick. `permanent` devices are skipped/409 — edit the device instead.
 
 The policy is a pure function (`availability.next_retry(...)` → `attempt now? /
 wait until / give up`) so it is unit-tested without a bench; the reconciler is

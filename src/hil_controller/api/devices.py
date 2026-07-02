@@ -101,6 +101,74 @@ async def list_devices(
     ]
 
 
+class AvailabilityRetryResult(BaseModel):
+    reset: list[str]
+    skipped_permanent: list[str] = Field(default_factory=list)
+
+
+async def _reset_retry_budget(
+    db_path: str, device_ids: list[str] | None
+) -> AvailabilityRetryResult:
+    """Zero the retry budget so the reconciler re-probes on its next tick.
+
+    Only ``temporary`` outages are reset — ``permanent`` is a human statement
+    (edit the device to change it) and is reported back as skipped.
+    """
+    reset: list[str] = []
+    skipped: list[str] = []
+    async with get_db(db_path) as db:
+        if device_ids is None:
+            cur = await db.execute(
+                "SELECT id, unavailable_kind FROM devices WHERE status != 'available'"
+            )
+        else:
+            marks = ",".join("?" for _ in device_ids)
+            cur = await db.execute(
+                f"SELECT id, unavailable_kind FROM devices WHERE id IN ({marks})",
+                device_ids,
+            )
+        rows = [dict(r) for r in await cur.fetchall()]
+        for r in rows:
+            if r.get("unavailable_kind") == "permanent":
+                skipped.append(r["id"])
+                continue
+            reset.append(r["id"])
+        if reset:
+            marks = ",".join("?" for _ in reset)
+            await db.execute(
+                f"UPDATE devices SET retry_attempts = 0, retry_after = NULL "
+                f"WHERE id IN ({marks})",
+                reset,
+            )
+            await db.commit()
+    return AvailabilityRetryResult(reset=reset, skipped_permanent=skipped)
+
+
+@router.post("/availability/retry", response_model=AvailabilityRetryResult)
+async def retry_all_availability(request: Request, _auth: Auth) -> AvailabilityRetryResult:
+    """Re-probe every unavailable (temporary) device now: reset all retry budgets."""
+    return await _reset_retry_budget(request.app.state.db_path, None)
+
+
+@router.post("/{device_id}/availability/retry", response_model=AvailabilityRetryResult)
+async def retry_device_availability(
+    request: Request, device_id: str, _auth: Auth
+) -> AvailabilityRetryResult:
+    """Reset one device's retry budget so the reconciler re-probes it promptly."""
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT id FROM devices WHERE id = ?", (device_id,)) as cur:
+            if await cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail="Device not found")
+    result = await _reset_retry_budget(db_path, [device_id])
+    if device_id in result.skipped_permanent:
+        raise HTTPException(
+            status_code=409,
+            detail="Device is permanently unavailable — edit the device to change that",
+        )
+    return result
+
+
 @router.get("/{device_id}", response_model=DeviceDetail)
 async def get_device(request: Request, device_id: str, _auth: Auth) -> DeviceDetail:
     db_path: str = request.app.state.db_path

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from hil_controller import availability
 from hil_controller.config import get_settings
@@ -57,6 +57,7 @@ async def reconcile_once(
     probe: Probe,
     max_attempts: int,
     window_s: int,
+    steady_retry_s: float | None = availability.DEFAULT_STEADY_RETRY_S,
     now: datetime | None = None,
 ) -> None:
     """Run a single reconcile pass over temporary-unavailable devices."""
@@ -69,12 +70,14 @@ async def reconcile_once(
         rows = [dict(r) for r in await cur.fetchall()]
 
     for device in rows:
+        attempts = device.get("retry_attempts") or 0
         decision = availability.next_retry(
             kind=device.get("unavailable_kind"),
-            retry_attempts=device.get("retry_attempts") or 0,
+            retry_attempts=attempts,
             retry_after=_parse_iso(device.get("retry_after")),
             now=now,
             max_attempts=max_attempts,
+            steady_retry_s=steady_retry_s,
         )
         if decision.action != "retry_now":
             continue
@@ -96,9 +99,13 @@ async def reconcile_once(
                 )
                 log.info("device %s healed (presence probe ok)", device["id"])
             else:
-                retry_after = (
-                    now + availability.backoff(window_s=window_s, max_attempts=max_attempts)
-                ).isoformat()
+                # Burst spacing while attempts remain, then the slow steady
+                # cadence — the device keeps being rechecked on a schedule.
+                if attempts + 1 >= max_attempts and steady_retry_s is not None:
+                    delay = timedelta(seconds=steady_retry_s)
+                else:
+                    delay = availability.backoff(window_s=window_s, max_attempts=max_attempts)
+                retry_after = (now + delay).isoformat()
                 await db.execute(
                     "UPDATE devices SET retry_attempts = retry_attempts + 1, "
                     "retry_after = ?, last_checked_at = ? WHERE id = ?",
@@ -118,6 +125,7 @@ class AvailabilityReconciler:
         interval_s: int | None = None,
         max_attempts: int | None = None,
         window_s: int | None = None,
+        steady_retry_s: float | None = None,
         host_reboot_fn: Callable[[str], Awaitable[bool]] | None = None,
         auto_host_reboot: bool | None = None,
     ) -> None:
@@ -129,6 +137,11 @@ class AvailabilityReconciler:
             max_attempts if max_attempts is not None else settings.avail_retry_attempts
         )
         self.window_s = window_s if window_s is not None else settings.avail_retry_window_s
+        self.steady_retry_s: float | None = (
+            steady_retry_s if steady_retry_s is not None else settings.avail_steady_retry_s
+        )
+        if self.steady_retry_s is not None and self.steady_retry_s <= 0:
+            self.steady_retry_s = None  # 0 / negative disables steady rechecks
         # Host-USB-wedge recovery (dwc_otg). With a reboot fn supplied, each tick
         # also reboots any reboot_required host whose jobs have drained — but only
         # if auto_host_reboot is on (else it just logs that a manual reboot is due).
@@ -146,6 +159,7 @@ class AvailabilityReconciler:
                     probe=self.probe,
                     max_attempts=self.max_attempts,
                     window_s=self.window_s,
+                    steady_retry_s=self.steady_retry_s,
                 )
             except asyncio.CancelledError:
                 raise

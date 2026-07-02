@@ -37,10 +37,26 @@ def test_next_retry_waits_until_retry_after() -> None:
     assert d.attempts_remaining == 2
 
 
-def test_next_retry_gives_up_after_budget() -> None:
-    d = av.next_retry(kind="temporary", retry_attempts=3, retry_after=None, now=_t(999))
+def test_next_retry_gives_up_only_when_steady_disabled() -> None:
+    d = av.next_retry(
+        kind="temporary", retry_attempts=3, retry_after=None, now=_t(999), steady_retry_s=None
+    )
     assert d.action == "give_up"
     assert d.attempts_remaining == 0
+
+
+def test_next_retry_steady_recheck_after_budget() -> None:
+    """Default policy: the budget spent means SLOWER, not NEVER — a due device
+    is still re-probed on the steady cadence."""
+    d = av.next_retry(kind="temporary", retry_attempts=3, retry_after=None, now=_t(999))
+    assert d.action == "retry_now"
+    assert d.attempts_remaining == 0
+
+
+def test_next_retry_steady_recheck_waits_until_due() -> None:
+    d = av.next_retry(kind="temporary", retry_attempts=5, retry_after=_t(900), now=_t(100))
+    assert d.action == "wait"
+    assert d.wait_until == _t(900)
 
 
 def test_backoff_even_spacing() -> None:

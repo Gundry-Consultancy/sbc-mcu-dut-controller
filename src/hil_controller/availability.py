@@ -26,6 +26,9 @@ STATUS_UNAVAILABLE = "unavailable"
 # Defaults (overridable via env at the call site — see docs).
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_WINDOW_S = 180
+# After the initial burst, keep re-probing on this slow steady cadence instead
+# of giving up forever (flags used to freeze until a human edited the DB).
+DEFAULT_STEADY_RETRY_S = 900
 
 
 @dataclass(frozen=True)
@@ -35,8 +38,8 @@ class RetryDecision:
     ``action`` is one of:
       * ``"retry_now"``      — run the presence probe now.
       * ``"wait"``           — too soon; ``wait_until`` is when to look again.
-      * ``"give_up"``        — temporary budget exhausted; stop retrying (stays
-                               unavailable/temporary until something resets it).
+      * ``"give_up"``        — burst budget exhausted AND steady rechecks are
+                               disabled (``steady_retry_s=None``); stop retrying.
       * ``"not_applicable"`` — device is available or permanently unavailable.
     """
 
@@ -68,18 +71,23 @@ def next_retry(
     retry_after: datetime | None,
     now: datetime,
     max_attempts: int = DEFAULT_RETRY_ATTEMPTS,
+    steady_retry_s: float | None = DEFAULT_STEADY_RETRY_S,
 ) -> RetryDecision:
     """Decide whether to self-rectify a temporary outage at ``now``.
 
-    Permanent / available devices are ``not_applicable``. A temporary device is
-    retried until ``retry_attempts`` reaches ``max_attempts``; each attempt waits
-    until ``retry_after`` first.
+    Permanent / available devices are ``not_applicable``. A temporary device
+    gets a fast burst of ``max_attempts`` tries (spaced by :func:`backoff`),
+    then drops to a slow **steady cadence** (every ``steady_retry_s``) forever —
+    an unavailable device keeps being rechecked on a schedule, not only right
+    after the failure. Each attempt waits until ``retry_after`` first. Pass
+    ``steady_retry_s=None`` to restore the old give-up-after-burst behaviour.
     """
     if not is_self_healable(kind):
         return RetryDecision(action="not_applicable")
     remaining = max_attempts - retry_attempts
-    if remaining <= 0:
+    if remaining <= 0 and steady_retry_s is None:
         return RetryDecision(action="give_up", attempts_remaining=0)
+    remaining = max(0, remaining)
     if retry_after is not None and now < retry_after:
         return RetryDecision(action="wait", wait_until=retry_after, attempts_remaining=remaining)
     return RetryDecision(action="retry_now", attempts_remaining=remaining)
