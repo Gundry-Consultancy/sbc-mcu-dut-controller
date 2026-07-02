@@ -130,3 +130,8 @@ gets `select_i2c_strand strand-hil006-air` prepended automatically.
 - Recover a wedged board: `~/turn_off.sh 0 8 && ~/turn_on.sh 0` — a real power
   cut, **the mux latch resets**. If the **Pi's** xhci wedges after an error
   storm, `sudo reboot` rpi-hil006.
+- WipperSnapper V1 doesn't support muxes, so if needed to test a component on
+  an I2C mux channel (the i2c mux is part of a strand), where the mux channel
+  is not active then it's possible to use a different DUT (e.g. the SBC host)
+  to temporarily take the strand and then fire the i2c mux channel change
+  command before returning the strand to the original DUT for WipperSnapper V1.
