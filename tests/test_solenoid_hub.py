@@ -43,15 +43,19 @@ def _argvs(mock_transport: AsyncMock) -> list[list[str]]:
 
 
 def test_channel_arg_accepts_valid_range() -> None:
+    # Port A (0..7) = power-latch solenoids; port B (8..15) = BOOTSEL/aux
+    # presses (B = A + 8), stored per-device as bootsel_channel.
     assert _channel_arg(0) == "0"
     assert _channel_arg(7) == "7"
+    assert _channel_arg(8) == "8"
+    assert _channel_arg(15) == "15"
 
 
 def test_channel_arg_rejects_out_of_range() -> None:
     with pytest.raises(ValueError, match="out of range"):
         _channel_arg(-1)
     with pytest.raises(ValueError, match="out of range"):
-        _channel_arg(8)
+        _channel_arg(16)
 
 
 def test_default_cli_path_is_opt_hil() -> None:
