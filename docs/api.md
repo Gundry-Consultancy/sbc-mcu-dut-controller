@@ -137,10 +137,30 @@ the linked `firmware`. CI pulls these as proof instead of scraping the UI.
 | `print_boot_log` | dump `wipper_boot_out.txt` from the MSC (auto-inserted after the last `power_cycle`) | — |
 | `verify_checkin` | wait for the DUT to check in to the broker; logs `CHECKIN_VERDICT ok=true\|false` (lightweight smoke test, no injection) | `checkin_timeout_s` |
 | `inject_pixelwrite` | the #926/#927 regression: fire a v1 pixelWrite, detect crash-vs-graceful; logs `PIXELWRITE_VERDICT rebooted=true\|false` | `pin`, `color`, `checkin_timeout_s`, `observe_s` |
+| `inject_protobuf` | publish any `ws.signal.BrokerToDevice` to the DUT over the broker (protoMQ `POST /api/echo` on `<io_user>/ws-b2d/<uid>`); logs `INJECT_VERDICT published=true`. Use a convenience `kind` builder (e.g. `display_add_i8080`) or raw `payload_hex` | `kind`, `params`, `payload_hex`, `uid`, `settle_s` |
+| `inject_i2c_probe` | fire a v2 I2C `Probe` (bare bus or one mux channel) at a checked-in DUT and capture the reply; logs `I2C_PROBE_VERDICT scan=… found=[0x..]` per scan | `pin_scl`, `pin_sda`, `addresses`, `mux_address`, `mux_channel` |
+| `inject_i2c_scan_v1` | v1-style full I2C scan; logs `I2C_SCAN_VERDICT port=<n> found=[0x..]` per port | `port` |
+| `inject_i2c_settings` | inject a component add + settings and read back its events; logs `I2C_SETTINGS_VERDICT label=… status=ok\|error\|no_event readings={…}` | `settings`, `label` |
+| `select_i2c_strand` / `isolate_i2c_strand` | route a shared I2C component strand to **this** DUT via the ADG729 analog strand-mux (break-before-make; auto-prepended when `target.requires` names components), or isolate it; logs `I2C_STRAND_MUX_VERDICT` | `strand`, `group`, `channel` |
+| `capture_display` | photograph the DUT panel via the camera server (+ ROI crop), registered as a job asset; logs `DISPLAY_CAPTURE_VERDICT` | `camera_url`, `roi`, exposure/focus opts |
+| `bootloader_touch` | 1200-baud touch to flip a running app into ROM download (lighter than `enter_bootloader`) | — |
 | `diagnose` | classify a stuck boot state | — |
 
 `launch_protomq` / `start_serial_log` / `print_boot_log` are inserted
 automatically at the right moments unless you place them explicitly.
+
+**v2 broker wire contract.** The injection stages talk to the DUT over the
+per-job protoMQ broker on two per-device topics: `<io_user>/ws-b2d/<uid>`
+(broker → device, a `ws.signal.BrokerToDevice`) and `<io_user>/ws-d2b/<uid>`
+(device → broker, a `ws.signal.DeviceToBroker`). `inject_protobuf` publishes via
+protoMQ's `POST /api/echo` (the payload is the encoded protobuf sent as a
+**latin1** string). The message *shape* — oneof members and field numbers — is
+defined by the current [`Wippersnapper_Protobuf`](https://github.com/adafruit/Wippersnapper_Protobuf)
+`.proto` and the firmware's own nanopb headers; treat those as ground truth
+(they move as the protos evolve). The encoders in `adapters/ws_*_inject.py`
+follow the headers and are updated when the proto changes — so don't rely on a
+field number written down in prose. protoMQ's own HTTP control API
+(`/api/echo`, `/api/autoresponse`, `/api/scripts/*`) is documented in its README.
 
 **Verdict detection** (`inject_pixelwrite`): a crash resets the chip within ~1–2s
 (seen in the serial log immediately) but the device can't re-checkin over MQTT

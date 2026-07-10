@@ -90,6 +90,29 @@ Pi** (`device descriptor read error -110`, no port — not catchable by esptool,
 by removing sensors or rebooting the Pi); raw RTC `FORCE_DOWNLOAD_BOOT` via `machine.mem32`
 sets but a software reset doesn't honor it. **We do not use dfu-util.**
 
+### Entering ROM download without a power cut (mux-preserving)
+
+The point of a *soft* download entry is that it doesn't power-cycle, so a
+TCA9548A channel latched from the REPL survives into the flash. What actually
+works, per running firmware:
+
+| method | works from | ? | notes |
+|---|---|---|---|
+| esptool `--before default-reset` (USB-JTAG reset) | WS/Arduino, tinyuf2, **MicroPython** | ✅ | JTAG reset is soft — latch held |
+| 1200-baud touch → ROM | WS/Arduino, tinyuf2 | ✅ | the table above; CP/MP ignore it |
+| `machine.bootloader()` | **MicroPython** | ✅ | MP's clean soft download entry |
+| `microcontroller.on_next_reset(RunMode.BOOTLOADER)` + `reset()` | CircuitPython | ⚠️ | the `reset()` must fire **inside** the raw-REPL block, and a watchdog `RESET` (~2 s) is the most reliable trigger — but on this Pi the resulting DFU state **doesn't enumerate** (`-110`), a dead end here |
+| RTC `FORCE_DOWNLOAD_BOOT` bit via `machine.mem32` | MP / CP | ⚠️ | sets the bit but a plain software reset doesn't honor it; the register offset is unclear (seen as both `0x60008128` and `0x6000812C`) — verify against the ESP32-S3 TRM before relying on it |
+
+A solenoid power-cycle is the guaranteed way to **clear** a stuck RTC/BOOTLOADER
+flag back to the app — but it also resets the mux latch.
+
+> **Scope note:** this board carries its **own** on-DUT TCA9548A for *its* STEMMA
+> sensors. For sensors **shared between DUTs**, the platform now routes a whole
+> strand to one DUT at a time via the controller's **ADG729 analog strand-mux**
+> (break-before-make) — see the `hil-i2c-strands` skill — not an on-DUT mux latch.
+> The REPL latch tricks here are for a single board's local bus.
+
 ### The fix: tinyuf2 in the chain
 
 Flash the **tinyuf2 bootloader** first; then CircuitPython has somewhere to hand off to
@@ -220,7 +243,14 @@ just use the CI `.uf2` directly (family `c47e5767`).
 
 ## 9. Helper scripts
 
-Throwaway probe/flash scripts used during bring-up live in the controller repo `.scratch/`
-(not committed): `i2c_full_probe.py` (discovery+ID), `flash_via_touch.py` (touch→esptool flash),
-`cp_tinyuf2_muxtest2.py` (mux-held UF2 round-trip proof), `cp_to_ws_swap.py` (CP→WS UF2 swap).
-The reusable mechanics are the commands in §5–§6 above.
+Two of the reusable ones are committed under [`scripts/`](../scripts):
+
+- [`scripts/uf2_to_bin.py`](../scripts/uf2_to_bin.py) — convert a WS-v2 CI `.uf2`
+  into a flat `.bin` esptool can flash at `0x0` (CI ships only a `.uf2`).
+- [`scripts/i2c_id_probe.py`](../scripts/i2c_id_probe.py) — read sensor ID/PART_ID
+  registers over the CircuitPython REPL to disambiguate ambiguous addresses; the
+  `JOBS` table doubles as an id-register reference.
+
+The rest were single-use bring-up throwaways (touch→esptool flash loops, CP↔WS
+UF2 round-trip proofs, RTC-download experiments); their durable knowledge is the
+commands in §4–§6 and the soft-download matrix above, not the scripts themselves.
