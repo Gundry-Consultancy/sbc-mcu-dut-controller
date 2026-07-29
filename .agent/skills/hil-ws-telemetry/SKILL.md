@@ -36,17 +36,18 @@ enter_bootloader, flash, launch_protomq, power_cycle, verify_checkin, inject_pro
   board checks in on its retained secrets. Only include it for a first-time board (and
   expect MSC-enumeration flakiness — retry, or pre-warm with a longer power-off hold).
 
-## 3. inject_protobuf — two things you MUST pass
+## 3. inject_protobuf — configure it for a controller-hosted protomq
 
 `inject_protobuf` publishes a raw `ws.signal.BrokerToDevice` (`payload_hex`) to
-`<io_user>/ws-b2d/<uid>`. Two controller quirks (worth fixing upstream) to work around:
+`<io_user>/ws-b2d/<uid>`. When protomq runs **on the controller** (the firmware-bench
+default), set two params:
 
-- Its default MQTT client dials `ctx.protomq_host`, which may be a **non-resolvable
-  hostname** (`gaierror: Name or service not known`) → the stage dies with
-  `no DUT checkin observed`. **Pass `protomq_api_url: "http://127.0.0.1:5173"`** so it
-  publishes via protomq's localhost HTTP `/api/echo` instead.
-- **Pass `topic` (or `uid`) explicitly** to skip its own `wait_for_checkin`
-  (`verify_checkin` already confirmed the DUT is up).
+- **`protomq_api_url: "http://127.0.0.1:5173"`** — publish via protomq's local HTTP
+  `/api/echo`. Without it the injector falls back to dialing `ctx.protomq_host`, which
+  isn't resolvable from the controller in this topology (`gaierror: Name or service not
+  known`) and the stage ends with `no DUT checkin observed`.
+- **`topic` (or `uid`) explicitly** — target the DUT directly and skip the injector's own
+  `wait_for_checkin` (redundant here since `verify_checkin` already confirmed the DUT).
 
 ```jsonc
 { "type": "inject_protobuf",
