@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS hosts (
     id                  TEXT PRIMARY KEY,
     role                TEXT NOT NULL DEFAULT '',
     addr                TEXT NOT NULL DEFAULT '',
-    transport           TEXT NOT NULL DEFAULT 'ssh',
+    transport           TEXT NOT NULL DEFAULT 'ssh',  -- ssh | local | none | esp-usbip-bridge
     ssh_user            TEXT NOT NULL DEFAULT 'pi',
     ssh_key_path        TEXT,
     max_concurrent_jobs INTEGER,
@@ -65,7 +65,12 @@ CREATE TABLE IF NOT EXISTS hosts (
     load_json           TEXT,                    -- {load1,load5,load15,temp_c,updated_at}
     speed_score         REAL,                    -- work-speed multiplier vs idle Pi Zero W (=1.0)
     speed_score_at      TEXT,                    -- ISO8601 of last benchmark run
-    specs_detected_at   TEXT                     -- ISO8601 of last static-spec probe
+    specs_detected_at   TEXT,                    -- ISO8601 of last static-spec probe
+    -- esp-usbip-bridge hosts (see hosts/esp_bridge.py): HTTP API base URL
+    -- (default http://<addr>) and the NAME of the env var holding its bearer
+    -- token. The token value itself is never stored.
+    api_url             TEXT,
+    token_env           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -90,7 +95,11 @@ CREATE TABLE IF NOT EXISTS devices (
     retry_attempts      INTEGER NOT NULL DEFAULT 0,  -- self-rectify attempts on current outage
     retry_after         TEXT,                    -- ISO8601 earliest next rectification (NULL = now)
     last_checked_at     TEXT,                    -- ISO8601 of last presence/recovery probe
-    build_target        TEXT                     -- arduino-cli build-target name (e.g. "qtpy_esp32s3_n4r2")
+    build_target        TEXT,                    -- arduino-cli build-target name (e.g. "qtpy_esp32s3_n4r2")
+    -- Power backend. NULL = legacy (solenoid_channel if set, else esptool reset);
+    -- 'bridge-port' / 'bridge-port:force' = the esp-usbip-bridge hub port at
+    -- hub_port_path on hub_host_id (see adapters/esp_usbip_bridge.py).
+    power_control       TEXT
 );
 
 -- Multi-VID/PID per device (bootloader, runtime, dfu, msc, ...).
