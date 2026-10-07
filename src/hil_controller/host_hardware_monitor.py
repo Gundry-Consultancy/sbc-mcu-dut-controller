@@ -34,8 +34,8 @@ async def refresh_once(db_path: str, registry: Any, *, specs_max_age_s: int) -> 
 
     for row in rows:
         host_id = row["id"]
-        if (row.get("transport") or "ssh") == "none":
-            continue  # no exec transport — nothing to probe
+        if (row.get("transport") or "ssh") in ("none", "esp-usbip-bridge"):
+            continue  # no exec transport (an esp-usbip-bridge has no shell) — nothing to probe
         try:
             transport = registry.transport_for(host_id)
         except (KeyError, AttributeError):

@@ -51,6 +51,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
         if _topology_file:
             from hil_controller import host_recovery
             from hil_controller.availability_reconciler import AvailabilityReconciler
+            from hil_controller.hosts.esp_bridge import bridge_client_of
 
             # Reboot fn for wedged-host recovery: build the host's transport from
             # the registry and run the all_off → reboot → all_on sequence. Gated
@@ -84,6 +85,11 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
                     transport = host_registry.transport_for(host_id)
                 except KeyError:
                     return False
+                if bridge_client_of(transport) is not None:
+                    # An esp-usbip-bridge has no shell to `sudo reboot`; leave it
+                    # flagged for an operator (power-cycle the bridge itself).
+                    log.warning("host %s is an esp-usbip-bridge: no automatic reboot", host_id)
+                    return False
                 channel_nodes = await _channel_nodes(host_id)
                 return await host_recovery.reboot_host(
                     transport, channel_nodes=channel_nodes or None
@@ -112,6 +118,11 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
                     transport = host_registry.transport_for(host_id)
                 except KeyError:
                     return False
+                bridge = bridge_client_of(transport)
+                if bridge is not None:
+                    # esp-usbip-bridge: HTTP presence by busid (active when the
+                    # DUT is on bridge port power), no by-path node or dmesg.
+                    return await host_recovery.validate_bridge_presence(bridge, device)
                 if node is None:
                     # An SBC has no USB node — the host being reachable IS the
                     # presence signal. Anything else nodeless can't be probed.

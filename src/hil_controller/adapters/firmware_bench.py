@@ -119,6 +119,7 @@ class FirmwareBenchAdapter:
         protomq_ref: str = "",
         jobs_dir: str = "/tmp/hil-jobs",
         auto_strand_id: str | None = None,
+        usbip_server_addr: str = "",
     ) -> None:
         self.controller_transport = controller_transport
         self.dut_transport = dut_transport
@@ -135,6 +136,13 @@ class FirmwareBenchAdapter:
         # Strand this job requires + this device is routed to (from target.requires
         # matching). When set, _build_stages auto-prepends a select_i2c_strand.
         self._auto_strand_id = auto_strand_id
+        # esp-usbip-bridge DUT: the bridge has no shell, so dut_transport is the
+        # controller and the DUT's busid is attached here over usbip for the whole
+        # session (re-attached across re-enumeration by an UsbipAttachKeeper).
+        # hub_transport is the bridge (port power + presence). "" = not a bridge DUT.
+        self.usbip_server_addr = usbip_server_addr
+        self._usbip_keeper: Any | None = None
+        self._usbip_tty: str = ""
 
         fw = self.params.get("firmware") or self.payload.get("firmware") or {}
         self._fw: dict = dict(fw)
@@ -250,6 +258,8 @@ class FirmwareBenchAdapter:
         # enumerate. Idle DUTs (incl. a flaky/bad board) stay off the bus, so a
         # single misbehaving device can't storm dwc_otg and wedge the whole hub.
         await self._power_on_dut()
+        if self.usbip_server_addr:
+            await self._attach_usbip()
 
         work_root = PurePosixPath(f"/tmp/hil/{self.job_id}")
         remote_bin = await self._stage_firmware(work_root)
@@ -266,7 +276,7 @@ class FirmwareBenchAdapter:
         flash_port = await self._resolve_serial(
             explicit=self.params.get("flash_serial_port"),
             filt=self.params.get("flash_port_filter"),
-            fallback=self.device.get("serial_port") or "",
+            fallback=self.device.get("serial_port") or self._usbip_tty or "",
         )
         log_port = await self._resolve_serial(
             explicit=self.params.get("log_serial_port"),
@@ -379,10 +389,101 @@ class FirmwareBenchAdapter:
             transport=self.hub_transport, sudo=bool(self.params.get("sudo", False))
         )
 
+    def _bridge_power(self) -> Any:
+        """BridgePortPower for a ``power_control: bridge-port`` DUT, else None."""
+        from hil_controller.adapters.esp_usbip_bridge import BridgePortPower, bridge_power_force
+        from hil_controller.hosts.esp_bridge import bridge_client_of
+
+        force = bridge_power_force(self.device)
+        client = bridge_client_of(self.hub_transport)
+        port = self.device.get("hub_port_path")
+        if force is None or client is None or not port:
+            return None
+        return BridgePortPower(client, str(port), force=force)
+
+    async def _attach_usbip(self) -> None:
+        """Attach the bridge DUT's busid to the controller and keep it attached.
+
+        The bridge always exports (no bind), so this is ``modprobe vhci-hcd`` +
+        ``usbip attach -r <bridge> -b <busid>`` on the controller, then the new
+        ``/dev/tty*`` is remembered as the serial fallback. An
+        :class:`UsbipAttachKeeper` re-attaches whenever the DUT re-enumerates
+        (power-cycle, 1200-baud touch into the ROM) for the rest of the session.
+        """
+        from hil_controller.adapters.usbip_bridge import (
+            UsbipAttachKeeper,
+            UsbipBridge,
+            diff_serial_ports,
+        )
+        from hil_controller.hosts.esp_bridge import bridge_client_of
+
+        busid = self.device.get("hub_port_path")
+        if not busid:
+            raise RuntimeError(
+                f"firmware-bench: bridge DUT {self.device.get('id')!r} has no hub_port_path "
+                "(its usbip busid on the bridge)"
+            )
+        bridge = UsbipBridge(
+            server_tp=self.hub_transport,
+            client_tp=self.dut_transport,
+            server_addr=self.usbip_server_addr,
+            busid=str(busid),
+        )
+        client = bridge_client_of(self.hub_transport)
+        present = (lambda: client.device_present(str(busid))) if client is not None else None
+        before = await bridge.list_serial_ports()
+        await bridge.ensure_vhci()
+        keeper = UsbipAttachKeeper(
+            bridge, present=present, on_line=lambda m: self._sink("bench", m)
+        )
+        if not await keeper.ensure_attached():
+            raise RuntimeError(
+                f"firmware-bench: usbip attach of {busid} from {self.usbip_server_addr} failed"
+            )
+        self._usbip_keeper = keeper
+        if bridge.settle_s:
+            await asyncio.sleep(bridge.settle_s)
+        self._usbip_tty = diff_serial_ports(before, await bridge.list_serial_ports()) or ""
+        self._sink(
+            "bench",
+            f"usbip: {busid} from {self.usbip_server_addr} attached on the controller"
+            + (f" → {self._usbip_tty}" if self._usbip_tty else " (no new tty appeared)"),
+        )
+        keeper.start()
+
+    async def _detach_usbip(self) -> None:
+        if self._usbip_keeper is None:
+            return
+        try:
+            await asyncio.wait_for(self._usbip_keeper.stop(detach=True), timeout=15.0)
+        except (TimeoutError, Exception):  # noqa: BLE001 — teardown best-effort
+            log.warning("usbip keeper stop/detach timed out during teardown")
+        self._usbip_keeper = None
+
     async def _power_on_dut(self) -> None:
         """On-demand power: energise this DUT's solenoid channel and wait for its
         by-path node to enumerate (handles the transient ``-32`` retry). No-op for a
-        channel-less / pio DUT (assumed already powered)."""
+        channel-less / pio DUT (assumed already powered). An esp-usbip-bridge DUT
+        with ``power_control: bridge-port`` powers its bridge hub port instead and
+        waits for the bridge to enumerate it (``GET /api/usb/devices/{busid}``)."""
+        bridge = self._bridge_power()
+        if bridge is not None:
+            self._sink("bench", f"on-demand power: switching on {bridge.label}")
+            try:
+                await bridge.on()
+            except Exception as exc:  # noqa: BLE001 — same policy as the solenoid path
+                self._sink("bench", f"WARNING: {bridge.label} power on failed: {exc}")
+                return
+            if await bridge.await_presence(True, timeout_s=30.0):
+                self._sink(
+                    "bench", f"on-demand power: DUT enumerated on the bridge at {bridge.port}"
+                )
+                await asyncio.sleep(2)  # settle before enter_bootloader
+            else:
+                self._sink(
+                    "bench", f"WARNING: DUT did not enumerate at {bridge.port} ~30s after power-on"
+                )
+            return
         channel = self.device.get("solenoid_channel")
         if channel is None or self.hub_transport is None:
             return
@@ -412,6 +513,18 @@ class FirmwareBenchAdapter:
 
     async def _power_off_dut(self) -> None:
         """On-demand power: de-energise this DUT's channel at teardown so it's idle-off."""
+        try:
+            bridge = self._bridge_power()
+        except Exception as exc:  # noqa: BLE001 — teardown best-effort
+            log.warning("bridge power lookup at teardown failed: %s", exc)
+            bridge = None
+        if bridge is not None:
+            try:
+                await bridge.off()
+                self._sink("bench", f"on-demand power: switched off {bridge.label}")
+            except Exception as exc:  # noqa: BLE001 — teardown best-effort
+                log.warning("%s power off at teardown failed: %s", bridge.label, exc)
+            return
         channel = self.device.get("solenoid_channel")
         if channel is None or self.hub_transport is None:
             return
@@ -426,6 +539,10 @@ class FirmwareBenchAdapter:
         next job's supplied PAT is used cleanly. Bounded + never raises; a no-op when
         gh isn't logged in / installed."""
         if self.dut_transport is None:
+            return
+        if self.usbip_server_addr:
+            # Bridge DUT: dut_transport is the controller itself, whose own gh/git
+            # credentials must not be logged out.
             return
         try:
             await asyncio.wait_for(
@@ -872,6 +989,9 @@ class FirmwareBenchAdapter:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             self._drain_task = None
+        # A bridge DUT is attached to the controller: stop re-attaching and detach
+        # before its port is switched off.
+        await self._detach_usbip()
         # On-demand power: de-energise this DUT's channel so it's idle-off (only the
         # DUT under test is ever powered — a bad board can't storm the hub).
         await self._power_off_dut()

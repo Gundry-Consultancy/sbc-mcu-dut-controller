@@ -1,0 +1,126 @@
+# Example: MCU DUTs served by an ESP32 USB/IP bridge (esp-usbip-bridge firmware,
+# https://github.com/tyeth-ai-assisted/esp-usbip-bridge/tree/s31-function-coreboard-ethernet
+# README "Controller API"), with bridge hub-port power and the bridge's I2C
+# strand analog-switch mux.
+#
+# The bridge is an ESP32 (e.g. ESP32-S31-Function-CoreBoard-1 on Ethernet) with a
+# USB hub on its USB host port. It is a USB/IP server like an SSH host, but:
+#   * it has no shell — inventory, presence and port power use its HTTP API
+#     (port 80); `transport: esp-usbip-bridge` selects that;
+#   * every device is always exported — there is no `usbip bind` step;
+#   * busids are Linux-style port paths, stable across re-enumeration: `1-1` is
+#     the root port, `1-1.3` port 3 of the hub on it, `1-1.1.2` nested. A DUT's
+#     hub_port_path is both its usbip busid and the hub port that powers it.
+#   * serial / flashing / MSC run on the CONTROLLER after `usbip attach`
+#     (the controller needs usbip + vhci-hcd, like an arduino-ws usbip flash).
+#
+# Discovery: the bridge advertises `_usbip._tcp` (port 3240) over mDNS as
+# `usbip-xxxxxx.local`; `avahi-browse -rt _usbip._tcp` lists them. The
+# controller does not browse mDNS itself — put the hostname (resolved by the
+# system's nss-mdns, as for `rpi-hil006.local`) or a static IP in `addr`.
+
+hosts:
+  # The controller itself: usbip client for bridge DUTs (flash/serial/MSC run here).
+  - id: localhost
+    kind: local
+    transport: local
+    role: controller
+    max_concurrent_jobs: 2
+    capabilities: [linux, usbip-client, vhci]
+
+  - id: usbip-bridge-s31
+    role: microcontroller-fleet
+    transport: esp-usbip-bridge
+    addr: usbip-a1b2c3.local            # usbip attach -r <addr>  (TCP 3240)
+    # api_url: http://192.168.1.60      # optional; default http://<addr> (port 80)
+    # Only needed once a token is set on the bridge (POST /api/auth/token). The
+    # VALUE lives in run/controller.env, never here: HIL_BRIDGE_TOKEN_S31=...
+    token_env: HIL_BRIDGE_TOKEN_S31
+    max_concurrent_jobs: null           # per-device leases are the real constraint
+    capabilities: [usbip-server, bridge-port-power, i2c-strand-mux]
+
+auxes:
+  # The bridge's I2C strand mux speaks the sbc-dut-analog-mux-api contract.
+  # `bridge:<host_id>` shares the host's API URL and token with the mux
+  # (equivalent to interface: "http://usbip-a1b2c3.local" plus the token).
+  - id: mux-bridge-s31
+    kind: i2c_strand_mux
+    model: adg729+adg728-pair
+    interface: "bridge:usbip-bridge-s31"
+    capabilities: [i2c-strand-mux]
+    pool: public
+    status: available
+
+# The mux groups themselves live on the bridge (NVS), set once with
+# PUT http://usbip-a1b2c3.local/api/topology (Bearer token if one is set), e.g.:
+#   {"groups": [{"name": "muxA", "type": "adg729"},
+#               {"name": "muxB", "type": "adg728_pair",
+#                "sda_address": "0x4C", "scl_address": "0x4D"}],
+#    "duts":   [{"name": "qtpy-s3", "group": "muxA", "channel": 0}, ...]}
+# The controller selects by group + channel (POST /api/groups/<g>/select/<ch>),
+# so only the group names below have to match the bridge's topology.
+
+devices:
+  # Per-port switched hub: bridge port power cycles the DUT for real.
+  - id: mcu-qtpy-esp32s3-bridge-s31
+    host_id: usbip-bridge-s31
+    hub_port_path: "1-1.1"              # busid on the bridge == hub port path
+    power_control: bridge-port          # POST /api/ports/1-1.1/on|off
+    kind: microcontroller
+    model: esp32-s3
+    build_target: qtpy_esp32s3_n4r2
+    capabilities: [arduino, wippersnapper, i2c]
+    pool: public
+    status: available
+
+  - id: mcu-feather-esp32s3-bridge-s31
+    host_id: usbip-bridge-s31
+    hub_port_path: "1-1.2"
+    power_control: bridge-port
+    kind: microcontroller
+    model: esp32-s3
+    capabilities: [arduino, wippersnapper, i2c]
+    pool: public
+    status: available
+
+  # Behind a hub that reports GANGED switching (e.g. Genesys GL850G 05e3:0610):
+  # the bridge refuses per-port power with 409 unless forced. Leave
+  # power_control unset (power_cycle falls back to an esptool reset), or use
+  # `bridge-port:force` only if this hub really switches the port.
+  - id: mcu-feather-esp8266-bridge-s31
+    host_id: usbip-bridge-s31
+    hub_port_path: "1-1.4.2"
+    kind: microcontroller
+    model: esp8266
+    capabilities: [arduino, wippersnapper, i2c]
+    pool: public
+    status: available
+
+strands:
+  - id: strand-bridge-s31-air
+    mux_aux: mux-bridge-s31
+    mux_group: muxA                     # ADG729 dual 4:1 (channels 0..3)
+    pool: public
+    notes: "air-quality strand on the bridge's ADG729"
+    components:
+      - id: strand-bridge-s31-air-pmsa003i
+        model: pmsa003i
+        address: 0x12
+        capabilities: [sensor:pm25, air-quality]
+    routes:
+      - { device: mcu-qtpy-esp32s3-bridge-s31,    channel: 0 }
+      - { device: mcu-feather-esp32s3-bridge-s31, channel: 1 }
+
+  - id: strand-bridge-s31-env
+    mux_aux: mux-bridge-s31
+    mux_group: muxB                     # ADG728 pair: 8:1 SDA + 8:1 SCL (channels 0..7)
+    pool: public
+    notes: "environment strand on the bridge's ADG728 pair"
+    components:
+      - id: strand-bridge-s31-env-bme280
+        model: bme280
+        address: 0x77
+        capabilities: [sensor:temperature, sensor:humidity, sensor:pressure]
+    routes:
+      - { device: mcu-qtpy-esp32s3-bridge-s31,    channel: 0 }
+      - { device: mcu-feather-esp8266-bridge-s31, channel: 5 }

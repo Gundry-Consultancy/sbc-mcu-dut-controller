@@ -282,6 +282,23 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         except Exception:
             pass  # column already exists
 
+    # esp-usbip-bridge hosts: HTTP API base URL + the NAME of the env var holding
+    # the bearer token (see hosts/esp_bridge.py). Additive; no-op when present.
+    for col, defn in [("api_url", "TEXT"), ("token_env", "TEXT")]:
+        try:
+            await db.execute(f"ALTER TABLE hosts ADD COLUMN {col} {defn}")
+            await db.commit()
+        except Exception:
+            pass  # column already exists
+
+    # Per-device power backend ('bridge-port' / 'bridge-port:force'; NULL = legacy
+    # solenoid-or-esptool). See adapters/esp_usbip_bridge.py.
+    try:
+        await db.execute("ALTER TABLE devices ADD COLUMN power_control TEXT")
+        await db.commit()
+    except Exception:
+        pass  # column already exists
+
     # Device/hub exclusivity leases.
     try:
         await db.execute(

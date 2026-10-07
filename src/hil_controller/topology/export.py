@@ -35,7 +35,8 @@ async def build_export_dict(db_path: str) -> dict[str, Any]:
                     {
                         k: r.get(k)
                         for k in ("id", "role", "addr", "transport", "ssh_user",
-                                  "ssh_key_path", "max_concurrent_jobs")
+                                  "ssh_key_path", "max_concurrent_jobs", "api_url",
+                                  "token_env")
                     }
                 )
                 if r.get("capabilities_json"):
@@ -56,7 +57,8 @@ async def build_export_dict(db_path: str) -> dict[str, Any]:
                         k: r.get(k)
                         for k in ("id", "host_id", "kind", "model", "pool", "status",
                                   "serial_port", "flasher", "hub_host_id", "hub_port_path",
-                                  "solenoid_channel", "usb_serial", "build_target")
+                                  "solenoid_channel", "usb_serial", "build_target",
+                                  "power_control")
                     }
                 )
                 if r.get("capabilities_json"):
