@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hil_controller import host_recovery
-from hil_controller.adapters import bench_stages
+from hil_controller.adapters import bench_stages, usbip_bridge
 from hil_controller.adapters import esp_usbip_bridge as eub
 from hil_controller.adapters.bench_stages import BenchContext, StageError, run_stages
 from hil_controller.adapters.usbip_bridge import UsbipAttachKeeper, UsbipBridge
@@ -337,6 +337,117 @@ async def test_attach_keeper_reattaches_after_reenumeration():
     await asyncio.sleep(0)
     await keeper.stop()
     assert attached["on"] is False  # stop() detaches
+
+
+# A bridge reboot left vhci port 0 in use with no USB device behind it (#5);
+# port 1 is another job's healthy attachment from a different server.
+_VHCI_STALE_PROBE = """\
+hub port sta spd dev      sockfd local_busid
+hs  0000 006 002 00010078 000003 1-1
+hs  0001 006 002 00010079 000004 1-2
+hs  0002 004 000 00000000 000000 0-0
+--records--
+0 x 3240 1-1.1
+1 other-bridge 3240 1-1.3
+--devices--
+1-0:1.0
+1-2
+1-2:1.0
+usb1
+"""
+_VHCI_ERROR = (
+    "usbip: error: open vhci_driver (is vhci_hcd loaded?)\nusbip: error: list imported devices\n"
+)
+
+
+def test_stale_vhci_ports_only_orphans_and_our_own():
+    ports, devices = usbip_bridge.parse_vhci_probe(_VHCI_STALE_PROBE)
+    assert [(p.port, p.status, p.local_busid) for p in ports] == [
+        (0, 6, "1-1"),
+        (1, 6, "1-2"),
+        (2, 4, "0-0"),
+    ]
+    assert ports[0].remote_host == "x" and ports[0].remote_busid == "1-1.1"
+    assert "1-2" in devices and "1-1" not in devices
+    # Port 0 has no sysfs device; port 1 is live and someone else's.
+    assert usbip_bridge.stale_vhci_ports(ports, devices, server_addr="x", busid="1-1.1") == [0]
+    assert usbip_bridge.stale_vhci_ports(ports, devices, server_addr="y", busid="1-9") == [0]
+    # Our own earlier attachment is replaced even while its device is present.
+    assert usbip_bridge.stale_vhci_ports(
+        ports, devices | {"1-1"}, server_addr="x", busid="1-1.1"
+    ) == [0]
+    assert usbip_bridge.stale_vhci_ports(ports, devices | {"1-1"}, server_addr="z", busid="1") == []
+
+
+def _stale_vhci_client(state: dict) -> AsyncMock:
+    """Client whose every usbip command fails until stale port 0 is cleared."""
+
+    async def client_exec(argv, **kw):
+        cmd = " ".join(argv)
+        if "--records--" in cmd:  # the stale-port probe
+            return _result(0, _VHCI_STALE_PROBE if state["broken"] else "")
+        if "vhci_hcd.0/detach" in cmd:
+            state["cleared"].append(cmd)
+            if "echo 0 " in cmd:
+                state["broken"] = False
+            return _result(0)
+        if "usbip" in argv and state["broken"]:
+            return _result(1, "", _VHCI_ERROR)
+        if argv[-1:] == ["port"]:
+            text = "Port 03: <Port in Use>\n  3-1 -> usbip://x:3240/1-1.1\n" if state["on"] else ""
+            return _result(0, text)
+        if "attach" in argv:
+            state["on"] = True
+        return _result(0)
+
+    client = AsyncMock()
+    client.exec = AsyncMock(side_effect=client_exec)
+    return client
+
+
+async def test_attach_keeper_clears_stale_vhci_port_after_bridge_reboot():
+    state = {"broken": True, "on": False, "cleared": []}
+    client = _stale_vhci_client(state)
+    bridge = UsbipBridge(
+        server_tp=_bridge_tp(FakeBridge()), client_tp=client, server_addr="x", busid="1-1.1"
+    )
+    keeper = UsbipAttachKeeper(bridge, poll_s=0)
+    assert await keeper.ensure_attached() is True
+    assert keeper.reattach_count == 1
+    # Cleared through sysfs, with sudo, and only the orphaned port.
+    assert state["cleared"] == ["sudo sh -c echo 0 > /sys/devices/platform/vhci_hcd.0/detach"]
+    attaches = [c.args[0] for c in client.exec.call_args_list if "attach" in c.args[0]]
+    assert len(attaches) == 2  # failed once, then succeeded after the clear
+
+
+async def test_detach_clears_stale_vhci_port():
+    state = {"broken": True, "on": False, "cleared": []}
+    client = _stale_vhci_client(state)
+    bridge = UsbipBridge(
+        server_tp=_bridge_tp(FakeBridge()), client_tp=client, server_addr="x", busid="1-1.1"
+    )
+    await bridge.detach(check=False)
+    assert len(state["cleared"]) == 1 and state["broken"] is False
+
+
+async def test_attach_without_stale_ports_fails_once_without_retry():
+    async def client_exec(argv, **kw):
+        if "--records--" in " ".join(argv):
+            return _result(0, "hub port sta spd dev sockfd local_busid\n--records--\n--devices--\n")
+        if "usbip" in argv:
+            return _result(1, "", _VHCI_ERROR)
+        return _result(0)
+
+    client = AsyncMock()
+    client.exec = AsyncMock(side_effect=client_exec)
+    bridge = UsbipBridge(
+        server_tp=_bridge_tp(FakeBridge()), client_tp=client, server_addr="x", busid="1-1.1"
+    )
+    with pytest.raises(RuntimeError, match="open vhci_driver"):
+        await bridge.attach()
+    argvs = [c.args[0] for c in client.exec.call_args_list]
+    assert sum("attach" in a for a in argvs) == 1
+    assert not any("vhci_hcd.0/detach" in " ".join(a) for a in argvs)
 
 
 # --------------------------------------------------------------------------- #

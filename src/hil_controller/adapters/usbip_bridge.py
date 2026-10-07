@@ -22,6 +22,13 @@ Because a bridge keeps exporting a device across re-enumeration while the
 client's attachment drops whenever the device disconnects (power-cycle,
 1200-baud touch into a bootloader), :class:`UsbipAttachKeeper` can hold a
 busid attached for the length of a job.
+
+If the server goes away (a bridge reboot) while a device is attached, the
+client's vhci port can stay marked in use with no USB device behind it. From
+then on every ``usbip`` command fails with "open vhci_driver (is vhci_hcd
+loaded?)", ``usbip detach`` included. :meth:`UsbipBridge.attach` and
+:meth:`UsbipBridge.detach` recognise that error, clear the stale port(s)
+through ``/sys/devices/platform/vhci_hcd.0/detach`` and retry once.
 """
 
 from __future__ import annotations
@@ -29,14 +36,102 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 # A `usbip port` block opens with e.g. "Port 03: <Port in Use> ...".
 _PORT_RE = re.compile(r"^\s*Port\s+(\d+):", re.IGNORECASE)
+
+#: vhci_hcd sysfs: ``status`` (+ ``status.N`` per extra controller, global port
+#: numbers) and the ``detach`` attribute, both on the first platform device.
+VHCI_SYSFS = "/sys/devices/platform/vhci_hcd.0"
+#: Where ``usbip attach`` records each port's remote ("<host> <port> <busid>").
+VHCI_RECORDS = "/var/run/vhci_hcd"
+#: vhci port status for a free port (VDEV_ST_NULL).
+VHCI_ST_NULL = 4
+
+# libusbip can't resolve a used port's device in sysfs → every command fails.
+_VHCI_DRIVER_ERROR = "open vhci_driver"
+
+# One exec on the client gathers everything the stale-port check needs.
+_VHCI_PROBE = (
+    f"cat {VHCI_SYSFS}/status* 2>/dev/null; echo '--records--'; "
+    f'for f in {VHCI_RECORDS}/port*; do [ -f "$f" ] && echo "${{f##*/port}} $(cat "$f")"; done; '
+    "echo '--devices--'; ls -1 /sys/bus/usb/devices 2>/dev/null; true"
+)
+
+
+def is_vhci_driver_error(text: str | None) -> bool:
+    """True for libusbip's "open vhci_driver (is vhci_hcd loaded?)" failure."""
+    return _VHCI_DRIVER_ERROR in (text or "")
+
+
+@dataclass(frozen=True)
+class VhciPort:
+    port: int
+    status: int
+    local_busid: str
+    remote_host: str | None = None
+    remote_busid: str | None = None
+
+
+def parse_vhci_probe(text: str) -> tuple[list[VhciPort], set[str]]:
+    """Parse :data:`_VHCI_PROBE` output into the vhci ports and the USB devices
+    present in sysfs.
+
+    Status lines look like ``hs  0000 006 002 00010078 000003 1-1`` (hub, port,
+    sta, spd, dev, sockfd, local_busid); record lines ``<port> <host> <tcp port>
+    <busid>``.
+    """
+    section = "status"
+    rows: list[tuple[int, int, str]] = []
+    records: dict[int, tuple[str, str]] = {}
+    devices: set[str] = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if line in ("--records--", "--devices--"):
+            section = line.strip("-")
+            continue
+        parts = line.split()
+        if section == "status":
+            if len(parts) >= 7 and parts[1].isdigit() and parts[2].isdigit():
+                rows.append((int(parts[1]), int(parts[2]), parts[6]))
+        elif section == "records":
+            if len(parts) >= 4 and parts[0].isdigit():
+                records[int(parts[0])] = (parts[1], parts[3])
+        elif line:
+            devices.add(line)
+    ports = [
+        VhciPort(port, sta, busid, *records.get(port, (None, None))) for port, sta, busid in rows
+    ]
+    return ports, devices
+
+
+def stale_vhci_ports(
+    ports: Iterable[VhciPort], devices: set[str], *, server_addr: str, busid: str
+) -> list[int]:
+    """Ports to clear when ``usbip`` fails with the vhci_driver error.
+
+    Only two kinds of port are touched, so other jobs' attachments survive:
+
+    - a used port whose local busid has no ``/sys/bus/usb/devices`` entry: this
+      is what breaks libusbip for every caller, whatever server it pointed at;
+    - a used port recorded as *this* server's *busid*: our own earlier
+      attachment, which is about to be replaced by a new attach anyway.
+    """
+    stale = []
+    for p in ports:
+        if p.status == VHCI_ST_NULL:
+            continue
+        orphaned = p.local_busid not in devices
+        ours = p.remote_host == server_addr and p.remote_busid == busid
+        if orphaned or ours:
+            stale.append(p.port)
+    return stale
 
 
 def diff_serial_ports(before: list[str], after: list[str]) -> str | None:
@@ -127,9 +222,48 @@ class UsbipBridge:
             check=check,
         )
 
+    async def clear_stale_vhci_ports(self) -> list[int]:
+        """Detach stale vhci ports through sysfs (see :func:`stale_vhci_ports`).
+
+        Returns the ports cleared. ``usbip detach`` can't do this: it fails with
+        the same vhci_driver error as every other usbip command.
+        """
+        probe = await self.client_tp.exec(self._argv("bash", "-c", _VHCI_PROBE))
+        ports, devices = parse_vhci_probe(probe.stdout or "")
+        stale = stale_vhci_ports(ports, devices, server_addr=self.server_addr, busid=self.busid)
+        cleared = []
+        for port in stale:
+            result = await self._run(
+                self.client_tp,
+                self._argv("sh", "-c", f"echo {port} > {VHCI_SYSFS}/detach"),
+                what=f"vhci detach port {port}",
+                check=False,
+            )
+            if result.exit_status == 0:
+                cleared.append(port)
+            else:
+                log.warning(
+                    "vhci: clearing stale port %d failed: %s", port, (result.stderr or "").strip()
+                )
+        if cleared:
+            log.warning(
+                "vhci: cleared stale port(s) %s (usbip failed with 'open vhci_driver')", cleared
+            )
+        return cleared
+
+    async def _run_usbip(self, argv: list[str], *, what: str, check: bool) -> Any:
+        """Run a client-side usbip command; on the vhci_driver error, clear the
+        stale vhci port(s) and retry once."""
+        result = await self._run(self.client_tp, argv, what=what, check=False)
+        if result.exit_status != 0 and is_vhci_driver_error(result.stderr):
+            if await self.clear_stale_vhci_ports():
+                result = await self._run(self.client_tp, argv, what=what, check=False)
+        if check and result.exit_status != 0:
+            raise RuntimeError(f"{what} failed (exit {result.exit_status}): {result.stderr}")
+        return result
+
     async def attach(self, *, check: bool = True) -> Any:
-        return await self._run(
-            self.client_tp,
+        return await self._run_usbip(
             self._argv("usbip", "attach", "-r", self.server_addr, "-b", self.busid),
             what="usbip attach",
             check=check,
@@ -143,9 +277,7 @@ class UsbipBridge:
         return parse_usbip_port(result.stdout or "", self.busid) is not None
 
     async def detach(self, *, check: bool = True) -> None:
-        result = await self._run(
-            self.client_tp, self._argv("usbip", "port"), what="usbip port", check=False
-        )
+        result = await self._run_usbip(self._argv("usbip", "port"), what="usbip port", check=False)
         port = parse_usbip_port(result.stdout, self.busid)
         if port is None:
             log.warning("usbip detach: no attached port found for busid %s", self.busid)

@@ -438,7 +438,8 @@ class FirmwareBenchAdapter:
         )
         if not await keeper.ensure_attached():
             raise RuntimeError(
-                f"firmware-bench: usbip attach of {busid} from {self.usbip_server_addr} failed"
+                f"firmware-bench: usbip attach of {busid} from {self.usbip_server_addr} failed "
+                "(infra error, not a test verdict)"
             )
         self._usbip_keeper = keeper
         if bridge.settle_s:
