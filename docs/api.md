@@ -132,7 +132,7 @@ the linked `firmware`. CI pulls these as proof instead of scraping the UI.
 | `verify` | `esptool verify_flash` | `offset`, `path` |
 | `launch_protomq` | stand up a per-job broker on the controller (auto-inserted before the first `flash` when secrets are written) | — |
 | `start_serial_log` | attach serial capture (auto-inserted before the first `power_cycle`) | — |
-| `power_cycle` | solenoid cold-boot; **awaits the DUT's USB node disappearing then re-enumerating** (detection, not fixed timers) | `off_s`, `settle_s`, `await_enumeration`, `disappear_timeout_s`, `reappear_timeout_s` |
+| `power_cycle` | solenoid (or esp-usbip-bridge hub port, `power_control: bridge-port`) cold-boot; **awaits the DUT's USB node disappearing then re-enumerating** (detection, not fixed timers) | `off_s`, `settle_s`, `await_enumeration`, `disappear_timeout_s`, `reappear_timeout_s` |
 | `write_secrets_msc` | drop `secrets.json` on the DUT's MSC volume (needs the app booted → run a `power_cycle` first) | `msc_filter` (else derived) |
 | `print_boot_log` | dump `wipper_boot_out.txt` from the MSC (auto-inserted after the last `power_cycle`) | — |
 | `verify_checkin` | wait for the DUT to check in to the broker; logs `CHECKIN_VERDICT ok=true\|false` (lightweight smoke test, no injection) | `checkin_timeout_s` |
