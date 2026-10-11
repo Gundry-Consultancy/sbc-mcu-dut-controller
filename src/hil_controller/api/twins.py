@@ -90,7 +90,9 @@ async def preview(request: Request, principal: Auth, observation: Observation) -
                 return {
                     "valid": True,
                     "candidates": matches,
-                    "action": "update" if observation.twin_id else "create",
+                    "action": "replay"
+                    if result["replayed"]
+                    else ("update" if observation.twin_id else "create"),
                     "replayed": result["replayed"],
                 }
             except twins.TwinError as exc:

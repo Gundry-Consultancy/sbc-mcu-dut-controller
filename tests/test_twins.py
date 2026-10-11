@@ -69,6 +69,9 @@ async def test_ingest_replay_and_conflicting_id(authed_client):
     twin = await create(authed_client)
     again = await authed_client.post("/v1/twins/observations", json=observation())
     assert again.json() == {"twin_id": twin, "observation_id": "scan-1", "replayed": True}
+    preview = await authed_client.post("/v1/twins/observations/preview", json=observation())
+    assert preview.json()["action"] == "replay"
+    assert preview.json()["replayed"] is True
     changed = observation(label="Different payload")
     assert (await authed_client.post("/v1/twins/observations", json=changed)).status_code == 409
     detail = (await authed_client.get(f"/v1/twins/{twin}")).json()
