@@ -331,3 +331,18 @@ def test_pi_hex_case_is_canonical_across_captures_and_binding(tmp_path):
     lower = scan(tmp_path)[0]
     assert upper.identities[0].value == lower.identities[0].value == "00000000abcdef12"
     assert upper.identities[0].unique is True
+
+
+def test_offline_root_does_not_invent_capture_machine_architecture(tmp_path, monkeypatch):
+    pi(tmp_path)
+    monkeypatch.setattr(collectors.platform, "machine", lambda: "collector-only-architecture")
+    kwargs = {
+        "root": tmp_path,
+        "host_id": "fixture-host",
+        "scan_id": "fixture-scan",
+        "observed_at": WHEN,
+    }
+    unknown = collectors.collect_linux(**kwargs)[0]
+    explicit = collectors.collect_linux(**kwargs, architecture="aarch64")[0]
+    assert unknown.attributes["architecture"] is None
+    assert explicit.attributes["architecture"] == "aarch64"

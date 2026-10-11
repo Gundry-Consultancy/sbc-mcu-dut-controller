@@ -224,7 +224,9 @@ def collect_linux(
             attributes={
                 "host_id": host_id,
                 "model": model,
-                "architecture": architecture or platform.machine(),
+                "architecture": architecture
+                if architecture is not None
+                else (platform.machine() if root == Path("/") else None),
                 "identity_status": "observed" if identities else "unavailable",
                 "identity_reason": "hardware serial read"
                 if identities
