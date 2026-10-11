@@ -300,3 +300,34 @@ def test_virtual_bridge_device_is_unresolved_endpoint_not_physical_board():
     assert row.ports[0].attributes["virtual"] is True
     assert row.slot is None
     assert not row.identities[0].unique
+
+
+@pytest.mark.parametrize("serial", ["0000000000000000", "ffffffffffffffff", "FFFFFFFFFFFFFFFF"])
+def test_pi_placeholder_serial_is_not_an_identity_or_bindable(tmp_path, serial):
+    pi(tmp_path)
+    put(tmp_path, "sys/firmware/devicetree/base/serial-number", serial)
+    result = scan(tmp_path)[0]
+    assert result.identities == []
+    assert result.attributes["identity_status"] == "unavailable"
+    assert "placeholder" in result.attributes["identity_reason"]
+    assert result.attributes["invalid_board_serial"] == serial
+    with pytest.raises(collectors.CollectionError, match="self slot"):
+        scan(
+            tmp_path,
+            self_slot=Slot(kind="host", id="fixture-host", expected_twin_id=None),
+            expected_board_serial=serial,
+        )
+
+
+def test_pi_hex_case_is_canonical_across_captures_and_binding(tmp_path):
+    pi(tmp_path)
+    put(tmp_path, "sys/firmware/devicetree/base/serial-number", "00000000ABCDEF12")
+    upper = scan(
+        tmp_path,
+        self_slot=Slot(kind="host", id="fixture-host", expected_twin_id=None),
+        expected_board_serial="00000000ABCDEF12",
+    )[0]
+    put(tmp_path, "sys/firmware/devicetree/base/serial-number", "00000000abcdef12")
+    lower = scan(tmp_path)[0]
+    assert upper.identities[0].value == lower.identities[0].value == "00000000abcdef12"
+    assert upper.identities[0].unique is True

@@ -149,12 +149,23 @@ def collect_linux(
     model = _read(root / "sys/firmware/devicetree/base/model")
     model = model or _read(root / "sys/class/dmi/id/product_name")
     board_serial = _read(root / "sys/firmware/devicetree/base/serial-number")
+    placeholder_serial = bool(
+        model
+        and model.startswith("Raspberry Pi ")
+        and board_serial
+        and board_serial.lower() in ("0000000000000000", "ffffffffffffffff")
+    )
+    invalid_board_serial = board_serial if placeholder_serial else None
+    if placeholder_serial:
+        board_serial = None
     pi_serial = bool(
         model
         and model.startswith("Raspberry Pi ")
         and board_serial
         and re.fullmatch(r"[0-9a-fA-F]{16}", board_serial)
     )
+    if pi_serial and board_serial is not None:
+        board_serial = board_serial.lower()
     identities = []
     if board_serial:
         identities.append(
@@ -194,7 +205,7 @@ def collect_linux(
         self_slot.kind != "host"
         or self_slot.id != host_id
         or not pi_serial
-        or expected_board_serial != board_serial
+        or (expected_board_serial or "").lower() != board_serial
     ):
         raise CollectionError(
             "self slot requires the explicit host ID and matching verified "
@@ -217,7 +228,12 @@ def collect_linux(
                 "identity_status": "observed" if identities else "unavailable",
                 "identity_reason": "hardware serial read"
                 if identities
-                else "No readable device-tree board serial or SoC serial",
+                else (
+                    "Device-tree board serial is a placeholder"
+                    if placeholder_serial
+                    else "No readable device-tree board serial or SoC serial"
+                ),
+                "invalid_board_serial": invalid_board_serial,
                 "usb_discovery_status": "available" if usb_root.is_dir() else "unavailable",
                 "scan_id": scan_id,
             },
