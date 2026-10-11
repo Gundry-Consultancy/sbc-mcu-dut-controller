@@ -1,7 +1,8 @@
 """Explicit sensor identity reads over an already leased and verified I2C route.
 
 No bus implementation, scanning, route selection, state changes or EEPROM programming
-is provided here. The caller establishes the exact model and an awake, idle device.
+is provided here. The caller establishes the exact model and a ready command interface.
+Measurement idle is required only by recipes whose documented command needs it.
 Sources and known limitations are recorded in docs/twin-discovery.md.
 """
 
@@ -38,13 +39,30 @@ class IdentityBus(Protocol):
 class SensorReadContext:
     """Caller attestations, not a replacement for controller lease enforcement.
 
-    idle includes awake, completed power-on/reset timing, no conversion in flight
-    and no concurrent EEPROM programming. Hold the route lease through the read.
+    interface_ready attests awake, completed power-on/reset timing and no pending
+    command or EEPROM programming that would prevent this identity transaction.
+    It does not assert that background/periodic measurement is stopped.
+    measurement_idle separately attests the measurement state for recipes needing it.
+    Hold the route lease through the read; these flags never stop/reset a device.
+
+    Legacy idle=True supplies both attestations when the new keyword-only fields
+    are omitted. Explicit new fields override that fallback, including False.
+    Legacy idle=False retains its previous conservative blocking behavior.
     """
 
     route_verified: bool
     lease_held: bool
-    idle: bool
+    idle: bool | None = None
+    interface_ready: bool | None = field(default=None, kw_only=True)
+    measurement_idle: bool | None = field(default=None, kw_only=True)
+
+    @property
+    def ready_interface(self) -> bool:
+        return self.interface_ready if self.interface_ready is not None else self.idle is True
+
+    @property
+    def idle_measurement(self) -> bool | None:
+        return self.measurement_idle if self.measurement_idle is not None else self.idle
 
 
 @dataclass(frozen=True)
@@ -104,6 +122,7 @@ class _Recipe:
     crc: bool
     source: str
     mutable: bool = False
+    requires_measurement_idle: bool = False
 
 
 _SGP30_SOURCE = "https://sensirion.com/file/datasheet_sgp30/"
@@ -115,15 +134,47 @@ _SGP41_SOURCE = "https://sensirion.com/resource/datasheet/sgp41"
 _HDC_SOURCE = "https://www.ti.com/lit/ds/symlink/hdc3020.pdf"
 _STCC_SOURCE = "https://sensirion.github.io/python-i2c-stcc4/api.html"
 _TMP_SOURCE = "https://www.ti.com/lit/ds/symlink/tmp119.pdf"
+_SCD30_SOURCE = (
+    "https://github.com/Sensirion/embedded-i2c-scd30/blob/"
+    "ebe6d25cff6b6f317b639fded3a68ec71d44e178/scd30_i2c.c"
+)
 
 _RECIPES = {
     "sgp30": _Recipe("sensirion", "sgp30", (b"\x36\x82",), 9, 0.0005, True, _SGP30_SOURCE),
-    "sgp40": _Recipe("sensirion", "sgp40", (b"\x36\x82",), 9, 0.001, True, _SGP40_SOURCE),
-    "sgp41": _Recipe("sensirion", "sgp41", (b"\x36\x82",), 9, 0.001, True, _SGP41_SOURCE),
+    "sgp40": _Recipe(
+        "sensirion",
+        "sgp40",
+        (b"\x36\x82",),
+        9,
+        0.001,
+        True,
+        _SGP40_SOURCE,
+        requires_measurement_idle=True,
+    ),
+    "sgp41": _Recipe(
+        "sensirion",
+        "sgp41",
+        (b"\x36\x82",),
+        9,
+        0.001,
+        True,
+        _SGP41_SOURCE,
+        requires_measurement_idle=True,
+    ),
     "hdc302x": _Recipe(
         "ti", "hdc302x", (b"\x36\x83", b"\x36\x84", b"\x36\x85"), 3, None, True, _HDC_SOURCE
     ),
-    "stcc4": _Recipe("sensirion", "stcc4", (b"\x36\x5b",), 18, 0.001, True, _STCC_SOURCE),
+    "stcc4": _Recipe(
+        "sensirion",
+        "stcc4",
+        (b"\x36\x5b",),
+        18,
+        0.001,
+        True,
+        _STCC_SOURCE,
+        requires_measurement_idle=True,
+    ),
+    "scd30": _Recipe("sensirion", "scd30", (b"\xd0\x33",), 48, 0.010, True, _SCD30_SOURCE),
     "tmp119": _Recipe(
         "ti", "tmp119", (b"\x05", b"\x06", b"\x08"), 2, None, False, _TMP_SOURCE, mutable=True
     ),
@@ -204,16 +255,23 @@ def read_sensor_identity(
     recipe = _RECIPES.get(model)
     if recipe is None:
         reason = "No reviewed identity reader for the explicitly selected model"
-        if model == "scd30":
-            reason = (
-                "Official serial API exists, but raw framing and firmware/state preconditions "
-                "have not been vetted for this reader; no command issued"
-            )
         return SensorIdentityResult(model, address, "unsupported", reason)
+    attributes: dict[str, JsonValue] = {
+        "identity_reader": "sensor-identity-v2",
+        "source": recipe.source,
+        "read_context": {
+            "route_verified": context.route_verified,
+            "lease_held": context.lease_held,
+            "interface_ready": context.ready_interface,
+            "measurement_idle": context.idle_measurement,
+            "legacy_idle": context.idle,
+            "requires_measurement_idle": recipe.requires_measurement_idle,
+        },
+    }
     if (
         not context.route_verified
         or not context.lease_held
-        or not context.idle
+        or not context.ready_interface
         or isinstance(address, bool)
         or not isinstance(address, int)
         or not 0x08 <= address <= 0x77
@@ -222,13 +280,19 @@ def read_sensor_identity(
             model,
             address,
             "blocked",
-            "Requires a valid unreserved 7-bit address, verified route, held lease and idle device",
+            "Requires a valid unreserved 7-bit address, verified route, held lease "
+            "and ready command interface",
+            attributes=attributes,
+        )
+    if recipe.requires_measurement_idle and context.idle_measurement is not True:
+        return SensorIdentityResult(
+            model,
+            address,
+            "blocked",
+            "This identity command requires an explicitly attested idle measurement state",
+            attributes=attributes,
         )
     exchanges: list[IdentityExchange] = []
-    attributes: dict[str, JsonValue] = {
-        "identity_reader": "sensor-identity-v1",
-        "source": recipe.source,
-    }
     try:
         payload = b"".join(
             _read_exchange(bus, address, command, recipe, exchanges) for command in recipe.commands
@@ -239,6 +303,19 @@ def read_sensor_identity(
             if product != 0x0901018A:
                 raise _InvalidResponse("Product ID does not match the explicitly selected STCC4")
             payload = payload[4:]
+        serial_text = None
+        if recipe.family == "scd30":
+            if b"\x00" not in payload:
+                raise _InvalidResponse("SCD30 serial lacks its documented ASCII NUL terminator")
+            serial_bytes = payload.split(b"\x00", 1)[0]
+            if (
+                not serial_bytes
+                or any(value < 0x20 or value > 0x7E for value in serial_bytes)
+                or serial_bytes.strip() != serial_bytes
+            ):
+                raise _InvalidResponse("SCD30 serial is empty or not printable ASCII")
+            serial_text = serial_bytes.decode("ascii")
+            attributes["serial_encoding"] = "ascii"
         if recipe.mutable:
             attributes["factory_identity_mutable"] = True
             attributes["eeprom_words"] = {
@@ -281,7 +358,7 @@ def read_sensor_identity(
         namespace=f"{recipe.vendor}:{recipe.family}:"
         + ("factory_eeprom" if recipe.mutable else "serial"),
         kind="manufacturer_serial",
-        value=payload.hex(),
+        value=serial_text if serial_text is not None else payload.hex(),
         owner="chip",
         component=recipe.family,
         unique=not recipe.mutable,

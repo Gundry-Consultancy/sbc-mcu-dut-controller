@@ -184,15 +184,13 @@ def test_wrong_response_length_retained_without_identity(model, length, delta):
     assert result.exchanges[0].crc_words is None
 
 
-@pytest.mark.parametrize("model", ["unknown", "bme280", "sgp4x", "scd30"])
+@pytest.mark.parametrize("model", ["unknown", "bme280", "sgp4x"])
 def test_unsupported_never_touches_bus(model):
     bus = FakeBus()
     result = read_sensor_identity(model, 0x44, bus, context=READY)
     assert result.status == "unsupported"
     assert not result.identities
     assert not bus.calls
-    if model == "scd30":
-        assert "Official serial API exists" in result.reason
 
 
 @pytest.mark.parametrize("flag", ["route_verified", "lease_held", "idle"])
@@ -256,3 +254,135 @@ def test_evidence_can_be_persisted_as_json_attributes_even_on_failure():
     assert discovery["exchanges"][0]["response_hex"] == raw.hex()
     assert discovery["exchanges"][0]["command_hex"] == "3682"
     assert discovery["exchanges"][0]["crc_words"] is None
+
+
+def scd30_frame(payload=b"SYNTHETIC-SERIAL-123\x00"):
+    assert len(payload) <= 32
+    payload = payload.ljust(32, b"\x00")
+    return b"".join(
+        payload[i : i + 2] + bytes([crc8_word(payload[i : i + 2])]) for i in range(0, 32, 2)
+    )
+
+
+@pytest.mark.parametrize("measurement_idle", [False, None])
+@pytest.mark.parametrize(
+    "model,address,responses",
+    [
+        ("sgp30", 0x58, (SERIAL_FRAME,)),
+        ("hdc3020", 0x44, (SERIAL_FRAME[:3], SERIAL_FRAME[3:6], SERIAL_FRAME[6:])),
+        ("tmp119", 0x48, (b"\xbe\xef", b"\x12\x34", b"\xab\xcd")),
+        ("scd30", 0x61, (scd30_frame(),)),
+    ],
+)
+def test_ready_interface_allows_safe_commands_without_asserting_measurement_idle(
+    model, address, responses, measurement_idle
+):
+    bus = FakeBus(*responses)
+    context = SensorReadContext(True, True, interface_ready=True, measurement_idle=measurement_idle)
+    result = read_sensor_identity(model, address, bus, context=context)
+    assert result.status == "ok"
+    assert result.attributes["read_context"]["measurement_idle"] is measurement_idle
+    assert result.attributes["read_context"]["legacy_idle"] is None
+    assert result.attributes["read_context"]["requires_measurement_idle"] is False
+
+
+@pytest.mark.parametrize("measurement_idle", [False, None])
+@pytest.mark.parametrize("model", ["sgp40", "sgp41", "stcc4"])
+def test_idle_only_recipes_block_active_or_unknown_measurement(model, measurement_idle):
+    bus = FakeBus()
+    context = SensorReadContext(True, True, interface_ready=True, measurement_idle=measurement_idle)
+    result = read_sensor_identity(model, 0x59, bus, context=context)
+    assert result.status == "blocked"
+    assert "idle measurement" in result.reason
+    assert result.attributes["read_context"]["measurement_idle"] is measurement_idle
+    assert not result.identities
+    assert not bus.calls
+
+
+@pytest.mark.parametrize(
+    "model", ["sgp30", "sgp40", "sgp41", "hdc302x", "stcc4", "tmp119", "scd30"]
+)
+def test_unready_command_interface_blocks_every_recipe_even_if_measurement_idle(model):
+    bus = FakeBus()
+    context = SensorReadContext(True, True, True, interface_ready=False, measurement_idle=True)
+    result = read_sensor_identity(model, 0x44, bus, context=context)
+    assert result.status == "blocked"
+    assert "ready command interface" in result.reason
+    assert not bus.calls
+
+
+def test_legacy_constructor_and_explicit_false_override_do_not_invent_idle():
+    assert SensorReadContext(True, True, True).ready_interface is True
+    assert SensorReadContext(True, True, True).idle_measurement is True
+    assert SensorReadContext(True, True, False).ready_interface is False
+    assert SensorReadContext(True, True).idle_measurement is None
+    explicit = SensorReadContext(True, True, True, interface_ready=True, measurement_idle=False)
+    result = read_sensor_identity("sgp40", 0x59, FakeBus(), context=explicit)
+    assert result.status == "blocked"
+    assert result.attributes["read_context"]["measurement_idle"] is False
+
+
+def test_scd30_exact_framing_ascii_identity_and_all_sixteen_crc_words():
+    frame = scd30_frame()
+    bus = FakeBus(frame)
+    result = read_sensor_identity(
+        "scd30", 0x61, bus, context=SensorReadContext(True, True, interface_ready=True)
+    )
+    assert bus.calls == [("write", 0x61, b"\xd0\x33"), ("wait", 0.010), ("read", 0x61, 48)]
+    assert result.status == "ok"
+    assert result.identities[0].value == "SYNTHETIC-SERIAL-123"
+    assert result.identities[0].namespace == "sensirion:scd30:serial"
+    assert result.identities[0].owner == "chip"
+    assert result.identities[0].unique is True
+    assert result.exchanges[0].crc_words == (True,) * 16
+    assert result.exchanges[0].response == frame
+    assert result.attributes["serial_encoding"] == "ascii"
+    for index in range(2, 48, 3):
+        corrupted = bytearray(frame)
+        corrupted[index] ^= 1
+        invalid = read_sensor_identity("scd30", 0x61, FakeBus(bytes(corrupted)), context=READY)
+        assert invalid.status == "invalid_response"
+        assert not invalid.identities
+        assert invalid.exchanges[0].crc_words[index // 3] is False
+
+
+@pytest.mark.parametrize(
+    "payload", [b"", b"X" * 32, b"\xff\x00", b"BAD\nSERIAL\x00", b" leading\x00", b"trailing \x00"]
+)
+def test_scd30_malformed_ascii_never_emits_identity(payload):
+    result = read_sensor_identity("scd30", 0x61, FakeBus(scd30_frame(payload)), context=READY)
+    assert result.status == "invalid_response"
+    assert not result.identities
+    assert result.exchanges[0].crc_words == (True,) * 16
+
+
+@pytest.mark.parametrize("length", [47, 49])
+def test_scd30_requires_exact_wire_length(length):
+    result = read_sensor_identity("scd30", 0x61, FakeBus(b"x" * length), context=READY)
+    assert result.status == "invalid_response"
+    assert not result.identities
+    assert len(result.exchanges[0].response) == length
+
+
+def test_scd30_firmware_nack_is_read_failure_without_reset_or_retry():
+    class NackBus(FakeBus):
+        def write(self, address, data):
+            super().write(address, data)
+            raise OSError("Synthetic unsupported-command NACK")
+
+    bus = NackBus()
+    result = read_sensor_identity(
+        "scd30", 0x61, bus, context=SensorReadContext(True, True, interface_ready=True)
+    )
+    assert result.status == "read_failed"
+    assert not result.identities
+    assert bus.calls == [("write", 0x61, b"\xd0\x33")]
+    assert result.exchanges[0].response is None
+
+
+def test_scd30_ignores_undocumented_padding_but_preserves_raw_evidence():
+    frame = scd30_frame(b"VALID-SYNTHETIC\x00" + b"\xff" * 16)
+    result = read_sensor_identity("scd30", 0x61, FakeBus(frame), context=READY)
+    assert result.status == "ok"
+    assert result.identities[0].value == "VALID-SYNTHETIC"
+    assert result.exchanges[0].response == frame

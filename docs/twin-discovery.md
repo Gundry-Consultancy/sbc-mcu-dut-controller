@@ -55,11 +55,34 @@ job stage. The separate Linux/S31 inventory collector remains responsible for it
 own observation collection; these sensor recipes do not invoke that collector.
 
 The implemented recipes cover SGP30/40/41, HDC3020/3021/3022 (also selected as
-HDC302x), STCC4 and TMP119. The caller supplies an exact model, explicit 7-bit
-address, an `IdentityBus` implementation, and `SensorReadContext` attestations
-that the route is verified, its lease is held and the sensor is awake and idle
-after required startup timing. These assertions do not acquire a lease or inspect
-physical routing; the integrating controller must enforce those conditions.
+HDC302x), STCC4, TMP119 and SCD30. The caller supplies an exact model, explicit
+7-bit address, an `IdentityBus` implementation, and `SensorReadContext` attestations
+that the route is verified, its lease is held and its command interface is ready.
+`interface_ready=True` means awake, startup/reset timing completed, and no pending
+command or EEPROM operation preventing this transaction. It does not mean that
+periodic measurement is stopped. Only SGP40, SGP41 and STCC4 require the separate
+`measurement_idle=True` assertion; active (`False`) or unknown (`None`) blocks
+those recipes. SGP30, HDC302x, TMP119 and SCD30 do not require a measurement stop.
+Never assert idle merely to make a read pass. These flags do not acquire a lease,
+inspect physical routing, stop measurements, or reset hardware.
+
+New integrations should use, for example:
+
+```python
+context = SensorReadContext(
+    route_verified=True,
+    lease_held=True,
+    interface_ready=True,
+    measurement_idle=None,  # Unknown, not asserted; allowed for SCD30, for example.
+)
+```
+
+The legacy third argument `idle` remains supported: `idle=True` supplies both
+attestations when their new keyword arguments are omitted; `idle=False` retains
+the former conservative block. Explicit new values override the fallback, even
+when False. Omitting all readiness assertions blocks access. Effective readiness,
+measurement state (including unknown), legacy assertion, and recipe requirements
+are retained under `read_context` in observation attributes.
 
 The raw transport distinguishes separate write/read transactions from a combined
 write/read with repeated START. It must not add SMBus length bytes, swap bytes or
@@ -72,9 +95,22 @@ it provides no scan, mux, reset, heater-control or EEPROM-programming operation.
 | SGP30 | Serial command, at least 0.5 ms wait, 9-byte response. |
 | SGP40 / SGP41 | Serial command in idle, at least 1 ms wait, 9-byte response. |
 | HDC302x | Three combined command/read transactions, each returning two identity bytes and CRC. |
-| STCC4 | Product/serial command, at least 1 ms wait, 18-byte response; validate product ID and separate it from the 64-bit serial. |
+| STCC4 | Product/serial command only when measurement is idle, at least 1 ms wait, 18-byte response; validate product ID and separate it from the 64-bit serial. |
 | TMP119 | Combined pointer/read transactions for EEPROM1/2/3, two bytes each; preserve raw words with `unique=false` and reported confidence. |
-| SCD30 | Explicitly unsupported by this reader pending review of raw transport framing and firmware/state prerequisites. The documented manufacturer API remains separate evidence of serial support. |
+| SCD30 | Write `D0 33`, STOP, wait at least 10 ms, then separately read 48 wire bytes. Validate 16 CRC words to obtain 32 payload bytes and decode the ASCII serial up to its NUL terminator. No measurement-idle requirement. |
+
+SCD30 framing follows the pinned [Sensirion C driver](https://github.com/Sensirion/embedded-i2c-scd30/blob/ebe6d25cff6b6f317b639fded3a68ec71d44e178/scd30_i2c.c),
+its [command header](https://github.com/Sensirion/embedded-i2c-scd30/blob/ebe6d25cff6b6f317b639fded3a68ec71d44e178/scd30_i2c.h),
+and [CRC transport helper](https://github.com/Sensirion/embedded-i2c-scd30/blob/ebe6d25cff6b6f317b639fded3a68ec71d44e178/sensirion_i2c.c).
+The bus adapter must also meet the [SCD30 interface requirements](https://sensirion.com/media/documents/D7CEEF4A/6165372F/Sensirion_CO2_Sensors_SCD30_Interface_Description.pdf):
+maximum 100 kHz (50 kHz or less recommended), clock stretching normally up to
+30 ms and potentially 150 ms during daily calibration, no repeated START, and
+completed power-up timing (up to 2 s). A generic adapter that cannot satisfy
+these constraints is not a ready interface. Firmware may reject the serial
+command: NACK/timeout stays `read_failed`, with no retry, stop or reset fallback.
+The reader conservatively rejects a missing terminator, empty serial or
+nonprintable ASCII before NUL. It does not require padding after NUL to be zero;
+all wire bytes remain in evidence. SCD30 identity values are ASCII, not hex.
 
 Every CRC-bearing word must validate before an identity is returned. Wrong lengths,
 wrong STCC4 product identity, CRC errors and empty or placeholder identities
