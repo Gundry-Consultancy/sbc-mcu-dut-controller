@@ -43,6 +43,7 @@ lint = [
 
 [project.scripts]
 hil-controller = "hil_controller.main:cli"
+hil-twins-import = "hil_controller.twin_import:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hil_controller"]

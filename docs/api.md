@@ -238,3 +238,11 @@ curl -H "Authorization: Bearer $TOK" \
 > Be gentle with `res=full` on weak hosts (e.g. a Pi Zero 2 W): the 16 MP
 > still-mode reconfigure is heavy and wedges if hammered. Capture one-shot — don't
 > poll it in a tight loop.
+
+
+## Physical digital twins
+
+The additive administrative `/v1/twins` API records physical identities, observations,
+owned ports, logical-slot replacement history, and physical connections. See
+[digital-twins.md](digital-twins.md) for contracts, conservative reconciliation, auth,
+and the offline import command. Existing job and topology APIs retain their behavior.
