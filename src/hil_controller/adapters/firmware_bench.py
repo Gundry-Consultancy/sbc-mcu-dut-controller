@@ -321,6 +321,7 @@ class FirmwareBenchAdapter:
             protomq_host="",
             protomq_port=0,
             launch_protomq=self._do_launch_protomq,
+            encode_protobuf=self._encode_protobuf,
             start_serial=lambda: self._start_serial(log_port),
             pause_serial=self._pause_serial,
             resume_serial=self._resume_serial,
@@ -735,6 +736,11 @@ class FirmwareBenchAdapter:
         await self.dut_transport.copy_to(Path(self._fw_local_path), remote_bin)
         self._sink("bench", f"staged firmware → {remote_bin} on DUT host")
         return remote_bin
+
+    async def _encode_protobuf(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._protomq is None:
+            raise RuntimeError("ProtoMQ must be launched before JSON injection")
+        return await self._protomq.encode_payload(payload)
 
     async def _launch_protomq(self) -> None:
         from hil_controller.config import get_settings

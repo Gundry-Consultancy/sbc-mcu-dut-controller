@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import tomllib
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -18,10 +19,27 @@ async def run(args):
     # The SDK intentionally does not inherit arbitrary environment variables.
     env = {
         key: os.environ[key]
-        for key in ("HIL_API_BASE", "HIL_API_TOKEN", "HIL_SKILLS_DIR", "SSH_AUTH_SOCK")
+        for key in (
+            "HIL_API_BASE",
+            "HIL_API_TOKEN",
+            "HIL_SKILLS_DIR",
+            "SSH_AUTH_SOCK",
+            "PROGRAMDATA",
+        )
         if key in os.environ
     }
-    server = StdioServerParameters(command=args.command, args=args.server_args, env=env)
+    command, server_args = args.command, args.server_args
+    if args.mcp_config:
+        path = Path(args.mcp_config)
+        data = (
+            tomllib.loads(path.read_text(encoding="utf-8"))
+            if path.suffix == ".toml"
+            else json.loads(path.read_text(encoding="utf-8"))
+        )
+        config = data.get("mcp_servers", data.get("mcpServers", {}))["tachyon"]
+        command, server_args = config["command"], config.get("args", [])
+        env.update(config.get("env", {}))
+    server = StdioServerParameters(command=command, args=server_args, env=env)
     async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
 
@@ -90,8 +108,7 @@ async def run(args):
                         content.text, encoding="utf-8"
                     )
         print(json.dumps(result, indent=2), flush=True)
-        if result.get("state") != "finished" or result.get("result") != "pass":
-            raise SystemExit(1)
+        return result
 
 
 def main():
@@ -100,12 +117,15 @@ def main():
     request.add_argument("--job", help="AgentJob JSON file")
     request.add_argument("--job-id", help="Resume observing a submitted job")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--mcp-config", help="Tachyon Codex TOML or Claude/Gemini JSON config")
     parser.add_argument("--command", default="ssh")
     parser.add_argument("server_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.server_args[:1] == ["--"]:
         args.server_args = args.server_args[1:]
-    asyncio.run(run(args))
+    result = asyncio.run(run(args))
+    if result.get("state") != "finished" or result.get("result") != "pass":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

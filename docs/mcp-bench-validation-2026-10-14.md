@@ -69,7 +69,9 @@ The Pi's temporary Wi-Fi profile was deleted and wlan0 returned to disconnected;
 Ethernet management remained connected. Controller jobs release their leases,
 stop their per-job brokers, and power down the MCU during cleanup.
 
-The final MCU image is CircuitPython 10.3.1 with the public Wi-Fi smoke program.
+At completion of those three smoke jobs, the MCU image was CircuitPython 10.3.1.
+Subsequent [PR1014 tests](mcp-pr1014-validation-2026-10-14.md) replaced it with
+the Arduino PR1014 CI firmware.
 
 ## Regression validation
 

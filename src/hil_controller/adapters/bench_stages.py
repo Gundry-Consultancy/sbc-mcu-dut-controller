@@ -200,6 +200,7 @@ class BenchContext:
     secrets: dict[str, str] = field(default_factory=dict)
     protomq_host: str = ""
     protomq_port: int = 0
+    protomq_uid: str = ""
     #: Full command transcript (argv + stdout/stderr + exit) of every command a
     #: stage runs, for a downloadable, self-verifiable flash.log.
     transcript: list[dict[str, Any]] = field(default_factory=list)
@@ -210,6 +211,7 @@ class BenchContext:
     #: the boot log is caught. Both are optional — the matching stage no-ops if
     #: unset.
     launch_protomq: Callable[[], Awaitable[tuple[str, int]]] | None = None
+    encode_protobuf: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
     start_serial: Callable[[], Awaitable[None]] | None = None
     #: Release / re-take the serial port around an esptool op that needs it. On a
     #: no-solenoid host the power-cycle fallback is an esptool reset over the DUT's
@@ -1270,8 +1272,9 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
     machine-greppable ``I2C_PROBE_VERDICT channel=<n|bus> found=[0x..]`` per scan.
 
     Stage params: ``channels`` (list, default ``[0, 1]``), ``mux_address`` (int,
-    default ``0x77``), ``pin_scl``/``pin_sda`` (ints, the bus GPIOs — QT Py S3
-    STEMMA = 40/41), ``scan_bus`` (bool, default true — a bare-bus scan first),
+    default ``0x77``), ``pin_scl``/``pin_sda`` (string pin names for current api-v2,
+    integer GPIOs for legacy firmware; QT Py S3 STEMMA = "D40"/"D41"),
+    ``scan_bus`` (bool, default true — a bare-bus scan first),
     ``checkin_timeout_s``, ``observe_s``. Requires protomq up + secrets pointing
     at it.
     """
@@ -1281,8 +1284,8 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
         )
     channels = [int(c) for c in stage.get("channels", [0, 1])]
     mux_address = int(stage.get("mux_address", 0x77))
-    pin_scl = int(stage.get("pin_scl", 40))
-    pin_sda = int(stage.get("pin_sda", 41))
+    pin_scl = stage.get("pin_scl", 40)
+    pin_sda = stage.get("pin_sda", 41)
     scan_bus = bool(stage.get("scan_bus", True))
     checkin_timeout = float(stage.get("checkin_timeout_s", 150.0))
     observe_s = float(stage.get("observe_s", 15.0))
@@ -1306,8 +1309,10 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
             f"inject_i2c_probe: no DUT checkin on {io_user}/ws-d2b/# within {checkin_timeout:.0f}s "
             "(device booted with secrets pointing at protomq?)"
         )
+    ctx.protomq_uid = uid
     ctx.log_line(f"inject_i2c_probe: device checked in (uid={uid})")
     results: dict[str, list[int]] = {}
+    missing_replies: list[str] = []
 
     def _record(label: str, rec: dict[str, Any]) -> None:
         found = rec["found"]
@@ -1317,6 +1322,8 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
         # actually replied. no_reply means the probe got no Probed back (a
         # capture/transport miss) — NOT an empty bus.
         got_reply = rec.get("got_reply", True)
+        if not got_reply:
+            missing_replies.append(label)
         status = "ok" if got_reply else "NO_REPLY"
         ctx.log_line(
             f"I2C_PROBE_VERDICT scan={label} status={status} found=[{hexs}] uid={uid}"
@@ -1362,6 +1369,8 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
         _record(f"ch{ch}", rec)
 
     ctx.i2c_probe_results = results  # type: ignore[attr-defined]
+    if missing_replies:
+        raise StageError(f"I2C probe received no reply for: {', '.join(missing_replies)}")
 
 
 async def _stage_inject_i2c_scan_v1(stage: dict[str, Any], ctx: BenchContext) -> None:
@@ -1626,11 +1635,14 @@ async def _stage_inject_protobuf(stage: dict[str, Any], ctx: BenchContext) -> No
     message), or a convenience ``kind`` builder that constructs it from params.
 
     Params:
+      payload_json  object encoded with the job's imported ProtoMQ schema. OR
       payload_hex   raw BrokerToDevice bytes (hex; spaces ok). OR
       kind          a known builder: "display_add_i8080".
       params        kwargs for the builder.
       uid / topic   target override; otherwise wait_for_checkin derives the uid.
       checkin_timeout_s (150), settle_s (0), io_username ("hil").
+      expect_i2c    optional reading bounds / sea-level reference assertion.
+      observe_s     event observation window for expect_i2c (default 12).
 
     Emits ``INJECT_VERDICT published=true topic=<t> bytes=<n> kind=<k>``.
     """
@@ -1652,8 +1664,17 @@ async def _stage_inject_protobuf(stage: dict[str, Any], ctx: BenchContext) -> No
     )
 
     payload_hex = stage.get("payload_hex")
+    payload_json = stage.get("payload_json")
     kind = stage.get("kind")
-    if payload_hex:
+    if sum(x is not None for x in (payload_hex, payload_json, kind)) != 1:
+        raise StageError("inject_protobuf needs exactly one of payload_json, payload_hex, kind")
+    if payload_json is not None:
+        if ctx.encode_protobuf is None:
+            raise StageError("payload_json requires a per-job ProtoMQ schema encoder")
+        encoded = await ctx.encode_protobuf(payload_json)
+        payload = bytes.fromhex(encoded["hex"])
+        ctx.log_line(f"PROTOBUF_JSON normalized={encoded['normalized']}")
+    elif payload_hex:
         payload = bytes.fromhex(payload_hex.replace(" ", ""))
     elif kind == "display_add_i8080":
         from hil_controller.adapters.ws_display_inject import build_display_add_i8080
@@ -1676,7 +1697,7 @@ async def _stage_inject_protobuf(stage: dict[str, Any], ctx: BenchContext) -> No
         raise StageError("inject_protobuf needs payload_hex or a known kind")
 
     topic = stage.get("topic")
-    uid = stage.get("uid")
+    uid = stage.get("uid") or ctx.protomq_uid
     if not topic:
         if not uid:
             ctx.log_line(
@@ -1686,9 +1707,20 @@ async def _stage_inject_protobuf(stage: dict[str, Any], ctx: BenchContext) -> No
             uid = await inj.wait_for_checkin(timeout=checkin_timeout)
             if not uid:
                 raise StageError("inject_protobuf: no DUT checkin observed")
+        ctx.protomq_uid = uid
         topic = inj.b2d_topic(uid)
 
-    resp = await inj._echo(topic, payload)
+    if stage.get("expect_i2c"):
+        from hil_controller.adapters.protobuf_probe import publish_and_check_i2c
+
+        proof = await publish_and_check_i2c(
+            inj, topic, payload, stage["expect_i2c"],
+            observe_s=float(stage.get("observe_s", 12)),
+        )
+        ctx.log_line(f"I2C_COMPONENT_VERDICT label={stage.get('label', kind or 'json')} {proof}")
+        resp = {"status": "OK", "observed": True}
+    else:
+        resp = await inj._echo(topic, payload)
     ctx.log_line(
         f"INJECT_VERDICT published=true topic={topic} bytes={len(payload)} "
         f"kind={kind or 'raw'} resp={resp}"

@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "tachyon": {
+      "command": "ssh",
+      "args": [
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "particle@100.101.245.66",
+        "env HIL_API_BASE=http://127.0.0.1:8080 HIL_API_TOKEN=dev-token-change-me /home/particle/dev-projects/python/usbip-hil-controller/.venv/bin/python -m hil_controller.mcp_server"
+      ],
+      "timeout": 120000,
+      "trust": false
+    }
+  }
+}

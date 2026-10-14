@@ -33,3 +33,7 @@ themselves; deployment remains owned by the submitted HIL job.
 
 Results and firmware hashes from the real run are recorded in
 `docs/mcp-bench-validation-2026-10-14.md`.
+
+Ready-to-use [Codex, Claude Code, and Gemini CLI configs](configs/README.md)
+connect over SSH to Tachyon. The [PR1014 I2C job](pr1014-i2c.json) also pins
+updated protobuf sources and checks real scan replies.

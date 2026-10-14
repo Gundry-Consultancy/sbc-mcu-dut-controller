@@ -4,6 +4,8 @@
 MCP Python SDK. Discover targets, read current skills, preview a recipe, submit,
 poll its result, and retrieve proof logs/images. No model-provider key is needed.
 
+Ready-to-use [Tachyon configs for Codex, Claude Code, and Gemini CLI](../examples/mcp/configs/README.md) use SSH stdio and the deployed bench.
+
 ## Install and connect
 
 Use Python 3.12 and `pip install -e '.[mcp]'`. Set `HIL_API_BASE` to the reachable
@@ -197,3 +199,49 @@ CircuitPython storage may enumerate later than serial; `write_circuitpython`
 waits up to 30 seconds (`msc_timeout_s`, maximum 120). Partitioned MSC volumes
 use their first numbered partition. A read-only volume needs a suitable
 `boot.py` or a clean board-matched firmware installation before deployment.
+
+
+## Pinning protobufs for a PR hardware test
+
+MCU jobs accept `params.protobuf_repo` and `params.protobuf_ref`. Use a full
+40-character commit SHA for reproducibility, or a branch/tag for ongoing work.
+Every local ProtoMQ job clones fresh sources, runs `npm ci`, `npm run import-protos`,
+and `npm run build-web`. Proof logs record `BUILD_SOURCE` for both repositories
+and `PROTOBUF_IMPORT_VERDICT ok=true` only after a successful build. An import
+or pinned-checkout failure aborts the job.
+
+[PR #1014's example](../examples/mcp/pr1014-i2c.json) uses the protobuf CI head
+`be593b784cfa3ec15b434ea960c72d1ce84f8d08` and the exact CI firmware hash.
+Its I2C stage requires actual Probed replies; a timeout fails the job instead
+of treating silence as an empty bus. It scans the direct bus and TCA9548
+channels 0 and 1 after selecting the live DB route to the QT Py.
+
+Use string pins `"D40"`/`"D41"` for the PR1014 api-v2 schema. Older firmware
+uses integer `40`/`41`; the injector preserves both wire formats according to
+the JSON value type. Matching envelope tags alone does not establish protobuf
+compatibility: the initial real test exposed this pin-field type change.
+
+
+## Generic protobuf JSON and observable Add/Modify tests
+
+`inject_protobuf` accepts exactly one of `payload_json`, `payload_hex`, or a
+supported convenience `kind`. JSON uses the imported protobufjs camelCase field
+names. Encoding runs against that job's freshly imported ProtoMQ schema, using
+`fromObject` so both enum names (`"T_ALTITUDE"`) and numbers (`27`) work. The
+controller rejects unknown fields/enums, wrong pin types, conflicting oneofs,
+and fractional/out-of-range 32-bit integers before publishing. This prevents
+protobufjs from silently dropping unrecognized enum names.
+
+[The BME280 Add/Modify job](../examples/mcp/pr1014-i2c-modify.json) first adds
+with enum names and `sea_level_pressure=1000`, then sends one `i2c.modify`
+message containing `remove` plus `add` with numeric enums and reference `1100`.
+It removes the test component afterwards. Each mutation's `expect_i2c` subscribes
+before publishing and requires at least three matching device events. It checks
+pressure bounds and the resulting altitude against the driver's formula with
+a 2 m tolerance; publish acknowledgment alone cannot pass. Initial settling
+samples are ignored and the final three samples are checked. The reference is
+an altitude-calculation setting, not a change to physical ambient pressure.
+
+String pin support already exists upstream in Arduino #943/#953/#959 and Python
+#281. These bench changes reuse that firmware behavior and fix the older HIL
+injector; they do not reimplement pin resolution in either WipperSnapper library.

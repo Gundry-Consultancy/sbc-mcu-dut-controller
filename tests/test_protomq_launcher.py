@@ -140,7 +140,7 @@ def _launcher(transport, **kw):
 @pytest.mark.asyncio
 async def test_clone_and_build_clones_protomq_then_proto_sibling_then_builds() -> None:
     tp = AsyncMock()
-    tp.exec = AsyncMock(return_value=_result(0))
+    tp.exec = AsyncMock(return_value=_result(0, stdout="a" * 40))
     await _launcher(tp).clone_and_build()
     argvs = [c.args[0] for c in tp.exec.call_args_list]
     # 1) protomq clone, 2) Wippersnapper_Protobuf sibling clone, 3) build
@@ -215,3 +215,56 @@ async def test_consume_until_ready_times_out_without_ports() -> None:
     launcher = _launcher(AsyncMock())
     with pytest.raises(ProtomqLaunchError, match="did not announce"):
         await launcher._consume_until_ready(_stuck(), ready_timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_pinned_protobuf_checkout_and_import_provenance() -> None:
+    tp = AsyncMock()
+    sha = "b" * 40
+    tp.exec = AsyncMock(return_value=_result(0, stdout=sha))
+    seen = []
+    await _launcher(tp, proto_ref=sha, on_line=seen.append).clone_and_build()
+    calls = [c.args[0] for c in tp.exec.call_args_list]
+    assert ["git", "fetch", "--depth", "1", "origin", sha] in calls
+    assert ["git", "checkout", "--detach", "FETCH_HEAD"] in calls
+    assert f"BUILD_SOURCE component=protobuf sha={sha}" in seen
+    assert any("PROTOBUF_IMPORT_VERDICT ok=true" in s for s in seen)
+
+
+@pytest.mark.asyncio
+async def test_import_failure_never_reports_success() -> None:
+    tp = AsyncMock()
+    tp.exec = AsyncMock(side_effect=[_result(), _result(), _result(1, stderr="bad proto")])
+    seen = []
+    with pytest.raises(ProtomqLaunchError, match="build failed"):
+        await _launcher(tp, on_line=seen.append).clone_and_build()
+    assert not any("ok=true" in s for s in seen)
+
+
+@pytest.mark.asyncio
+async def test_pinned_fetch_failure_stops_before_build() -> None:
+    tp = AsyncMock()
+    tp.exec = AsyncMock(side_effect=[_result(), _result(), _result(128)])
+    with pytest.raises(ProtomqLaunchError, match="pinned checkout failed"):
+        await _launcher(tp, proto_ref="b" * 40).clone_and_build()
+    assert tp.exec.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_json_encoding_uses_this_jobs_imported_schema():
+    tp = AsyncMock()
+    tp.exec = AsyncMock(return_value=_result(stdout='{"hex":"0102","normalized":{}}'))
+    payload = {"i2c": {"add": {"types": {"0": "T_ALTITUDE"}}}}
+    assert (await _launcher(tp).encode_payload(payload))["hex"] == "0102"
+    call = tp.exec.call_args
+    assert call.kwargs["cwd"] == "/tmp/hil/job-1/protomq"
+    assert call.args[0][:3] == ["node", "--input-type=module", "-e"]
+    assert "T_ALTITUDE" in call.args[0][-1]
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_schema_values_fail_before_publish():
+    tp = AsyncMock()
+    tp.exec = AsyncMock(return_value=_result(1, stderr="unknown enum value"))
+    with pytest.raises(ProtomqLaunchError, match="unknown enum"):
+        await _launcher(tp).encode_payload({"i2c": {"add": {"types": {"0": "bad"}}}})
