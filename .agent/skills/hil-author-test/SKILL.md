@@ -276,3 +276,32 @@ are the worked examples.
   you need explicit placement; they're auto-inserted.
 - Assert on the **verdict lines**, and on the **finished** captured logs where you
   can, not the racing live stream.
+
+
+## MCP PR tests with updated protobufs
+
+For the ready Tachyon MCP connection and provider configs, see
+`examples/mcp/configs/README.md`. `examples/mcp/pr1014-i2c.json` is a real MCU
+recipe using the rpi-hil006 solenoid hub (not rpi-displays), a firmware SHA-256,
+and `params.protobuf_ref` pinned to a full commit SHA. ProtoMQ is cloned and
+rebuilt with `npm run import-protos` per job; inspect `BUILD_SOURCE` and
+`PROTOBUF_IMPORT_VERDICT` in proof logs.
+
+For `inject_i2c_probe`, current api-v2 uses string pin names, e.g. `"D40"` and
+`"D41"` for QT Py S3 STEMMA. Legacy pre-alignment firmware uses integer `40`
+and `41`. Do not cast named pins to integers: their protobuf wire types differ.
+The stage now fails if a scan receives no Probed reply. Confirm actual found
+addresses, not only the terminal job state. Discover strand routes from the
+live DB; the tested QT Py route was muxA channel 2, with on-strand TCA9548 at 0x77.
+The initial `scan=bus` does not reset a powered TCA9548: a channel retained
+from an earlier job may expose downstream devices. Report it as the initial bus
+state, not guaranteed direct-only wiring. Explicit `scan=chN` selects channel N.
+
+
+Use `inject_protobuf.payload_json` for current-schema component Add/Modify tests.
+It encodes against the per-job imported schema, accepts enum names or numbers,
+and rejects invalid values before publication. The legacy `inject_i2c_settings`
+wire builder targets older firmware; prefer the generic JSON path for current
+api-v2. See `examples/mcp/pr1014-i2c-modify.json` for an observable BME280
+`sea_level_pressure` setting change checked against actual pressure/altitude
+events, and `docs/mcp-pr1014-validation-2026-10-14.md` for evidence and limitations.

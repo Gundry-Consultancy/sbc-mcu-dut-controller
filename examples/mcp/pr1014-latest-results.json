@@ -1,0 +1,207 @@
+{
+  "date": "2026-10-14",
+  "protobuf": {
+    "ci_run": 38257492494,
+    "sha": "be593b784cfa3ec15b434ea960c72d1ce84f8d08",
+    "base": "b3688d612f3639a83d7415b3ef1a04572eb34ce6"
+  },
+  "protomq_sha": "3bf1afe80e308ff6f0bb07b4ece7c76cc6742dbc",
+  "firmware": {
+    "pr": "https://github.com/adafruit/Adafruit_Wippersnapper_Arduino/pull/1014",
+    "head": "71209daaaef1963e11b5c44047576cd5f124cd7c",
+    "tested_merge": "b407820a7049404b0fefd1900557f5df13b408dc",
+    "base": "0cb5eab5c693371a8b965edc73c2eff031c2e65a",
+    "ci_run": 38584444797,
+    "ci_job": 115922554572,
+    "artifact_id": 11906702652,
+    "sha256": "5dd28b75770dda58442d508c283cce4952b53975200845538abe49ccb85bf643"
+  },
+  "scan": {
+    "job": {
+      "id": "7cf99b5a-89c8-492d-8cc3-963dcad3325a",
+      "state": "finished",
+      "result": "pass",
+      "assigned_host": "rpi-hil006",
+      "assigned_device": "mcu-qtpy-esp32s3-n4r2-hil006",
+      "created_at": "2026-10-14T15:47:55.862876+00:00",
+      "started_at": "2026-10-14T15:47:55.895971+00:00",
+      "finished_at": "2026-10-14T15:50:47.881886+00:00",
+      "summary": null
+    },
+    "assets": [
+      {
+        "id": "81e7ba9b-fe5c-4fbd-9843-f58171802eaa",
+        "filename": "pr1014-71209daa.combined.bin",
+        "kind": "firmware",
+        "size_bytes": 3150160,
+        "created_at": "2026-10-14T15:48:03.054533+00:00"
+      },
+      {
+        "id": "460eccf2-ec4e-44a0-b1ee-ae56fd68ea4e",
+        "filename": "flash.log",
+        "kind": "log",
+        "size_bytes": 24660,
+        "created_at": "2026-10-14T15:50:42.670986+00:00"
+      },
+      {
+        "id": "3129a658-f36f-4326-a866-b301b8c0471a",
+        "filename": "serial.log",
+        "kind": "log",
+        "size_bytes": 5084,
+        "created_at": "2026-10-14T15:50:42.691779+00:00"
+      },
+      {
+        "id": "7cf60f4a-51c8-4dc5-b174-778d90852827",
+        "filename": "protomq.log",
+        "kind": "log",
+        "size_bytes": 32846,
+        "created_at": "2026-10-14T15:50:42.695700+00:00"
+      }
+    ],
+    "mcp_log_text_sha256": {
+      "3129a658-f36f-4326-a866-b301b8c0471a-0.txt": "b3bc44bb4e553ffcb23e9c062e7a247d2ed00ffb7099a027abaa5d4f1bd3f082",
+      "460eccf2-ec4e-44a0-b1ee-ae56fd68ea4e-0.txt": "7f8592be88f06865b2b2bd1ecb345234e416bc1b4a79c6bbbc990c6763c2b448",
+      "7cf60f4a-51c8-4dc5-b174-778d90852827-0.txt": "d0128b8ff52163716404f0e78f2ce84fced9f5546bc5597060509e29d662dac0"
+    },
+    "verdicts": [
+      "BUILD_SOURCE component=protomq sha=3bf1afe80e308ff6f0bb07b4ece7c76cc6742dbc",
+      "BUILD_SOURCE component=protobuf sha=be593b784cfa3ec15b434ea960c72d1ce84f8d08",
+      "PROTOBUF_IMPORT_VERDICT ok=true command=npm_run_import-protos",
+      "I2C_STRAND_MUX_VERDICT status=ok strand=strand-hil006-air group=muxA channel=2 active=dut-03",
+      "I2C_PROBE_VERDICT scan=bus status=ok found=[0x12 0x18 0x45 0x46 0x47 0x4a 0x51 0x52 0x58 0x59 0x61 0x64 0x74 0x76 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_PROBE_VERDICT scan=ch0 status=ok found=[0x12 0x18 0x45 0x46 0x47 0x4a 0x51 0x52 0x58 0x59 0x61 0x64 0x74 0x76 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_PROBE_VERDICT scan=ch1 status=ok found=[0x12 0x45 0x47 0x48 0x51 0x53 0x58 0x59 0x5c 0x60 0x77] uid=qtpy-esp32s3-n4r213210089"
+    ]
+  },
+  "add_modify": {
+    "job": {
+      "id": "82d941be-50dd-42d3-86bf-a04cd3d191cc",
+      "state": "finished",
+      "result": "pass",
+      "assigned_host": "rpi-hil006",
+      "assigned_device": "mcu-qtpy-esp32s3-n4r2-hil006",
+      "created_at": "2026-10-14T15:51:07.898332+00:00",
+      "started_at": "2026-10-14T15:51:07.938367+00:00",
+      "finished_at": "2026-10-14T15:54:27.313934+00:00",
+      "summary": null
+    },
+    "assets": [
+      {
+        "id": "4ee1cbc2-1bd2-4585-a685-3e218b7c93e2",
+        "filename": "pr1014-71209daa.combined.bin",
+        "kind": "firmware",
+        "size_bytes": 3150160,
+        "created_at": "2026-10-14T15:51:15.365645+00:00"
+      },
+      {
+        "id": "395e08a4-daed-4da7-a4e1-eb2c771bb39e",
+        "filename": "flash.log",
+        "kind": "log",
+        "size_bytes": 24406,
+        "created_at": "2026-10-14T15:54:21.766725+00:00"
+      },
+      {
+        "id": "007072bc-9b48-4a15-8ee9-9602de5535e5",
+        "filename": "serial.log",
+        "kind": "log",
+        "size_bytes": 9566,
+        "created_at": "2026-10-14T15:54:21.777596+00:00"
+      },
+      {
+        "id": "3b99cae1-816d-4d8c-9d5b-81c577e941aa",
+        "filename": "protomq.log",
+        "kind": "log",
+        "size_bytes": 84287,
+        "created_at": "2026-10-14T15:54:21.782146+00:00"
+      }
+    ],
+    "mcp_log_text_sha256": {
+      "007072bc-9b48-4a15-8ee9-9602de5535e5-0.txt": "ac7defd16dccb26b9eecb76a690145a4a1d6d3bc3f16d0f0246977eb81cddd54",
+      "395e08a4-daed-4da7-a4e1-eb2c771bb39e-0.txt": "569e24f768e1765605cee417226673abd16025a75abb57e7b5597a6480a1cc75",
+      "3b99cae1-816d-4d8c-9d5b-81c577e941aa-0.txt": "f0358de2a6513a10fe1f99a07a94d805d70b175ccd195da4524ab9bbf4ddee7b"
+    },
+    "verdicts": [
+      "BUILD_SOURCE component=protomq sha=3bf1afe80e308ff6f0bb07b4ece7c76cc6742dbc",
+      "BUILD_SOURCE component=protobuf sha=be593b784cfa3ec15b434ea960c72d1ce84f8d08",
+      "PROTOBUF_IMPORT_VERDICT ok=true command=npm_run_import-protos",
+      "I2C_STRAND_MUX_VERDICT status=ok strand=strand-hil006-air group=muxA channel=2 active=dut-03",
+      "I2C_PROBE_VERDICT scan=bus status=ok found=[0x12 0x51 0x58 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_PROBE_VERDICT scan=ch0 status=ok found=[0x12 0x18 0x45 0x46 0x47 0x4a 0x51 0x52 0x58 0x59 0x61 0x64 0x74 0x76 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_PROBE_VERDICT scan=ch1 status=ok found=[0x12 0x45 0x47 0x48 0x51 0x53 0x58 0x59 0x5c 0x60 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_COMPONENT_VERDICT label=add_bme280_ref1000 {'ok': True, 'samples': 11, 'checked': [{'address': 118, 'mux_channel': None, 'readings': {6: 1020.9996337890625, 27: -175.6658935546875}}, {'address': 118, 'mux_channel': None, 'readings': {6: 1021.01611328125, 27: -175.80235290527344}}, {'address': 118, 'mux_channel': None, 'readings': {6: 1021.0423583984375, 27: -176.0198974609375}}], 'sea_level_pressure': 1000}",
+      "INJECT_VERDICT published=true topic=hil/ws-b2d/qtpy-esp32s3-n4r213210089 bytes=78 kind=raw resp={'status': 'OK', 'observed': True}",
+      "I2C_COMPONENT_VERDICT label=modify_bme280_ref1100 {'ok': True, 'samples': 11, 'checked': [{'address': 118, 'mux_channel': None, 'readings': {6: 1020.99560546875, 27: 624.3134155273438}}, {'address': 118, 'mux_channel': None, 'readings': {6: 1021.015625, 27: 624.1505126953125}}, {'address': 118, 'mux_channel': None, 'readings': {6: 1021.0125122070312, 27: 624.1755981445312}}], 'sea_level_pressure': 1100}",
+      "INJECT_VERDICT published=true topic=hil/ws-b2d/qtpy-esp32s3-n4r213210089 bytes=102 kind=raw resp={'status': 'OK', 'observed': True}",
+      "INJECT_VERDICT published=true topic=hil/ws-b2d/qtpy-esp32s3-n4r213210089 bytes=25 kind=raw resp={'status': 'OK'}"
+    ],
+    "component_assertions": {
+      "add_bme280_ref1000": {
+        "ok": true,
+        "samples": 11,
+        "checked": [
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1020.9996337890625,
+              "27": -175.6658935546875
+            }
+          },
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.01611328125,
+              "27": -175.80235290527344
+            }
+          },
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.0423583984375,
+              "27": -176.0198974609375
+            }
+          }
+        ],
+        "sea_level_pressure": 1000,
+        "mean_pressure_hpa": 1021.0193684895834,
+        "mean_altitude_m": -175.82938130696616
+      },
+      "modify_bme280_ref1100": {
+        "ok": true,
+        "samples": 11,
+        "checked": [
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1020.99560546875,
+              "27": 624.3134155273438
+            }
+          },
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.015625,
+              "27": 624.1505126953125
+            }
+          },
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.0125122070312,
+              "27": 624.1755981445312
+            }
+          }
+        ],
+        "sea_level_pressure": 1100,
+        "mean_pressure_hpa": 1021.0079142252604,
+        "mean_altitude_m": 624.2131754557291
+      }
+    }
+  },
+  "initial_bus_note": "The initial bus scan does not reset the powered TCA9548. The standalone scan included retained channel-0 devices; the Add/Modify job initial scan returned 0x12, 0x51, 0x58, 0x77. Explicit channel scans matched in both jobs."
+}

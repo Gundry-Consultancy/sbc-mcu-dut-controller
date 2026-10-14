@@ -93,7 +93,12 @@ class JobRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     payload: Payload | None = None
     secrets_profile: str = "bench-protomq"
-    secrets: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(
+        default_factory=dict,
+        description="Public bench Wi-Fi: SSID free4all, password password. "
+        "Test protoMQ IO_USERNAME/IO_KEY: hil/hil. See GET /v1/job-profiles for "
+        "MCP recipes and optional production, staging, or dev-LAN credentials.",
+    )
     exclusive: ExclusiveFlag = Field(default_factory=ExclusiveFlag)
     timeouts: Timeouts = Field(default_factory=Timeouts)
     metadata: dict[str, Any] = Field(default_factory=dict)

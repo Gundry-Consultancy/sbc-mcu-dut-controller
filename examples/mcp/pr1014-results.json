@@ -1,0 +1,232 @@
+{
+  "date": "2026-10-14",
+  "firmware": {
+    "pr": "https://github.com/adafruit/Adafruit_Wippersnapper_Arduino/pull/1014",
+    "head": "93b4f5e33d0a9333b17f44a35b8117c4fb096c9a",
+    "tested_merge": "5b3c89ff714592f8ba407210ab1ce638330e273f",
+    "ci_run": 38579010387,
+    "ci_job": 115903601261,
+    "artifact_id": 11902967418,
+    "sha256": "38fbe1d439908beecf6457d8956bbd7b63893783db58f2fd6d1f696ac17218f7"
+  },
+  "protobuf": {
+    "ci_run": 38257492494,
+    "sha": "be593b784cfa3ec15b434ea960c72d1ce84f8d08",
+    "base": "b3688d612f3639a83d7415b3ef1a04572eb34ce6"
+  },
+  "protomq_sha": "3bf1afe80e308ff6f0bb07b4ece7c76cc6742dbc",
+  "schema_checks": {
+    "enum_equivalence": true,
+    "names": [
+      "T_PRESSURE",
+      "T_ALTITUDE"
+    ],
+    "values": [
+      6,
+      27
+    ],
+    "rejected": [
+      {
+        "types": {
+          "0": "NOT_A_SENSOR"
+        }
+      },
+      {
+        "types": []
+      },
+      {
+        "period": 1.5
+      },
+      {
+        "unknownField": 1
+      }
+    ],
+    "numeric_pin_rejected": true,
+    "bundle_sha256": "424b9f7859992caf69130d9b76cb732c2b1cba2f3624d955ddabc8d655cf5e01"
+  },
+  "scan": {
+    "job": {
+      "id": "b74769e1-458f-40ae-944f-99215d7f5aad",
+      "state": "finished",
+      "result": "pass",
+      "assigned_host": "rpi-hil006",
+      "assigned_device": "mcu-qtpy-esp32s3-n4r2-hil006",
+      "created_at": "2026-10-14T14:48:16.233860+00:00",
+      "started_at": "2026-10-14T14:48:16.278010+00:00",
+      "finished_at": "2026-10-14T14:51:10.470731+00:00",
+      "summary": null
+    },
+    "assets": [
+      {
+        "id": "12ae4d0d-cc90-45b6-bc55-ce2465e40c5b",
+        "filename": "pr1014.combined.bin",
+        "kind": "firmware",
+        "size_bytes": 3150160,
+        "created_at": "2026-10-14T14:48:23.549984+00:00"
+      },
+      {
+        "id": "d0960286-61e9-46a3-9d9b-8bd15b3abd1a",
+        "filename": "flash.log",
+        "kind": "log",
+        "size_bytes": 24406,
+        "created_at": "2026-10-14T14:51:05.352893+00:00"
+      },
+      {
+        "id": "b5071482-9527-40de-9268-f69066aa6678",
+        "filename": "serial.log",
+        "kind": "log",
+        "size_bytes": 4724,
+        "created_at": "2026-10-14T14:51:05.359540+00:00"
+      },
+      {
+        "id": "2a120f52-bfe6-445a-b4b6-2869808c4b83",
+        "filename": "protomq.log",
+        "kind": "log",
+        "size_bytes": 32246,
+        "created_at": "2026-10-14T14:51:05.365754+00:00"
+      }
+    ],
+    "mcp_log_text_sha256": {
+      "2a120f52-bfe6-445a-b4b6-2869808c4b83-0.txt": "14fd5c78aaaaf1b97b3d5ad0aac8638f730b3db37c32731e68aeb93ffd94e8ce",
+      "b5071482-9527-40de-9268-f69066aa6678-0.txt": "39242d5df26c7be370ef64cf6dc62bef7373f452f3f10b09f7a716821233b8fb",
+      "d0960286-61e9-46a3-9d9b-8bd15b3abd1a-0.txt": "578d67856491b06a7c63caa9b2ecbb6d4deb10beba385c5931b77fb3c224c88a"
+    },
+    "verdicts": [
+      "BUILD_SOURCE component=protomq sha=3bf1afe80e308ff6f0bb07b4ece7c76cc6742dbc",
+      "BUILD_SOURCE component=protobuf sha=be593b784cfa3ec15b434ea960c72d1ce84f8d08",
+      "PROTOBUF_IMPORT_VERDICT ok=true command=npm_run_import-protos",
+      "I2C_PROBE_VERDICT scan=bus status=ok found=[0x12 0x51 0x58 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_PROBE_VERDICT scan=ch0 status=ok found=[0x12 0x18 0x45 0x46 0x47 0x4a 0x51 0x52 0x58 0x59 0x61 0x64 0x74 0x76 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_PROBE_VERDICT scan=ch1 status=ok found=[0x12 0x45 0x47 0x48 0x51 0x53 0x58 0x59 0x5c 0x60 0x77] uid=qtpy-esp32s3-n4r213210089"
+    ]
+  },
+  "add_modify": {
+    "job": {
+      "id": "25d402b2-3c4b-41ae-80a6-d5e2a0146d36",
+      "state": "finished",
+      "result": "pass",
+      "assigned_host": "rpi-hil006",
+      "assigned_device": "mcu-qtpy-esp32s3-n4r2-hil006",
+      "created_at": "2026-10-14T15:08:20.755902+00:00",
+      "started_at": "2026-10-14T15:08:20.787476+00:00",
+      "finished_at": "2026-10-14T15:11:39.348320+00:00",
+      "summary": null
+    },
+    "assets": [
+      {
+        "id": "9384872b-8455-492c-b992-1bdf7d5febf6",
+        "filename": "pr1014.combined.bin",
+        "kind": "firmware",
+        "size_bytes": 3150160,
+        "created_at": "2026-10-14T15:08:27.997369+00:00"
+      },
+      {
+        "id": "f627aff9-9a77-4048-84f1-73590ae587ca",
+        "filename": "flash.log",
+        "kind": "log",
+        "size_bytes": 24703,
+        "created_at": "2026-10-14T15:11:34.215469+00:00"
+      },
+      {
+        "id": "74bebe31-e3bd-458d-a6ce-ddf46cef4b78",
+        "filename": "serial.log",
+        "kind": "log",
+        "size_bytes": 9818,
+        "created_at": "2026-10-14T15:11:34.223397+00:00"
+      },
+      {
+        "id": "5cc7aaec-75c9-40df-99ae-bf3de94e5b44",
+        "filename": "protomq.log",
+        "kind": "log",
+        "size_bytes": 84935,
+        "created_at": "2026-10-14T15:11:34.232822+00:00"
+      }
+    ],
+    "mcp_log_text_sha256": {
+      "5cc7aaec-75c9-40df-99ae-bf3de94e5b44-0.txt": "b2a4212f48f55dd366e5c08926822b437ba7c64edf20de133f4f017a7d05de94",
+      "74bebe31-e3bd-458d-a6ce-ddf46cef4b78-0.txt": "04af8cd65e0708354a812e5a815afcdc90c406e1d695702d676e93598a214593",
+      "f627aff9-9a77-4048-84f1-73590ae587ca-0.txt": "61040a6054517653860e88b0375cfccb63086c6e53f6f8660e912a0e16ce0bc3"
+    },
+    "verdicts": [
+      "BUILD_SOURCE component=protomq sha=3bf1afe80e308ff6f0bb07b4ece7c76cc6742dbc",
+      "BUILD_SOURCE component=protobuf sha=be593b784cfa3ec15b434ea960c72d1ce84f8d08",
+      "PROTOBUF_IMPORT_VERDICT ok=true command=npm_run_import-protos",
+      "I2C_PROBE_VERDICT scan=bus status=ok found=[0x12 0x18 0x45 0x46 0x47 0x4a 0x51 0x52 0x58 0x59 0x61 0x64 0x74 0x76 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_PROBE_VERDICT scan=ch0 status=ok found=[0x12 0x18 0x45 0x46 0x47 0x4a 0x51 0x52 0x58 0x59 0x61 0x64 0x74 0x76 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_PROBE_VERDICT scan=ch1 status=ok found=[0x12 0x45 0x47 0x48 0x51 0x53 0x58 0x59 0x5c 0x60 0x77] uid=qtpy-esp32s3-n4r213210089",
+      "I2C_COMPONENT_VERDICT label=add_bme280_ref1000 {'ok': True, 'samples': 11, 'checked': [{'address': 118, 'mux_channel': None, 'readings': {6: 1021.7195434570312, 27: -181.63597106933594}}, {'address': 118, 'mux_channel': None, 'readings': {6: 1021.7341918945312, 27: -181.7575225830078}}, {'address': 118, 'mux_channel': None, 'readings': {6: 1021.6865844726562, 27: -181.36219787597656}}], 'sea_level_pressure': 1000}",
+      "I2C_COMPONENT_VERDICT label=modify_bme280_ref1100 {'ok': True, 'samples': 11, 'checked': [{'address': 118, 'mux_channel': None, 'readings': {6: 1021.7140502929688, 27: 618.4623413085938}}, {'address': 118, 'mux_channel': None, 'readings': {6: 1021.7345581054688, 27: 618.2958374023438}}, {'address': 118, 'mux_channel': None, 'readings': {6: 1021.7345581054688, 27: 618.2958374023438}}], 'sea_level_pressure': 1100}"
+    ],
+    "component_assertions": {
+      "add_bme280_ref1000": {
+        "ok": true,
+        "samples": 11,
+        "checked": [
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.7195434570312,
+              "27": -181.63597106933594
+            }
+          },
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.7341918945312,
+              "27": -181.7575225830078
+            }
+          },
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.6865844726562,
+              "27": -181.36219787597656
+            }
+          }
+        ],
+        "sea_level_pressure": 1000
+      },
+      "modify_bme280_ref1100": {
+        "ok": true,
+        "samples": 11,
+        "checked": [
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.7140502929688,
+              "27": 618.4623413085938
+            }
+          },
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.7345581054688,
+              "27": 618.2958374023438
+            }
+          },
+          {
+            "address": 118,
+            "mux_channel": null,
+            "readings": {
+              "6": 1021.7345581054688,
+              "27": 618.2958374023438
+            }
+          }
+        ],
+        "sea_level_pressure": 1100
+      }
+    }
+  },
+  "unconfirmed_device_attempt": {
+    "job_id": "dfb0b95c-0d96-4443-b058-e53169d15b3e",
+    "address": "0x46",
+    "inventory_label": "bmp581",
+    "operator_correction": "BMP581 removed; responding device may be another BMP5x; identity unverified",
+    "result": "no valid readings; not evidence of BMP581 regression"
+  }
+}
