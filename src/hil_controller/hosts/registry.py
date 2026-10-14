@@ -11,6 +11,15 @@ import yaml
 
 log = logging.getLogger(__name__)
 
+#: ``hosts.transport`` for an esp-usbip-bridge (mirrors hosts.esp_bridge, kept
+#: here so the registry stays import-light).
+TRANSPORT_ESP_USBIP_BRIDGE = "esp-usbip-bridge"
+
+
+def is_esp_bridge_host(host: dict[str, Any]) -> bool:
+    """True for a topology host served by the esp-usbip-bridge firmware."""
+    return (host.get("transport") or "") == TRANSPORT_ESP_USBIP_BRIDGE
+
 
 class HostRegistry:
     #: target.requires[].kind values that denote an I2C-strand prerequisite.
@@ -200,8 +209,8 @@ class RealHostRegistry(HostRegistry):
         async with get_db(self.db_path) as db:
             cur = await db.execute(
                 "SELECT status, unavailable_reason, serial_port, hub_host_id, "
-                "hub_port_path, solenoid_channel, flasher, usb_serial, build_target "
-                "FROM devices WHERE id=?",
+                "hub_port_path, solenoid_channel, flasher, usb_serial, build_target, "
+                "power_control FROM devices WHERE id=?",
                 (device["id"],),
             )
             drow = await cur.fetchone()
@@ -232,8 +241,9 @@ class RealHostRegistry(HostRegistry):
     def _build_transport(self, host: dict[str, Any]) -> Any:
         from hil_controller.hosts.ssh import SSHTransport
 
-        # Host records carry a ``transport`` field (ssh | local | none); the older
-        # ``kind == 'local'`` form is kept as a fallback for any legacy caller.
+        # Host records carry a ``transport`` field (ssh | local | none |
+        # esp-usbip-bridge); the older ``kind == 'local'`` form is kept as a
+        # fallback for any legacy caller.
         transport = host.get("transport") or ("local" if host.get("kind") == "local" else "ssh")
         if transport == "local":
             from hil_controller.hosts.local import LocalTransport
@@ -241,6 +251,11 @@ class RealHostRegistry(HostRegistry):
             return LocalTransport()
         if transport == "none":
             raise ValueError(f"host {host.get('id')!r} has transport=none (no exec transport)")
+        if transport == TRANSPORT_ESP_USBIP_BRIDGE:
+            # HTTP-API USB/IP server with no shell (see hosts/esp_bridge.py).
+            from hil_controller.hosts.esp_bridge import EspBridgeTransport
+
+            return EspBridgeTransport.from_host(host)
         return SSHTransport(
             host=host["addr"],
             user=host.get("ssh_user", "pi"),
@@ -297,6 +312,14 @@ class RealHostRegistry(HostRegistry):
             hub_host_id = device.get("hub_host_id") or host["id"]
             dut_host = next((h for h in self._hosts if h["id"] == hub_host_id), host)
             dut_transport = self._build_transport(dut_host)
+            hub_transport = dut_transport
+            usbip_server_addr = ""
+            if is_esp_bridge_host(dut_host):
+                # An esp-usbip-bridge has no shell: the controller attaches the
+                # DUT's busid over usbip and runs flash/serial/MSC itself, while
+                # power + presence go to the bridge's HTTP API (hub_transport).
+                usbip_server_addr = dut_host.get("addr") or ""
+                dut_transport = LocalTransport()
             cfg = get_settings()
             # If the job requires an I2C strand and this device is routed to one
             # that provides it, hand the strand id to the adapter so it auto-mux's
@@ -306,7 +329,7 @@ class RealHostRegistry(HostRegistry):
             return FirmwareBenchAdapter(
                 controller_transport=LocalTransport(),
                 dut_transport=dut_transport,
-                hub_transport=dut_transport,
+                hub_transport=hub_transport,
                 job_id=job_id,
                 device=device,
                 params=params,
@@ -317,6 +340,7 @@ class RealHostRegistry(HostRegistry):
                 protomq_ref=params.get("protomq_ref", ""),
                 jobs_dir=resolve_jobs_dir(),
                 auto_strand_id=(route["strand_id"] if route else None),
+                usbip_server_addr=usbip_server_addr,
             )
 
         if not source:

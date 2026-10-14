@@ -85,6 +85,12 @@ Done:
       below for what shipped and where.
 - [x] 468 tests pass (non-`test_upnp.py`; that one has a pre-existing
       collection error tracked separately).
+- [x] **M8** — esp-usbip-bridge hosts (`transport: esp-usbip-bridge`):
+      bridge DUTs inventoried via HTTP, attached over usbip without
+      bind/unbind, power-cycled via `power_control: bridge-port[:force]`,
+      strand mux via `interface: "bridge:<host_id>"`. See the
+      **"esp-usbip-bridge hosts (M8)"** section below. Unit-tested only;
+      live bench validation still to do.
 
 Not done:
 
@@ -595,6 +601,35 @@ pass briefly depowers *every* port on the target hub, so any other job
 sharing that hub will see its DUT vanish. The lease primitive prevents
 two such operations colliding, but it does not pause concurrent normal
 jobs — schedule learn passes when the hub is idle, or accept the blip.
+
+## esp-usbip-bridge hosts (M8)
+
+An ESP32 running the esp-usbip-bridge firmware
+(`tyeth-ai-assisted/esp-usbip-bridge`, branch `s31-function-coreboard-ethernet`,
+README "Controller API") is a USB/IP server with an HTTP API and **no shell**.
+Design + contract summary: `docs/ARCHITECTURE.md` §10.1.1. Code map:
+
+- `adapters/esp_usbip_bridge.py` — `EspUsbipBridgeClient` (ping/info,
+  `/api/usb/devices[/{busid}]`, `/api/usb/hubs`, `/api/ports/{port}/on|off|cycle`,
+  errors 401/404/409/503 as typed exceptions) and `BridgePortPower`
+  (on/off/presence/detection-driven `power_cycle`).
+- `hosts/esp_bridge.py` — `EspBridgeTransport` (built by
+  `RealHostRegistry._build_transport` for `transport: esp-usbip-bridge`),
+  `bridge_client_of`, `resolve_aux_interface` (`bridge:<host_id>` auxes).
+- `adapters/usbip_bridge.py` — bind/unbind skipped for bridge servers;
+  `UsbipAttachKeeper` re-attaches a busid across re-enumeration.
+- `adapters/usbip_inventory.py` — `query_bridge_busids` (same rows as the SSH path).
+- `adapters/bench_stages.py` / `firmware_bench.py` / `host_recovery.py` /
+  `main.py` — `power_control: bridge-port` in `power_cycle`, recovery
+  power-cycles, on-demand power, firmware-bench attach, availability probe.
+- Tests: `tests/test_esp_usbip_bridge.py`, `tests/test_esp_bridge_host.py`
+  (fake bridge in `tests/fake_esp_bridge.py`).
+
+Bench caveats: per-port power only on hubs reporting `per-port` switching
+(GL850G-style ganged hubs answer 409 unless `bridge-port:force`); the
+controller must have `usbip` + `vhci-hcd`; prefer by-id
+`flash_port_filter`/`log_port_filter` for firmware-bench on bridge DUTs, since
+the vhci tty can be renamed across re-attach.
 
 ## Per-phase execution-location for arduino-ws jobs (M7)
 

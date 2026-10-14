@@ -138,6 +138,45 @@ async def validate_presence_active(
             log.warning("validate_presence_active: turn_off ch %s failed", channel)
 
 
+async def validate_bridge_presence(
+    bridge: Any, device: dict, *, settle_s: float = 25.0, poll_s: float = 1.0
+) -> bool:
+    """Presence check for a DUT on an esp-usbip-bridge (HTTP, no shell).
+
+    The bridge answers ``GET /api/usb/devices/{busid}`` with 200/404, replacing
+    ``test -e /sys/bus/usb/devices/<busid>``; there is no dmesg to scan. With
+    ``power_control: bridge-port`` the on-demand model applies (idle DUTs are
+    off), so the check is **active** like :func:`validate_presence_active`:
+    switch the port on, poll for the device up to ``settle_s``, switch it off
+    again in a ``finally``. Without bridge power it is a single passive probe.
+    """
+    from hil_controller.adapters.esp_usbip_bridge import (
+        BridgePortPower,
+        EspBridgeError,
+        bridge_power_force,
+    )
+
+    busid = device.get("hub_port_path")
+    if not busid:
+        return False
+    force = bridge_power_force(device)
+    power = BridgePortPower(bridge, str(busid), force=bool(force), poll_s=poll_s)
+    if force is None:
+        return await power.present()
+    try:
+        await power.on()
+    except EspBridgeError as exc:
+        log.warning("validate_bridge_presence: %s power on failed: %s", power.label, exc)
+        return False
+    try:
+        return await power.await_presence(True, timeout_s=settle_s)
+    finally:
+        try:
+            await power.off()
+        except EspBridgeError as exc:  # best effort; leave-on is the only failure mode
+            log.warning("validate_bridge_presence: %s power off failed: %s", power.label, exc)
+
+
 async def dmesg_usb_error_count(transport: Any, *, tail: int = 60) -> int:
     """Count recent real USB-enumeration errors in the host's dmesg tail.
 

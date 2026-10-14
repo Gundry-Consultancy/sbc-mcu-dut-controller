@@ -63,14 +63,15 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                 """
                 INSERT INTO hosts
                     (id, role, addr, transport, ssh_user, ssh_key_path,
-                     max_concurrent_jobs, capabilities_json, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     max_concurrent_jobs, capabilities_json, status, api_url, token_env)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     role=excluded.role, addr=excluded.addr,
                     transport=excluded.transport, ssh_user=excluded.ssh_user,
                     ssh_key_path=excluded.ssh_key_path,
                     max_concurrent_jobs=excluded.max_concurrent_jobs,
-                    capabilities_json=excluded.capabilities_json
+                    capabilities_json=excluded.capabilities_json,
+                    api_url=excluded.api_url, token_env=excluded.token_env
                 """,
                 (
                     h["id"],
@@ -82,6 +83,9 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     h.get("max_concurrent_jobs"),
                     json.dumps(h.get("capabilities", [])),
                     h.get("status", "available"),
+                    # esp-usbip-bridge hosts only (see hosts/esp_bridge.py).
+                    h.get("api_url"),
+                    h.get("token_env"),
                 ),
             )
 
@@ -122,8 +126,8 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     (id, host_id, kind, model, capabilities_json, usb_json,
                      pool, status, serial_port, flasher, camera_id, qr_identifier,
                      hub_host_id, hub_port_path, solenoid_channel, usb_serial,
-                     bootsel_channel, bootsel_inverted)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     bootsel_channel, bootsel_inverted, power_control)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     host_id=excluded.host_id, kind=excluded.kind,
                     model=excluded.model,
@@ -139,7 +143,8 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     solenoid_channel=excluded.solenoid_channel,
                     usb_serial=excluded.usb_serial,
                     bootsel_channel=excluded.bootsel_channel,
-                    bootsel_inverted=excluded.bootsel_inverted
+                    bootsel_inverted=excluded.bootsel_inverted,
+                    power_control=excluded.power_control
                 """,
                 (
                     d["id"],
@@ -160,6 +165,7 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     runtime_values["usb_serial"],
                     runtime_values["bootsel_channel"],
                     runtime_values["bootsel_inverted"],
+                    d.get("power_control"),
                 ),
             )
             if existing:

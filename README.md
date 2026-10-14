@@ -1,5 +1,18 @@
 # Setup notes and Readme / Issues / Todos
 
+### ESP32 USB/IP bridge hosts
+
+DUTs can also hang off an ESP32 running the
+[esp-usbip-bridge](https://github.com/tyeth-ai-assisted/esp-usbip-bridge/tree/s31-function-coreboard-ethernet)
+firmware (`transport: esp-usbip-bridge`): the controller attaches them over
+USB/IP (no bind step), inventories them, power-cycles them through the bridge's
+per-port switched hub (`power_control: bridge-port`) and drives the bridge's
+I2C strand mux (`interface: "bridge:<host_id>"`). Serial, flashing and MSC run
+on the controller after `usbip attach`, so the controller needs `usbip` and
+`vhci-hcd`. Hubs that report ganged switching (e.g. GL850G) refuse per-port
+power unless `bridge-port:force`. See `docs/ARCHITECTURE.md` §10.1.1 and
+`deploy/topology.esp-usbip-bridge.example.yaml`.
+
 
 
 ## Issues / TODOs

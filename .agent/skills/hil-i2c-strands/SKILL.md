@@ -23,7 +23,9 @@ Two levels of muxing, don't conflate them:
    Driven by the inject stages, not the strand-mux.
 
 Controller tables: `strands` (id, `mux_aux` → the aux whose `interface` is the
-mux-box base URL, `mux_group`, `tca_address`, pool/status) →
+mux-box base URL, or `bridge:<host_id>` for the strand mux built into an
+esp-usbip-bridge host — same API, URL + token taken from that host; see
+`deploy/topology.esp-usbip-bridge.example.yaml`, `mux_group`, `tca_address`, pool/status) →
 `strand_components` (model, address, `tca_channel`, `ws_types`, `capabilities`) →
 `device_strands` (per-DUT analog-mux channel = the `routes` list). The **DB is
 the source of truth** (edited via `/v1/strands` and the web form);

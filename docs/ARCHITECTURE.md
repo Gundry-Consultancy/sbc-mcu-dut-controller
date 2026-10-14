@@ -200,7 +200,12 @@ have a Host row — it's the orchestrator, not a worker.
 | `id`                    | Stable slug, e.g. `rpi-displays`, `rpi-hil003`.       |
 | `role`                  | `microcontroller-fleet` / `sbc-fleet` / `protomq-broker`. |
 | `addr`                  | Hostname or IP.                                       |
-| `transport`             | `ssh` (v1 default) or `agent` (see §15 OQ11).         |
+| `transport`             | `ssh` (v1 default), `local`, `none`, or               |
+|                         | `esp-usbip-bridge` (§10.1.1); `agent` is a future     |
+|                         | option (see §15 OQ11).                                |
+| `api_url`, `token_env`  | `esp-usbip-bridge` only: API base URL (default        |
+|                         | `http://<addr>`) and the NAME of the env var holding  |
+|                         | its bearer token (§10.1.1).                           |
 | `ssh_user`              | Default `pi`.                                         |
 | `ssh_key_path`          | Path on the controller filesystem to the per-host key. |
 | `capabilities`          | Tags the resolver can require, e.g. `power-control`,  |
@@ -863,6 +868,75 @@ systemd unit on each HIL host, exposing an HTTPS API the controller
 calls — is sketched as a drop-in alternative once SSH's failure modes
 become painful (process supervision, partial stdout on connection
 drop, sandboxing). See §15 OQ11.
+
+#### 10.1.1 esp-usbip-bridge hosts (`transport: esp-usbip-bridge`)
+
+An **ESP32 USB/IP bridge** — an ESP32 running the
+[esp-usbip-bridge](https://github.com/tyeth-ai-assisted/esp-usbip-bridge/tree/s31-function-coreboard-ethernet)
+firmware (README, "Controller API"), e.g. an ESP32-S31-Function-CoreBoard-1
+on Ethernet with a USB hub on its host port — is a first-class USB-server
+host. It serves standard USB/IP on TCP 3240 and an HTTP controller API on
+port 80, and has **no shell**. `hosts/esp_bridge.py` gives it a
+HostTransport-shaped handle (`EspBridgeTransport`) whose `exec` returns a
+clear non-zero result and whose `bridge` attribute is an
+`EspUsbipBridgeClient` (`adapters/esp_usbip_bridge.py`). Every bridge
+interaction goes over HTTP:
+
+| Concern | SSH USB-server host | esp-usbip-bridge host |
+|---|---|---|
+| export | `sudo usbip bind -b <busid>` / `unbind` | none — always exported; `UsbipBridge` skips bind/unbind (`usbip_exports_always`) |
+| attach | `usbip attach -r <addr> -b <busid>` on the client | same |
+| inventory | `usbip list -l` + `lsusb -v/-t` + `uhubctl` | `GET /api/usb/devices` + `GET /api/usb/hubs` mapped onto the same `ExportableBusid` rows |
+| presence | `test -e /sys/bus/usb/devices/<busid>` (or by-path) | `GET /api/usb/devices/{busid}`: 200 present / 404 absent |
+| power | solenoid channel (`solenoid_hub_cli.py`) | `power_control: bridge-port` → `POST /api/ports/{busid}/on\|off` |
+| host recovery | `sudo reboot` + sequential bring-up | none (no automatic reboot; logged for an operator) |
+| flash / serial / MSC | on the host, or on the controller after attach | **only** on the controller after `usbip attach` |
+
+Bridge busids are Linux-style port paths that survive re-enumeration
+(`1-1` root port, `1-1.3`, `1-1.1.2`; virtual devices on bus 2), so a
+DUT's `hub_port_path` is both its busid and the hub port that powers it.
+
+Topology: `addr` (USB/IP + API host, e.g. `usbip-a1b2c3.local`),
+optional `api_url` (default `http://<addr>`), optional `token_env` — the
+**name** of the environment variable holding the bridge's bearer token
+(`run/controller.env`); the token value is never stored in the topology or
+the DB. Discovery: the bridge advertises `_usbip._tcp` over mDNS; the
+controller does not browse it, it resolves the configured `.local` name
+through the system resolver like any other host. Example:
+`deploy/topology.esp-usbip-bridge.example.yaml`.
+
+**Power** (`devices.power_control`): `bridge-port` switches the bridge hub
+port with `force: false`; `bridge-port:force` passes `force: true`. NULL
+keeps the legacy behaviour (solenoid when `solenoid_channel` is set, else
+the esptool soft reset). The `power_cycle` stage, the enter-bootloader /
+flash recovery power-cycles, firmware-bench on-demand power-on/off and the
+availability probe (`host_recovery.validate_bridge_presence`, active under
+on-demand power) all honour it, with the solenoid timing defaults (off
+1 s, disappear ≤10 s, reappear ≤30 s, settle 2 s). The bridge refuses
+per-port power with **409** on hubs that report `ganged`/`none` switching
+(many cheap hubs, e.g. GL850G `05e3:0610`) and on ports that feed another
+hub; the controller surfaces that as a stage error naming the
+`bridge-port:force` opt-in, and the inventory's `port_status_text` shows
+each hub's `power_switching` mode.
+
+**firmware-bench on a bridge DUT:** the registry hands the adapter a
+`LocalTransport` as `dut_transport` (flash/serial/MSC on the controller)
+and the bridge transport as `hub_transport` (power/presence). After
+power-on the adapter attaches the busid (`modprobe vhci-hcd` + `usbip
+attach`) and runs a `UsbipAttachKeeper` that re-attaches whenever the DUT
+re-enumerates (power-cycle, 1200-baud touch into the ROM), detaching at
+teardown. The tty that appears after the first attach is the serial
+fallback; prefer `flash_port_filter`/`log_port_filter` (by-id substrings)
+for stable naming across modes. The controller's own gh/git login is not
+signed out at teardown (that step targets DUT hosts).
+
+**I2C strand mux on the bridge:** the bridge's analog mux implements the
+sbc-dut-analog-mux-api contract, so the existing `AnalogMuxAdapter` drives
+it unchanged. An aux with `interface: "bridge:<host_id>"` resolves to that
+host's API URL + token (`hosts/esp_bridge.resolve_aux_interface`), used by
+`select_i2c_strand` / `isolate_i2c_strand`. The mux groups (ADG729 dual
+4:1, ADG728 pairs) are configured on the bridge (`PUT /api/topology`); the
+controller only needs matching `mux_group` names and per-DUT channels.
 
 ### 10.2 Device adapters
 
@@ -1958,6 +2032,15 @@ Status key: **[done]** shipped, **[partial]** partially implemented, **[open]** 
     port, captures VID/PIDs; optional reset cycle splits role into
     bootloader vs runtime.
   - 56 new tests (PR1–PR5); 275 total pass.
+
+- **M8 — esp-usbip-bridge hosts** [done] — `transport: esp-usbip-bridge`
+  hosts (ESP32 USB/IP bridge firmware): HTTP client + `EspBridgeTransport`,
+  usbip attach without bind/unbind + `UsbipAttachKeeper`, inventory from
+  `/api/usb/devices` + `/api/usb/hubs`, `power_control: bridge-port[:force]`
+  wired into `power_cycle` / recovery / on-demand power / availability probe,
+  and `bridge:<host_id>` aux interfaces for the bridge's I2C strand mux.
+  Additive columns `hosts.api_url`, `hosts.token_env`, `devices.power_control`.
+  See §10.1.1. Not yet validated on a live bench.
 
 Past M6 we revisit dynamic hardware switching, GitHub check-run posting,
 and the SSH → agent transport upgrade (open question 11) based on what

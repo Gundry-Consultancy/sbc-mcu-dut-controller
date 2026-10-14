@@ -3,6 +3,11 @@
 Used by both ``api/hosts.py`` (REST endpoint) and ``web/router.py`` (the
 ``/ui/usbip`` bench overview page) so the underlying ``usbip list -l``
 parse + match-to-device logic stays in one place.
+
+An esp-usbip-bridge host has no shell: :func:`query_host_busids` detects its
+transport and maps the bridge's ``GET /api/usb/devices`` + ``GET /api/usb/hubs``
+onto the same :class:`ExportableBusid` rows instead (see
+:func:`query_bridge_busids`), so bridge DUTs show up exactly like SSH-host DUTs.
 """
 
 from __future__ import annotations
@@ -11,6 +16,11 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
+from hil_controller.adapters.esp_usbip_bridge import (
+    EspBridgeError,
+    EspUsbipBridgeClient,
+    find_hub_port,
+)
 from hil_controller.adapters.usb_scan import (
     parse_dev_links,
     parse_lsusb,
@@ -20,6 +30,7 @@ from hil_controller.adapters.usb_scan import (
     parse_usbip_list,
 )
 from hil_controller.hosts.base import ExecResult
+from hil_controller.hosts.esp_bridge import bridge_client_of
 
 _USBIP_LIST_CMD = ["sudo", "-n", "/usr/sbin/usbip", "list", "-l"]
 _LSUSB_CMD = ["sh", "-lc", "lsusb 2>/dev/null || true"]
@@ -157,7 +168,16 @@ async def query_host_busids(
     Non-zero exit (usbipd down, sudoers misconfigured, etc.) returns a
     response with ``daemon_listening=False`` and the captured stderr/stdout
     in ``error`` — callers never see an exception from this function.
+
+    An esp-usbip-bridge transport is answered from the bridge's HTTP API
+    (:func:`query_bridge_busids`); ``include_dev_links``/``timeout_s`` do not
+    apply there (no /dev on the bridge).
     """
+    bridge = bridge_client_of(transport)
+    if bridge is not None:
+        return await query_bridge_busids(
+            bridge, host_id=host_id, device_busid_map=device_busid_map
+        )
     core = asyncio.gather(
         _exec_capture(transport, _with_timeout(_USBIP_LIST_CMD, timeout_s)),
         _exec_capture(transport, _with_timeout(_LSUSB_CMD, timeout_s)),
@@ -225,6 +245,111 @@ async def query_host_busids(
         busids=busids,
         hub_info=hub_info,
         dev_links=dev_links,
+    )
+
+
+async def query_bridge_busids(
+    bridge: EspUsbipBridgeClient,
+    *,
+    host_id: str,
+    device_busid_map: dict[str, str],
+) -> HostBusidInventory:
+    """Inventory an esp-usbip-bridge from ``/api/usb/devices`` + ``/api/usb/hubs``.
+
+    Every device the bridge lists is exported (there is no bind step), so all of
+    them are returned; ``daemon_listening`` reflects whether the HTTP API
+    answered. Field formats follow the SSH path (``speed`` like ``480M``,
+    ``max_power`` like ``100mA``). Hub port power/connect status come from the
+    hub listing, and ``port_status_text`` names the hub's ``power_switching``
+    mode so an operator can see which ports bridge port power can really switch
+    (``ganged``/``none`` hubs refuse per-port power unless forced).
+    """
+    try:
+        devices = await bridge.devices()
+    except EspBridgeError as exc:
+        return HostBusidInventory(
+            host_id=host_id, daemon_listening=False, busids=[], error=str(exc)[:500]
+        )
+    try:
+        hubs = await bridge.hubs()
+    except EspBridgeError:
+        hubs = []  # device rows are still useful without per-port power detail
+    busids = [_bridge_busid_row(d, hubs, device_busid_map) for d in devices if d.get("busid")]
+    hub_info = [
+        UsbHubInfo(
+            location=str(h.get("path") or ""),
+            hub_vid_pid=(f"{h.get('vid')}:{h.get('pid')}".lower() if h.get("vid") else None),
+            hub_description=" ".join(
+                x for x in (h.get("manufacturer"), h.get("product")) if x
+            ).strip(),
+            ports=[_bridge_port_row(h, p) for p in h.get("ports") or []],
+        )
+        for h in hubs
+    ]
+    return HostBusidInventory(
+        host_id=host_id, daemon_listening=True, busids=busids, hub_info=hub_info
+    )
+
+
+def _bridge_port_status(hub: dict[str, Any], port: dict[str, Any]) -> str:
+    parts = [f"{hub.get('power_switching') or 'unknown'} power switching"]
+    parts.append(f"power {port.get('power') or '?'}")
+    parts.append("connected" if port.get("connected") else "disconnected")
+    for flag in ("enabled", "suspended", "over_current"):
+        if port.get(flag):
+            parts.append(flag.replace("_", "-"))
+    if port.get("user_off"):
+        parts.append("switched off by user")
+    return ", ".join(parts)
+
+
+def _bridge_port_row(hub: dict[str, Any], port: dict[str, Any]) -> dict[str, Any]:
+    """A hub port in the same shape ``parse_uhubctl`` produces."""
+    return {
+        "port_number": port.get("port"),
+        "path": port.get("path"),
+        "status": _bridge_port_status(hub, port),
+        "power_status": port.get("power"),
+        "connect_status": "connected" if port.get("connected") else "disconnected",
+        "power_switching": hub.get("power_switching"),
+    }
+
+
+def _bridge_busid_row(
+    dev: dict[str, Any], hubs: list[dict[str, Any]], device_busid_map: dict[str, str]
+) -> ExportableBusid:
+    busid = str(dev["busid"])
+    mbps = dev.get("speed_mbps")
+    speed = f"{mbps:g}M" if isinstance(mbps, (int, float)) and mbps else dev.get("speed")
+    max_ma = dev.get("max_power_ma")
+    hub_port = find_hub_port(hubs, busid)
+    status_text = _bridge_port_status(*hub_port) if hub_port else None
+    if dev.get("virtual"):
+        status_text = "virtual device (bridge-internal)"
+    return ExportableBusid(
+        busid=busid,
+        vid=str(dev.get("vid") or "").lower(),
+        pid=str(dev.get("pid") or "").lower(),
+        description=str(dev.get("description") or ""),
+        matched_device_id=device_busid_map.get(busid),
+        manufacturer=_clean_string(dev, "manufacturer"),
+        product=_clean_string(dev, "product"),
+        serial=_clean_string(dev, "serial"),
+        speed=str(speed) if speed else None,
+        max_power=f"{max_ma}mA" if max_ma is not None else None,
+        num_interfaces=dev.get("num_interfaces"),
+        device_class=_clean_string(dev, "device_class"),
+        driver=None,  # no kernel driver on the bridge; every device is exported
+        lsusb_description=_clean_string(dev, "name"),
+        port_power_status=dev.get("port_power_status")
+        or (hub_port[1].get("power") if hub_port else None),
+        port_connect_status=dev.get("port_connect_status")
+        or (
+            ("connected" if hub_port[1].get("connected") else "disconnected")
+            if hub_port
+            else None
+        ),
+        port_status_text=status_text,
     )
 
 

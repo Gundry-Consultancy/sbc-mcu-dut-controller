@@ -32,6 +32,11 @@ from datetime import UTC, datetime, timezone
 from typing import Any, Optional
 
 from hil_controller.adapters.analog_mux import AnalogMuxAdapter, AnalogMuxError
+from hil_controller.adapters.esp_usbip_bridge import (
+    BridgePortPower,
+    EspBridgeError,
+    bridge_power_force,
+)
 from hil_controller.adapters.flashers.base import Artifact, FlasherError
 from hil_controller.adapters.flashers.bossac import SAMD51_APP_OFFSET, BossacFlasher
 from hil_controller.adapters.flashers.esptool import EsptoolFlasher, classify_boot_state
@@ -479,6 +484,80 @@ async def _stage_enter_bootloader(stage: dict[str, Any], ctx: BenchContext) -> N
     await _recover_download_via_hub(stage, ctx, reason="touch + USB-JTAG reset failed")
 
 
+def _bridge_power(ctx: BenchContext) -> BridgePortPower | None:
+    """The DUT's esp-usbip-bridge port power, when ``power_control`` selects it.
+
+    ``power_control: bridge-port`` (or ``bridge-port:force``) switches the bridge
+    hub port at ``hub_port_path`` through ``ctx.hub_transport``, which must then
+    be the bridge host's :class:`~hil_controller.hosts.esp_bridge.EspBridgeTransport`.
+    Returns None for every other device (the solenoid / esptool paths apply).
+    """
+    force = bridge_power_force(ctx.device)
+    if force is None:
+        return None
+    from hil_controller.hosts.esp_bridge import bridge_client_of
+
+    client = bridge_client_of(ctx.hub_transport)
+    port = ctx.device.get("hub_port_path")
+    if client is None or not port:
+        raise StageError(
+            f"power_control={ctx.device.get('power_control')!r} needs the DUT's hub host to "
+            "be an esp-usbip-bridge and hub_port_path to be set"
+        )
+    return BridgePortPower(client, str(port), force=force)
+
+
+def _has_hub_power(ctx: BenchContext) -> bool:
+    """True when the DUT can be power-cycled (solenoid channel or bridge port)."""
+    return (
+        ctx.device.get("solenoid_channel") is not None
+        or bridge_power_force(ctx.device) is not None
+    )
+
+
+def _power_label(ctx: BenchContext, bridge: BridgePortPower | None) -> str:
+    if bridge is not None:
+        return bridge.label
+    return f"solenoid ch {ctx.device.get('solenoid_channel')}"
+
+
+async def _hub_power_cycle(
+    ctx: BenchContext,
+    bridge: BridgePortPower | None,
+    *,
+    off_s: float,
+    settle_s: float,
+    post_off_s: float = 0.0,
+) -> None:
+    """Timed power-cycle through the solenoid hub or the bridge hub port.
+
+    Bridge calls are HTTP (not ``exec``), so they are logged explicitly to keep
+    the job log as complete as the solenoid CLI transcript.
+    """
+    if bridge is None:
+        channel = ctx.device.get("solenoid_channel")
+        if channel is None:
+            raise StageError("no solenoid channel or bridge hub port to power-cycle")
+        hub = SolenoidHubAdapter(transport=ctx.hub_transport, sudo=ctx.sudo)
+        try:
+            await hub.power_cycle(
+                int(channel), off_s=off_s, settle_s=settle_s, post_off_s=post_off_s
+            )
+        except SolenoidHubError as exc:
+            raise StageError(f"hub power-cycle failed on channel {channel}: {exc}") from exc
+        return
+    try:
+        ctx.log_line(f"{bridge.label}: power off")
+        await bridge.off()
+        await asyncio.sleep(off_s + post_off_s)
+        ctx.log_line(f"{bridge.label}: power on")
+        await bridge.on()
+    except EspBridgeError as exc:
+        raise StageError(f"hub power-cycle failed on {bridge.label}: {exc}") from exc
+    if settle_s > 0:
+        await asyncio.sleep(settle_s)
+
+
 async def _recover_download_via_hub(
     stage: dict[str, Any], ctx: BenchContext, *, reason: str
 ) -> None:
@@ -489,10 +568,11 @@ async def _recover_download_via_hub(
     USB endpoint. An *erased* S3 with no valid app comes back up directly in the
     ROM, so the follow-up ``enter_download_mode`` usually finds it already there;
     otherwise the 1200-touch flips it. Raises :class:`StageError` if the DUT has
-    no solenoid channel to cycle.
+    no solenoid channel (or bridge hub port) to cycle.
     """
+    bridge = _bridge_power(ctx)
     channel = ctx.device.get("solenoid_channel")
-    if channel is None:
+    if channel is None and bridge is None:
         raise StageError(f"{reason}: no solenoid channel to power-cycle for recovery")
     # Recovery means clearing a wedge, so depower generously (long OFF hold +
     # depower settle) rather than a quick latch toggle — a brief off often won't
@@ -505,21 +585,17 @@ async def _recover_download_via_hub(
     boot_settle = float(stage.get("boot_settle_s", 0.01))
     attempts = int(stage.get("attempts", 8))
     settle_s = float(stage.get("settle_s", 3.0))
-    hub = SolenoidHubAdapter(transport=ctx.hub_transport, sudo=ctx.sudo)
     ctx.log_line(
-        f"recovery ({reason}): generous power-cycle solenoid ch {channel} "
+        f"recovery ({reason}): generous power-cycle {_power_label(ctx, bridge)} "
         f"(off {off_s}s + depower {post_off}s, boot settle {boot_settle}s)"
     )
-    try:
-        # NO post-on settle here: the USB-Serial/JTAG reset below must catch the
-        # ~1-2s ROM up-window that opens immediately after power-on, BEFORE any app
-        # (CircuitPython, a healthy WS) boots and closes it. force_download_via_reset
-        # is itself a tight retry loop that does the timing; sleeping boot_settle
-        # first would miss the window on a native-USB board that boots an app in
-        # ~1.6s. boot_settle is reserved for the app-mode 1200-touch fallback.
-        await hub.power_cycle(int(channel), off_s=off_s, settle_s=0.0, post_off_s=post_off)
-    except SolenoidHubError as exc:
-        raise StageError(f"hub power-cycle failed on channel {channel}: {exc}") from exc
+    # NO post-on settle here: the USB-Serial/JTAG reset below must catch the
+    # ~1-2s ROM up-window that opens immediately after power-on, BEFORE any app
+    # (CircuitPython, a healthy WS) boots and closes it. force_download_via_reset
+    # is itself a tight retry loop that does the timing; sleeping boot_settle
+    # first would miss the window on a native-USB board that boots an app in
+    # ~1.6s. boot_settle is reserved for the app-mode 1200-touch fallback.
+    await _hub_power_cycle(ctx, bridge, off_s=off_s, settle_s=0.0, post_off_s=post_off)
     flasher = ctx.make_flasher("esptool")
     # A freshly power-cycled erased/blank board boot-loops in normal mode — the
     # USB-Serial/JTAG reset catches it; fall back to the 1200-touch for an app.
@@ -591,12 +667,12 @@ async def _enter_bootloader_sam(stage: dict[str, Any], ctx: BenchContext) -> Non
     except FlasherError as exc:
         ctx.log_line(f"tier1 hammer did not reach {which} bootloader ({exc})")
 
-    if not stage.get("power_cycle", True) or channel is None:
+    bridge = _bridge_power(ctx)
+    if not stage.get("power_cycle", True) or (channel is None and bridge is None):
         raise StageError(
             f"could not enter {which} bootloader via 1200-touch hammer "
             "(recovery disabled or no solenoid channel to power-cycle)"
         )
-    hub = SolenoidHubAdapter(transport=ctx.hub_transport, sudo=ctx.sudo)
     off_s = float(stage.get("recover_off_s", 3.0))
 
     # Tier 2: power-cycle for a fresh boot window, then hammer (the hammer starts
@@ -605,11 +681,8 @@ async def _enter_bootloader_sam(stage: dict[str, Any], ctx: BenchContext) -> Non
     # power-off clears the RAM magic value the SAMD double-tap relies on (only a
     # reset preserves it, and the solenoid controls power, not reset).
     for r in range(int(stage.get("power_cycle_rounds", 2))):
-        ctx.log_line(f"tier2 round {r + 1}: power-cycle solenoid ch {channel}, then hammer")
-        try:
-            await hub.power_cycle(int(channel), off_s=off_s, settle_s=0.0)
-        except SolenoidHubError as exc:
-            raise StageError(f"hub power-cycle failed on channel {channel}: {exc}") from exc
+        ctx.log_line(f"tier2 round {r + 1}: power-cycle {_power_label(ctx, bridge)}, then hammer")
+        await _hub_power_cycle(ctx, bridge, off_s=off_s, settle_s=0.0)
         try:
             await flasher.enter_bootloader(**_kw())
             ctx.log_line(f"device is in {which} bootloader (after power-cycle round {r + 1})")
@@ -711,7 +784,7 @@ async def _stage_flash(stage: dict[str, Any], ctx: BenchContext) -> None:
             recoverable = (
                 which == "esptool"
                 and attempt <= recover_attempts
-                and ctx.device.get("solenoid_channel") is not None
+                and _has_hub_power(ctx)
                 and stage.get("recover", True)
             )
             if not recoverable:
@@ -800,12 +873,14 @@ async def _stage_power_cycle(stage: dict[str, Any], ctx: BenchContext) -> None:
     rather than failing the run.
     """
     channel = ctx.device.get("solenoid_channel")
+    bridge = _bridge_power(ctx)
     force_esptool = str(stage.get("reset_via") or "").lower() in ("esptool", "soft_reset", "reset")
-    if channel is None or force_esptool:
-        if force_esptool and channel is not None:
+    if (channel is None and bridge is None) or force_esptool:
+        if force_esptool and (channel is not None or bridge is not None):
+            what = f"solenoid channel {channel}" if bridge is None else bridge.label
             ctx.log_line(
-                f"power_cycle: reset via esptool (reset_via set); solenoid channel "
-                f"{channel} left mapped — a native-USB board resets more reliably this way"
+                f"power_cycle: reset via esptool (reset_via set); {what} "
+                "left mapped — a native-USB board resets more reliably this way"
             )
         else:
             ctx.log_line(
@@ -822,6 +897,10 @@ async def _stage_power_cycle(stage: dict[str, Any], ctx: BenchContext) -> None:
         finally:
             if ctx.resume_serial is not None:
                 await ctx.resume_serial()
+        return
+
+    if bridge is not None:
+        await _power_cycle_via_bridge(stage, ctx, bridge)
         return
 
     off_s = float(stage.get("off_s", 1.0))
@@ -865,6 +944,51 @@ async def _stage_power_cycle(stage: dict[str, Any], ctx: BenchContext) -> None:
         await asyncio.sleep(settle_s)  # let the app finish coming up post-enumeration
     else:
         ctx.log_line(f"WARNING: device did not re-enumerate within {back_timeout:.0f}s of power-on")
+
+
+async def _power_cycle_via_bridge(
+    stage: dict[str, Any], ctx: BenchContext, bridge: BridgePortPower
+) -> None:
+    """``power_cycle`` through an esp-usbip-bridge hub port.
+
+    Same detection-driven shape and defaults as the solenoid path (off 1 s,
+    disappear ≤10 s, reappear ≤30 s, settle 2 s), but presence is the bridge's
+    ``GET /api/usb/devices/{busid}`` (200/404) rather than ``test -e`` over SSH.
+    When the DUT is attached to the controller over usbip its serial node only
+    returns once the attachment is re-established (the firmware-bench attach
+    keeper does that), so a known serial node is awaited as well.
+    ``await_enumeration: false`` gives the plain timed cycle.
+    """
+    off_s = float(stage.get("off_s", 1.0)) + float(stage.get("post_off_s", 0.0))
+    settle_s = float(stage.get("settle_s", 2.0))
+    if not bool(stage.get("await_enumeration", True)):
+        ctx.log_line(f"power-cycle {bridge.label} (off {off_s}s, settle {settle_s}s)")
+        await _hub_power_cycle(ctx, bridge, off_s=off_s, settle_s=settle_s)
+        return
+    back_timeout = float(stage.get("reappear_timeout_s", 30.0))
+    try:
+        back = await bridge.power_cycle(
+            off_s=off_s,
+            settle_s=0.0,
+            disappear_timeout_s=float(stage.get("disappear_timeout_s", 10.0)),
+            reappear_timeout_s=back_timeout,
+            on_line=ctx.log_line,
+        )
+    except EspBridgeError as exc:
+        raise StageError(f"power-cycle failed on {bridge.label}: {exc}") from exc
+    if not back:
+        return
+    port = ctx.log_serial_port or ctx.flash_serial_port
+    if port:
+        if await _await_serial_node(ctx, port, present=True, timeout_s=back_timeout):
+            ctx.log_line(f"serial node {port} is back")
+        else:
+            ctx.log_line(
+                f"WARNING: serial node {port} did not reappear within {back_timeout:.0f}s "
+                "of the bridge re-enumerating the DUT (usbip re-attach?)"
+            )
+    if settle_s > 0:
+        await asyncio.sleep(settle_s)
 
 
 async def _stage_write_secrets_msc(stage: dict[str, Any], ctx: BenchContext) -> None:
@@ -1702,6 +1826,23 @@ async def _resolve_strand_route(
     return (row["base_url"], row["mux_group"], row["mux_channel"])
 
 
+async def _mux_endpoint(
+    ctx: BenchContext, interface: str, stage: dict[str, Any]
+) -> tuple[str, str | None]:
+    """Resolve a mux ``interface`` to ``(base_url, token)``.
+
+    A plain URL is used as-is. ``bridge:<host_id>`` (an analog mux running on an
+    esp-usbip-bridge) resolves to that host's HTTP API URL and the bearer token
+    named by its ``token_env``. An explicit stage ``token`` always wins.
+    """
+    from hil_controller.hosts.esp_bridge import resolve_aux_interface
+
+    base_url, token = await resolve_aux_interface(ctx.db_path, interface)
+    if not base_url:
+        raise StageError(f"I2C strand mux interface {interface!r} did not resolve to a URL")
+    return base_url, (stage.get("token") or token or None)
+
+
 async def _stage_select_i2c_strand(stage: dict[str, Any], ctx: BenchContext) -> None:
     """Route a shared I2C component strand to THIS DUT via the analog strand-mux.
 
@@ -1731,7 +1872,8 @@ async def _stage_select_i2c_strand(stage: dict[str, Any], ctx: BenchContext) -> 
             "select_i2c_strand: need a resolvable 'strand_id' or explicit "
             "'base_url'+'group'+'channel'"
         )
-    adapter = AnalogMuxAdapter(base_url, token=stage.get("token") or None)
+    base_url, token = await _mux_endpoint(ctx, base_url, stage)
+    adapter = AnalogMuxAdapter(base_url, token=token)
     label = f" {strand_id}" if strand_id else ""
     ctx.log_line(f"select_i2c_strand: routing strand{label} -> {group} ch{channel} via {base_url}")
     try:
@@ -1758,7 +1900,8 @@ async def _stage_isolate_i2c_strand(stage: dict[str, Any], ctx: BenchContext) ->
             base_url = route[0]
     if not base_url:
         raise StageError("isolate_i2c_strand: need a resolvable 'strand_id' or explicit 'base_url'")
-    adapter = AnalogMuxAdapter(base_url, token=stage.get("token") or None)
+    base_url, token = await _mux_endpoint(ctx, base_url, stage)
+    adapter = AnalogMuxAdapter(base_url, token=token)
     ctx.log_line(f"isolate_i2c_strand: opening all switches via {base_url}")
     try:
         await adapter.isolate()
