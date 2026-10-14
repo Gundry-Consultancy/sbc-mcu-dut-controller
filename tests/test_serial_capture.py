@@ -74,7 +74,7 @@ def test_socat_argv() -> None:
     assert socat_argv("/dev/serial/by-id/usb-Adafruit_xxx", 115200) == [
         "socat",
         "-u",
-        "OPEN:/dev/serial/by-id/usb-Adafruit_xxx,b115200,raw,clocal=1",
+        "OPEN:/dev/serial/by-id/usb-Adafruit_xxx,b115200,raw,echo=0,clocal=1",
         "-",
     ]
 
@@ -86,7 +86,7 @@ def test_socat_argv_escapes_colon_bearing_by_path() -> None:
     assert argv == [
         "socat",
         "-u",
-        "OPEN:/dev/serial/by-path/platform-3f980000.usb-usb-0\\:1.2\\:1.0,b115200,raw,clocal=1",
+        "OPEN:/dev/serial/by-path/platform-3f980000.usb-usb-0\\:1.2\\:1.0,b115200,raw,echo=0,clocal=1",
         "-",
     ]
 
@@ -161,7 +161,7 @@ async def test_start_launches_reader_with_socat_argv(tmp_path: Path) -> None:
     await asyncio.sleep(0.01)  # let the reader pick up the chunk
     await cap.stop()
     assert tp.stream_argvs == [
-        ["socat", "-u", "OPEN:/dev/serial/by-id/usb-X,b115200,raw,clocal=1", "-"]
+        ["socat", "-u", "OPEN:/dev/serial/by-id/usb-X,b115200,raw,echo=0,clocal=1", "-"]
     ]
 
 

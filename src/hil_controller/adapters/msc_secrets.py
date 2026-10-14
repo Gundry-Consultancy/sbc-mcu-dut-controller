@@ -57,9 +57,9 @@ def select_block_device(by_id_names: list[str], msc_filter: str) -> str | None:
     """Pick the ``/dev/disk/by-id`` entry matching *msc_filter*.
 
     The filter is matched case-insensitively as a glob when it contains glob
-    metacharacters, otherwise as a substring. Whole-disk entries are preferred
-    over ``*-partN`` partitions when both match (FAT MSC volumes are usually a
-    bare disk). Returns the matched name, or ``None`` if nothing matches.
+    metacharacters, otherwise as a substring. Prefer a numbered partition of
+    the selected disk when present; otherwise use the bare disk (WipperSnapper).
+    Returns the matched name, or ``None`` if nothing matches.
     """
     if not msc_filter:
         return None
@@ -72,8 +72,16 @@ def select_block_device(by_id_names: list[str], msc_filter: str) -> str | None:
     ]
     if not matches:
         return None
-    # Prefer non-partition entries, then shortest name (most specific disk id).
-    matches.sort(key=lambda n: ("-part" in n, len(n)))
+    # Pick a disk first, then its first numbered partition if present. Never
+    # mistake udev's unnumbered "-part" alias for a usable partition.
+    matches = [n for n in matches if not n.endswith("-part")]
+    if not matches:
+        return None
+    matches.sort(key=lambda n: ("-part" in n, len(n), n))
+    disk = matches[0]
+    partitions = [n for n in matches if re.fullmatch(re.escape(disk) + r"-part[0-9]+", n)]
+    if partitions:
+        return min(partitions, key=lambda n: int(n.rsplit("-part", 1)[1]))
     return matches[0]
 
 

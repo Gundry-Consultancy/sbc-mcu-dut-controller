@@ -92,3 +92,28 @@ async def test_serial_checkpoint_rejects_old_success(tmp_path):
     with path.open("a") as stream:
         stream.write("NEW_SUCCESS\n")
     await cp.assert_serial({"contains": "NEW_SUCCESS"}, ctx)
+
+
+async def test_storage_enumeration_retries_before_writing(monkeypatch):
+    transport = AsyncMock()
+    transport.exec.return_value = SimpleNamespace(exit_status=0, stdout="", stderr="")
+    resolve = AsyncMock(side_effect=[cp.MscError("not ready"), "/dev/dut-part1"])
+    monkeypatch.setattr(cp, "resolve_msc_device", resolve)
+    monkeypatch.setattr(cp.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(
+        cp, "_mount_msc", AsyncMock(return_value=("/dev/dut-part1", "/media/cpy", ["unmount"]))
+    )
+    ctx = BenchContext(transport, transport, "/dev/tty", protomq_host="bench", protomq_port=1884)
+    await cp.write_circuitpython({"files": {"code.py": "print('ok')"}}, ctx)
+    assert resolve.await_count == 2
+    assert transport.exec.call_args.args[0] == ["unmount"]
+
+
+async def test_storage_enumeration_timeout_does_not_write(monkeypatch):
+    transport = AsyncMock()
+    monkeypatch.setattr(cp, "resolve_msc_device", AsyncMock(side_effect=cp.MscError("absent")))
+    monkeypatch.setattr(cp, "time", SimpleNamespace(monotonic=iter([0, 31]).__next__))
+    ctx = BenchContext(transport, transport, "/dev/tty", protomq_host="bench", protomq_port=1884)
+    with pytest.raises(cp.MscError, match="absent"):
+        await cp.write_circuitpython({"files": {"code.py": ""}}, ctx)
+    transport.exec.assert_not_called()

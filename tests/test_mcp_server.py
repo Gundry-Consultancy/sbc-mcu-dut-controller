@@ -299,3 +299,14 @@ async def test_http_guide_and_openapi_include_public_wifi(authed_client):
 def test_http_requires_token():
     with pytest.raises(ValueError, match="HIL_MCP_TOKEN"):
         http_app(create_server(ControllerClient("http://bench", "token")), "")
+
+
+def test_circuitpython_no_flash_powers_up_before_storage():
+    spec = AgentJob(
+        runtime="circuitpython",
+        device_id="qtpy",
+        files={"code.py": "print('ok')"},
+        expect_serial="ok",
+    )
+    stages = [s["type"] for s in build_job(spec)["params"]["stages"]]
+    assert stages.index("power_cycle") < stages.index("write_circuitpython")

@@ -192,6 +192,8 @@ def build_job(spec: AgentJob) -> dict[str, Any]:
                 if not external:
                     stages.append({"type": "verify_checkin"})
             else:
+                if not stages:
+                    stages.append({"type": "power_cycle"})
                 if not spec.files or "code.py" not in spec.files:
                     raise ValueError("CircuitPython jobs require files including code.py")
                 stages.extend(

@@ -8,7 +8,7 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-from hil_controller.adapters.msc_secrets import _mount_msc, resolve_msc_device
+from hil_controller.adapters.msc_secrets import MscError, _mount_msc, resolve_msc_device
 
 if TYPE_CHECKING:
     from hil_controller.adapters.bench_stages import BenchContext
@@ -54,7 +54,20 @@ async def write_circuitpython(stage: dict[str, Any], ctx: BenchContext) -> None:
     files["settings.toml"] = "".join(
         f"{key} = {json.dumps(value, ensure_ascii=False)}\n" for key, value in settings.items()
     )
-    dev = await resolve_msc_device(ctx.dut_transport, stage.get("msc_filter") or ctx.msc_filter)
+    timeout = float(stage.get("msc_timeout_s", 30))
+    if not 0 < timeout <= 120:
+        raise ValueError("msc_timeout_s must be in (0, 120]")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            dev = await resolve_msc_device(
+                ctx.dut_transport, stage.get("msc_filter") or ctx.msc_filter
+            )
+            break
+        except MscError:
+            if time.monotonic() >= deadline:
+                raise
+            await asyncio.sleep(0.5)
     _, mount, unmount = await _mount_msc(ctx.dut_transport, dev, read_only=False)
     try:
         # Board firmware/library compatibility stays the test author's responsibility.

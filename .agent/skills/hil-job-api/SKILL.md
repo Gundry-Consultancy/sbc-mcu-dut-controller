@@ -30,9 +30,11 @@ require a dummy firmware artifact.
 
 ## Reaching the controller
 
-- Base URL: `http://192.168.1.169:8080` on the bench LAN, or
-  `http://tachyon-16ee27b8.ostrich-escalator.ts.net:8080` over Tailscale.
-  CI passes it as `HIL_API_BASE`.
+- Base URL: `http://tachyon-16ee27b8.ostrich-escalator.ts.net:8080` over
+  Tailscale, or the controller's current LAN address on port 8080. CI passes it
+  as `HIL_API_BASE`. LAN DHCP addresses can change; do not assume `.169`.
+  `HIL_CONTROLLER_IP` must advertise the current DUT-reachable LAN address for
+  per-job protoMQ, even when the agent reaches the API over Tailscale.
 - Every `/v1/*` call: `Authorization: Bearer $HIL_API_TOKEN`. Tokens are static
   bootstrap strings or argon2-hashed minted ones (`scripts/mint-token.py`);
   the dev bench default is `dev-token-change-me`.

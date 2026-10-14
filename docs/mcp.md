@@ -166,5 +166,34 @@ skills without restart/reinstall. `list_skills` returns content hashes and finds
 new skills automatically. Changes to executable stages still require updating
 the controller/MCP installation. No automatic pull/merge or schedule is created.
 
-Tests use real MCP stdio/HTTP sessions with fake controller/hardware transports.
-They do not flash a live bench or send real credentials to Adafruit IO.
+Automated tests use real MCP stdio/HTTP sessions with fake controller/hardware
+transports. For the real bench Wi-Fi/check-in results and tested revisions, see
+[mcp-bench-validation-2026-10-14.md](mcp-bench-validation-2026-10-14.md).
+The repeatable MCP client and smoke programs are in `examples/mcp/`.
+
+### Running directly on the bench
+
+No Git deployment or persistent MCP listener is required. Install the MCP extra
+alongside the controller and run `python -m hil_controller.mcp_server` over stdio.
+An SSH session can run both client and server on Tachyon. From the controller's
+checkout, with `HIL_API_BASE` and `HIL_API_TOKEN` exported:
+
+```sh
+.venv/bin/python examples/mcp/run_job.py --job /tmp/job.json --output /tmp/proof \
+  --command .venv/bin/python -- -m hil_controller.mcp_server
+```
+
+`run_job.py` uses MCP for discovery, preparation, submission, waiting, and proof
+retrieval. It saves the submitted ID immediately; use `--job-id ID` to resume
+observation without submitting twice. The SDK filters inherited variables, so
+the example explicitly forwards controller configuration. Keep real tokens in
+the environment, not command arguments. A finished state must also have a pass
+result; inspect the saved verdicts to establish what was actually tested.
+
+The controller's `HIL_CONTROLLER_IP` must be its current DUT-reachable LAN
+address. Its API can use a Tailscale address while its Wi-Fi DUTs need the LAN
+broker address. Restart the controller after changing this setting when idle.
+CircuitPython storage may enumerate later than serial; `write_circuitpython`
+waits up to 30 seconds (`msc_timeout_s`, maximum 120). Partitioned MSC volumes
+use their first numbered partition. A read-only volume needs a suitable
+`boot.py` or a clean board-matched firmware installation before deployment.
