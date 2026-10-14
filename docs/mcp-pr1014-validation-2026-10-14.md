@@ -1,5 +1,7 @@
 # PR1014 protobuf and real-hardware validation — 2026-10-14
 
+Latest retest: [head 71209daa passed the same scan and Add/Modify jobs](mcp-pr1014-head-71209daa-validation-2026-10-14.md). The evidence below is the earlier 93b4f5e3 snapshot.
+
 The real QT Py ESP32-S3 N4R2 on the **rpi-hil006 solenoid USB hub** ran the
 upstream PR1014 CI image against a fresh ProtoMQ build with pinned protobufs.
 Jobs use public Wi-Fi **free4all / password** and broker credentials **hil / hil**.

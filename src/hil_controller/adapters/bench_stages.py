@@ -1265,16 +1265,17 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
     """Drive a v2 I2C bus scan + per-mux-channel probe at the checked-in DUT.
 
     Proves the muxed-sensor read end-to-end over protomq: wait for the DUT to
-    check in, register the TCA9548A on its bus (``Add`` ``pca9548``), then
-    ``Probe`` the bare bus and each requested mux channel — the v2 firmware
-    selects the channel itself (``SelectMuxChannel``) per Probe, so a different
-    ``channel`` is a different scan with no CircuitPython mux-latch. Logs a
-    machine-greppable ``I2C_PROBE_VERDICT channel=<n|bus> found=[0x..]`` per scan.
+    check in, ``Probe`` the initial bus, register the TCA9548A (``Add``
+    ``pca9548``), then probe each requested mux channel. The initial scan
+    does not reset a powered mux: it can include devices behind a channel
+    retained from an earlier job. Explicit channel probes select that channel
+    in the v2 firmware (``SelectMuxChannel``). Logs a
+    machine-greppable ``I2C_PROBE_VERDICT scan=<chN|bus> status=ok found=[0x..]`` per scan.
 
     Stage params: ``channels`` (list, default ``[0, 1]``), ``mux_address`` (int,
     default ``0x77``), ``pin_scl``/``pin_sda`` (string pin names for current api-v2,
     integer GPIOs for legacy firmware; QT Py S3 STEMMA = "D40"/"D41"),
-    ``scan_bus`` (bool, default true — a bare-bus scan first),
+    ``scan_bus`` (bool, default true — scan the initial bus with mux state retained),
     ``checkin_timeout_s``, ``observe_s``. Requires protomq up + secrets pointing
     at it.
     """
@@ -1341,9 +1342,9 @@ async def _stage_inject_i2c_probe(stage: dict[str, Any], ctx: BenchContext) -> N
             }
         )
 
-    # 1) bare-bus scan (shows direct devices + the mux itself).
+    # 1) Initial bus scan; a powered mux may retain a previously selected channel.
     if scan_bus:
-        ctx.log_line("inject_i2c_probe: scanning bare bus (no mux)")
+        ctx.log_line("inject_i2c_probe: scanning initial bus (existing mux state retained)")
         rec = await injector.probe(
             uid, pin_scl=pin_scl, pin_sda=pin_sda, mux_address=0, observe_s=observe_s
         )

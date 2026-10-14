@@ -293,6 +293,9 @@ and `41`. Do not cast named pins to integers: their protobuf wire types differ.
 The stage now fails if a scan receives no Probed reply. Confirm actual found
 addresses, not only the terminal job state. Discover strand routes from the
 live DB; the tested QT Py route was muxA channel 2, with on-strand TCA9548 at 0x77.
+The initial `scan=bus` does not reset a powered TCA9548: a channel retained
+from an earlier job may expose downstream devices. Report it as the initial bus
+state, not guaranteed direct-only wiring. Explicit `scan=chN` selects channel N.
 
 
 Use `inject_protobuf.payload_json` for current-schema component Add/Modify tests.

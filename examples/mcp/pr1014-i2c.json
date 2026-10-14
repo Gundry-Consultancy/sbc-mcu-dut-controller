@@ -3,9 +3,9 @@
   "device_id": "mcu-qtpy-esp32s3-n4r2-hil006",
   "total_s": 1200,
   "firmware": {
-    "path": "/home/particle/dev-projects/python/usbip-hil-controller/run/firmware_uploads/pr1014.combined.bin",
+    "path": "/home/particle/dev-projects/python/usbip-hil-controller/run/firmware_uploads/pr1014-71209daa.combined.bin",
     "offset": "0x0",
-    "sha256": "38fbe1d439908beecf6457d8956bbd7b63893783db58f2fd6d1f696ac17218f7"
+    "sha256": "5dd28b75770dda58442d508c283cce4952b53975200845538abe49ccb85bf643"
   },
   "requires": [
     {
