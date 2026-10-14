@@ -854,3 +854,50 @@ async def test_print_boot_log_tolerates_unstable_drive(monkeypatch: pytest.Monke
     # best-effort: must NOT raise even though the drive never appears
     await run_stages([{"type": "print_boot_log", "attempts": 2}], ctx)
     assert any("boot log unavailable" in ln for ln in lines)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [True, False])
+async def test_i2c_probe_requires_device_reply(monkeypatch, reply) -> None:
+    import hil_controller.adapters.bench_stages as stages
+    injector = AsyncMock()
+    injector.wait_for_checkin.return_value = "test-dut"
+    injector.probe.return_value = {
+        "found": [0x12] if reply else [], "got_reply": reply, "payload_hex": "", "raw": ""
+    }
+    injector.add_mux.return_value = {"topic": "test"}
+    monkeypatch.setattr(stages, "WsI2cProbeInjector", lambda **kw: injector)
+    monkeypatch.setattr(stages.asyncio, "sleep", AsyncMock())
+    ctx = _ctx(_transport(), protomq_host="127.0.0.1", protomq_port=1884)
+    pipeline = [{"type": "inject_i2c_probe", "channels": [], "pin_scl": "D40", "pin_sda": "D41"}]
+    if reply:
+        await run_stages(pipeline, ctx)
+        assert injector.probe.call_args.kwargs["pin_scl"] == "D40"
+    else:
+        with pytest.raises(StageError, match="no reply for: bus"):
+            await run_stages(pipeline, ctx)
+
+
+@pytest.mark.asyncio
+async def test_generic_injection_uses_schema_json_and_publishes_encoded_bytes(monkeypatch):
+    import hil_controller.adapters.ws_i2c_inject as module
+    injector = AsyncMock()
+    injector.b2d_topic = MagicMock(return_value="hil/ws-b2d/dut")
+    monkeypatch.setattr(module, "WsI2cProbeInjector", lambda **kw: injector)
+    encoder = AsyncMock(return_value={"hex": "aabb", "normalized": {"i2c": {}}})
+    ctx = _ctx(_transport(), protomq_host="127.0.0.1", protomq_port=1884,
+               encode_protobuf=encoder, protomq_uid="dut")
+    payload = {"i2c": {"add": {"types": {"0": "T_ALTITUDE"}}}}
+    await run_stages([{"type": "inject_protobuf", "payload_json": payload}], ctx)
+    injector.wait_for_checkin.assert_not_awaited()
+    encoder.assert_awaited_once_with(payload)
+    injector._echo.assert_awaited_once_with("hil/ws-b2d/dut", bytes.fromhex("aabb"))
+
+
+@pytest.mark.asyncio
+async def test_generic_injection_rejects_ambiguous_payload():
+    ctx = _ctx(_transport(), protomq_host="127.0.0.1", protomq_port=1884)
+    with pytest.raises(StageError, match="exactly one"):
+        await run_stages(
+            [{"type": "inject_protobuf", "payload_hex": "aa", "payload_json": {}}], ctx
+        )

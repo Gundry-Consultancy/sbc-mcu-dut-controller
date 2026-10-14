@@ -18,7 +18,11 @@ routes it on ``<io_user>/ws-b2d/<device_uid>``; the device replies on
 ``POST /api/echo`` (same path the v1 pixelWrite injector uses) and capture the
 D2B over MQTT.
 
-Wire facts are taken from the firmware's OWN nanopb headers on branch
+String pins (e.g. ``"D40"``/``"D41"``) use the api-v2 schema aligned by Arduino
+PR #1014. Integer pins retain the older firmware varint encoding. Choose pin
+types to match the firmware/protobuf revision; no implicit conversion is made.
+
+Legacy wire facts are taken from the firmware's OWN nanopb headers on branch
 ``migrate-api-v2-backport-components`` (``src/protos/i2c.pb.h`` +
 ``src/protos/signal.pb.h``) — these differ from the standalone ``.proto`` (e.g.
 DeviceToBroker.i2c is field **34**, not 38), so the firmware headers are the
@@ -97,15 +101,18 @@ def _vint_field(field: int, value: int) -> bytes:
 
 
 def encode_address_space(
-    *, pin_scl: int, pin_sda: int, mux_address: int = 0, mux_channel: int = 0
+    *, pin_scl: int | str, pin_sda: int | str, mux_address: int = 0, mux_channel: int = 0
 ) -> bytes:
     """Serialize ``ws.i2c.AddressSpace``. ``mux_channel`` is emitted only when a
     ``mux_address`` is set (a bare-bus space carries no mux fields)."""
     b = bytearray()
-    if pin_scl:
-        b += _vint_field(1, pin_scl)
-    if pin_sda:
-        b += _vint_field(2, pin_sda)
+    for field, pin in ((1, pin_scl), (2, pin_sda)):
+        if isinstance(pin, str):
+            if not pin or len(pin.encode("utf-8")) > 31 or "\0" in pin:
+                raise ValueError("I2C pin names must contain 1-31 UTF-8 bytes without NUL")
+            b += _len_field(field, pin.encode("utf-8"))
+        elif pin:
+            b += _vint_field(field, pin)
     if mux_address:
         b += _vint_field(3, mux_address)
         b += _vint_field(4, mux_channel)  # explicit even for channel 0
@@ -151,7 +158,7 @@ def encode_signal_i2c(b2d: bytes) -> bytes:
 
 
 def build_add_mux(
-    *, pin_scl: int, pin_sda: int, mux_address: int, name: str = "pca9548"
+    *, pin_scl: int | str, pin_sda: int | str, mux_address: int, name: str = "pca9548"
 ) -> bytes:
     """BrokerToDevice payload that registers a TCA9548A/PCA954x on the bus."""
     space = encode_address_space(pin_scl=pin_scl, pin_sda=pin_sda, mux_address=mux_address)
@@ -161,8 +168,8 @@ def build_add_mux(
 
 def build_probe(
     *,
-    pin_scl: int,
-    pin_sda: int,
+    pin_scl: int | str,
+    pin_sda: int | str,
     addresses: list[int],
     mux_address: int = 0,
     mux_channel: int = 0,
@@ -322,8 +329,8 @@ def encode_add_sensor(
 
 def build_add_sensor(
     *,
-    pin_scl: int,
-    pin_sda: int,
+    pin_scl: int | str,
+    pin_sda: int | str,
     address: int,
     name: str,
     period: float,
@@ -488,7 +495,8 @@ class WsI2cProbeInjector:
             return r.json()
 
     async def add_mux(
-        self, uid: str, *, mux_address: int, pin_scl: int, pin_sda: int, name: str = "pca9548"
+        self, uid: str, *, mux_address: int, pin_scl: int | str, pin_sda: int | str,
+        name: str = "pca9548",
     ) -> dict[str, Any]:
         """Register the MUX on the DUT's bus (required before any channel probe)."""
         payload = build_add_mux(
@@ -502,8 +510,8 @@ class WsI2cProbeInjector:
         self,
         uid: str,
         *,
-        pin_scl: int,
-        pin_sda: int,
+        pin_scl: int | str,
+        pin_sda: int | str,
         addresses: list[int] | None = None,
         mux_address: int = 0,
         mux_channel: int = 0,
@@ -605,8 +613,8 @@ class WsI2cProbeInjector:
         self,
         uid: str,
         *,
-        pin_scl: int,
-        pin_sda: int,
+        pin_scl: int | str,
+        pin_sda: int | str,
         address: int,
         name: str,
         types: list[int],

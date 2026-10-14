@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tachyon-hil",
+  "version": "0.1.0",
+  "description": "Run WipperSnapper and CircuitPython hardware jobs on the Tachyon bench through MCP.",
+  "author": {
+    "name": "Gundry Consultancy"
+  },
+  "homepage": "https://github.com/Gundry-Consultancy/sbc-mcu-dut-controller/pull/9",
+  "repository": "https://github.com/Gundry-Consultancy/sbc-mcu-dut-controller"
+}

@@ -1,5 +1,12 @@
 # Setup notes and Readme / Issues / Todos
 
+### MCP for OpenAI, Claude, and Gemini
+
+[HIL MCP server](docs/mcp.md): discover targets, read current skills, preview/run
+WipperSnapper Arduino/Python or CircuitPython jobs, and retrieve proof. Public
+test defaults use Wi-Fi `free4all` / `password` and test protoMQ credentials;
+optional explicit credentials select Adafruit IO production, staging, or dev-LAN.
+
 ### ESP32 USB/IP bridge hosts
 
 DUTs can also hang off an ESP32 running the

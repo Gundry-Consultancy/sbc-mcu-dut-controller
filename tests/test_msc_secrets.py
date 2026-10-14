@@ -59,9 +59,9 @@ _BY_ID = [
 ]
 
 
-def test_select_substring_match_prefers_whole_disk_over_partition() -> None:
+def test_select_substring_match_prefers_partition_over_whole_disk() -> None:
     got = select_block_device(_BY_ID, "QT_Py_ESP32-S3")
-    assert got == "usb-Adafruit_QT_Py_ESP32-S3_4MB_Flash_2MB_PS-0:0"
+    assert got == "usb-Adafruit_QT_Py_ESP32-S3_4MB_Flash_2MB_PS-0:0-part1"
 
 
 def test_select_glob_match() -> None:
@@ -146,7 +146,7 @@ async def test_resolve_falls_back_to_by_id() -> None:
     tp = AsyncMock()
     tp.exec = AsyncMock(side_effect=_exec)
     got = await resolve_msc_device(tp, "QT_Py_ESP32-S3")
-    assert got == "/dev/disk/by-id/usb-Adafruit_QT_Py_ESP32-S3_4MB_Flash_2MB_PS-0:0"
+    assert got == "/dev/disk/by-id/usb-Adafruit_QT_Py_ESP32-S3_4MB_Flash_2MB_PS-0:0-part1"
 
 
 @pytest.mark.asyncio
@@ -193,7 +193,7 @@ async def test_write_flow_argv_sequence_and_stdin() -> None:
     )
     # _flow_transport returns the same names for any disk dir; by-path is searched
     # first, so the resolved device comes from there.
-    assert dev == "/dev/disk/by-path/usb-Adafruit_QT_Py_ESP32-S3_4MB_Flash_2MB_PS-0:0"
+    assert dev == "/dev/disk/by-path/usb-Adafruit_QT_Py_ESP32-S3_4MB_Flash_2MB_PS-0:0-part1"
     assert mnt == "/media/pi/WIPPER"
 
     calls = tp.exec.call_args_list
@@ -269,3 +269,15 @@ async def test_read_msc_files_parses_boot_logs() -> None:
     )
     assert "-o ro" in blob
     assert "udisksctl mount" not in blob
+
+
+def test_select_partition_ignores_udev_alias_and_other_lun() -> None:
+    disk = "platform-usb-0:1.2.1.1:1.2-scsi-0:0:0:0"
+    assert (
+        select_block_device(
+            [disk, disk + "-part", disk + "-part1", disk[:-1] + "1"], "usb-0:1.2.1.1:"
+        )
+        == disk + "-part1"
+    )
+    assert select_block_device([disk], "usb-0:1.2.1.1:") == disk
+    assert select_block_device([disk + "-part"], "usb-0:1.2.1.1:") is None

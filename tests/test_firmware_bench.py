@@ -134,6 +134,18 @@ def test_parse_offset_accepts_hex_and_int() -> None:
     assert _parse_offset(None) == 0
 
 
+async def test_no_flash_pipeline_does_not_require_firmware(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, firmware={}, stages=[{"type": "power_cycle"}])
+    adapter._stage_firmware = AsyncMock(side_effect=AssertionError("must not stage firmware"))
+    adapter.jobs_dir = str(tmp_path)
+    monkeypatch.setattr(adapter, "_power_on_dut", AsyncMock())
+    try:
+        await adapter.flash()
+        adapter._stage_firmware.assert_not_called()
+    finally:
+        await adapter.cleanup()
+
+
 def test_msc_filter_derived_from_by_path_serial() -> None:
     # The QT Py's CDC serial and its MSC volume share the hub-port by-path.
     assert (

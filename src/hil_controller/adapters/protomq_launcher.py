@@ -19,6 +19,7 @@ Log forwarding and script activation (the pytest autoresponder/echo setup) reuse
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -81,7 +82,10 @@ def clone_argv(
     argv = ["git"]
     if not pat and credential_helper:
         argv += ["-c", f"credential.helper={credential_helper}"]
-    argv += ["clone", "--depth", "1", "--branch", ref, url, work_dir]
+    if re.fullmatch(r"[0-9a-fA-F]{40}", ref):
+        argv += ["clone", "--depth", "1", "--no-checkout", url, work_dir]
+    else:
+        argv += ["clone", "--depth", "1", "--branch", ref, url, work_dir]
     return argv
 
 
@@ -107,6 +111,60 @@ def start_argv(active_script: str | None = None) -> list[str]:
     if active_script:
         argv += ["--", f"--active-script={active_script}"]
     return argv
+
+
+# Use the job's freshly imported schema, including enum name -> number conversion.
+# Validate before fromObject: protobufjs otherwise silently discards unknown enum names.
+ENCODE_JSON_JS = r"""
+import { pathToFileURL } from 'node:url';
+const { BrokerToDevice: type } = await import(pathToFileURL(process.cwd() + '/protobufs.js'));
+const input = JSON.parse(process.argv[1]);
+function validate(type, obj, path = 'BrokerToDevice') {
+  type.resolveAll();
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj))
+    throw Error(path + ': object required');
+  for (const oneof of type.oneofsArray) {
+    if (oneof.oneof.filter(k => obj[k] != null).length > 1)
+      throw Error(path + ': multiple oneof values');
+  }
+  for (const [key, value] of Object.entries(obj)) {
+    const field = type.fields[key];
+    if (!field) throw Error(path + '.' + key + ': unknown field (use camelCase JSON names)');
+    if (field.map && (!value || typeof value !== 'object' || Array.isArray(value)))
+      throw Error(path + '.' + key + ': map object required');
+    const values = field.map ? Object.values(value) : field.repeated ? value : [value];
+    if (!Array.isArray(values)) throw Error(path + '.' + key + ': array required');
+    for (const item of values) {
+      const resolved = field.resolvedType;
+      const label = path + '.' + key;
+      if (resolved?.values) {
+        const valid = typeof item === 'string' ? Object.hasOwn(resolved.values, item)
+          : Number.isInteger(item) && Object.values(resolved.values).includes(item);
+        if (!valid) throw Error(label + ': unknown enum value ' + JSON.stringify(item));
+      } else if (resolved?.fields) validate(resolved, item, label);
+      else if (field.type === 'string' && typeof item !== 'string')
+        throw Error(label + ': string required');
+      else if (field.type === 'bool' && typeof item !== 'boolean')
+        throw Error(label + ': boolean required');
+      else if (['uint32', 'int32', 'sint32', 'fixed32', 'sfixed32'].includes(field.type)) {
+        const unsigned = ['uint32', 'fixed32'].includes(field.type);
+        if (!Number.isInteger(item) || item < (unsigned ? 0 : -2147483648)
+            || item > (unsigned ? 4294967295 : 2147483647))
+          throw Error(label + ': integer out of range');
+      } else if (['float', 'double'].includes(field.type) && !Number.isFinite(item)) {
+        throw Error(label + ': finite number required');
+      }
+    }
+  }
+}
+validate(type, input);
+const message = type.fromObject(input);
+const error = type.verify(message);
+if (error) throw Error(error);
+const bytes = type.encode(message).finish();
+console.log(JSON.stringify({hex: Buffer.from(bytes).toString('hex'),
+  normalized: type.toObject(message, {enums: String})}));
+"""
 
 
 LineSink = Callable[[str], Awaitable[None]] | Callable[[str], None]
@@ -162,6 +220,16 @@ class ProtomqLauncher:
                 f"{what} clone failed (exit {res.exit_status}): {(res.stderr or '').strip()[:300]}"
             )
 
+        if re.fullmatch(r"[0-9a-fA-F]{40}", ref):
+            git = argv[: argv.index("clone")]
+            for command in (
+                [*git, "fetch", "--depth", "1", "origin", ref],
+                ["git", "checkout", "--detach", "FETCH_HEAD"],
+            ):
+                res = await self.controller_transport.exec(command, cwd=dest)
+                if getattr(res, "exit_status", 0) != 0:
+                    raise ProtomqLaunchError(f"{what} pinned checkout failed")
+
     async def clone_and_build(self) -> None:
         """Clone protomq + its sibling protobuf source, then build the bundle.
 
@@ -179,6 +247,26 @@ class ProtomqLauncher:
             raise ProtomqLaunchError(
                 f"protomq build failed (exit {build.exit_status}): {(build.stderr or '').strip()[:300]}"  # noqa: E501
             )
+
+        for label, directory in (("protomq", self.work_dir), ("protobuf", self._proto_dir())):
+            revision = await self.controller_transport.exec(
+                ["git", "rev-parse", "HEAD"], cwd=directory
+            )
+            sha = (revision.stdout or "").strip()
+            if revision.exit_status != 0 or not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+                raise ProtomqLaunchError(f"cannot verify {label} source revision")
+            await self._forward(f"BUILD_SOURCE component={label} sha={sha}")
+        await self._forward("PROTOBUF_IMPORT_VERDICT ok=true command=npm_run_import-protos")
+
+    async def encode_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Encode JSON using this job's schema; reject unknown fields/enums first."""
+        result = await self.controller_transport.exec(
+            ["node", "--input-type=module", "-e", ENCODE_JSON_JS, json.dumps(payload)],
+            cwd=self.work_dir,
+        )
+        if result.exit_status != 0:
+            raise ProtomqLaunchError(f"protobuf JSON encoding failed: {result.stderr[:1000]}")
+        return json.loads(result.stdout)
 
     # ------------------------------------------------------------------ #
     # port discovery from a line stream                                   #

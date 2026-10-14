@@ -101,12 +101,14 @@ def socat_argv(serial_path: str, baud: int) -> list[str]:
 
     Uses ``socat -u`` (unidirectional read) so it cleanly closes when we
     cancel the streaming task. ``b<baud>`` + ``raw`` give a binary-clean byte
-    stream; ``clocal=1`` makes it a passive logger that ignores modem-control
+    stream; ``echo=0`` prevents the host from feeding REPL output back into
+    CircuitPython as input after re-enumeration. ``clocal=1`` makes it a passive
+    logger that ignores modem-control
     lines, so opening the port (and the 1s reconnect loop) doesn't lean on
     DTR/RTS and nudge a native-USB CDC app. The path is escaped so colon-bearing
     ``by-path`` names parse correctly (see :func:`_socat_escape`).
     """
-    return ["socat", "-u", f"OPEN:{_socat_escape(serial_path)},b{baud},raw,clocal=1", "-"]
+    return ["socat", "-u", f"OPEN:{_socat_escape(serial_path)},b{baud},raw,echo=0,clocal=1", "-"]
 
 
 # --------------------------------------------------------------------------- #
