@@ -54,3 +54,12 @@ To verify Add/Modify and custom settings, use
 strand capability and verifies measured pressure/altitude against the configured
 reference after both Add and Modify. See the
 [hardware report](../../../docs/mcp-pr1014-validation-2026-10-14.md).
+
+## Claude plugin upload archive
+
+Run `python tools/package_tachyon_plugin.py` from the repository root and upload
+`dist/tachyon-hil-0.1.0.zip` in Claude's plugin upload dialog. The archive includes
+`.claude-plugin/plugin.json`, the SSH MCP config, a bench skill that reads current
+server instructions, and the pinned I2C job recipes. See the
+[plugin README](../../../plugins/tachyon-hil/README.md) for execution-environment
+requirements. Uploading the ZIP alone does not supply SSH keys or tailnet access.
