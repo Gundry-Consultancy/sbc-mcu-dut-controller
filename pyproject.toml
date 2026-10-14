@@ -23,6 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = ["mcp>=1.30,<2"]
 camera = [
     "opencv-python-headless>=4.8",
     "pyzbar>=0.1.9",
@@ -43,9 +44,13 @@ lint = [
 
 [project.scripts]
 hil-controller = "hil_controller.main:cli"
+hil-mcp = "hil_controller.mcp_server:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hil_controller"]
+
+[tool.hatch.build.targets.wheel.force-include]
+".agent/skills" = "hil_controller/agent_skills"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,5 +1,11 @@
 # HIL controller HTTP API
 
+For OpenAI, Claude, and Gemini MCP clients see [MCP](mcp.md).
+Authenticated `GET /v1/job-profiles` describes recipe inputs and public defaults:
+Wi-Fi **`free4all` / `password`**, protoMQ **`hil` / `hil`**. Optional explicit
+credentials can target production (`io.adafruit.com`), staging (`io.adafruit.us`),
+or dev-LAN. Raw jobs still use the existing shape; MCP builds recipes over it.
+
 The controller exposes a small HTTP API (FastAPI) that a test script or CI job
 uses to run firmware on real hardware and pull back proof. This documents the
 endpoints a **test author** needs; the web UI and inventory/topology endpoints

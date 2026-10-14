@@ -32,6 +32,11 @@ from datetime import UTC, datetime, timezone
 from typing import Any, Optional
 
 from hil_controller.adapters.analog_mux import AnalogMuxAdapter, AnalogMuxError
+from hil_controller.adapters.circuitpython import (
+    assert_serial,
+    serial_checkpoint,
+    write_circuitpython,
+)
 from hil_controller.adapters.esp_usbip_bridge import (
     BridgePortPower,
     EspBridgeError,
@@ -219,6 +224,7 @@ class BenchContext:
     #: reboot signal (the device resets within ~1-2s of a crash, long before it
     #: can reconnect WiFi+MQTT to re-checkin).
     serial_log_path: str = ""
+    serial_assert_offset: int = 0
     #: Verbosity of the LIVE streaming job log (the event feed CI tails). One of:
     #:   "all"      — emit every stdout+stderr line of every command (default).
     #:   "filtered" — emit only the :data:`NOTABLE_LIVE_LINES` allow-list + a summary.
@@ -1911,6 +1917,9 @@ async def _stage_isolate_i2c_strand(stage: dict[str, Any], ctx: BenchContext) ->
 
 
 STAGE_HANDLERS: dict[str, Handler] = {
+    "write_circuitpython": write_circuitpython,
+    "assert_serial": assert_serial,
+    "serial_checkpoint": serial_checkpoint,
     "diagnose": _stage_diagnose,
     "inject_pixelwrite": _stage_inject_pixelwrite,
     "inject_i2c_probe": _stage_inject_i2c_probe,

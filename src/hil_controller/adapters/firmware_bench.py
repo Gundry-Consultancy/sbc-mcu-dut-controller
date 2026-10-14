@@ -262,7 +262,13 @@ class FirmwareBenchAdapter:
             await self._attach_usbip()
 
         work_root = PurePosixPath(f"/tmp/hil/{self.job_id}")
-        remote_bin = await self._stage_firmware(work_root)
+        # Explicit no-flash pipelines can deploy CircuitPython files or re-drive
+        # installed firmware without staging an unrelated firmware artifact.
+        requested = self.params.get("stages") or DEFAULT_FLASH_STAGES
+        needs_artifact = any(
+            s.get("type") in {"flash", "verify"} and not s.get("path") for s in requested
+        )
+        remote_bin = await self._stage_firmware(work_root) if needs_artifact else None
 
         # Controller-side log files for this session (registered as assets on
         # teardown). The serial capture writes here live; protomq stdout is
@@ -300,7 +306,8 @@ class FirmwareBenchAdapter:
             ),
             device=self.device,
             db_path=self._db_path,
-            artifact=Artifact(path=str(remote_bin), kind="combined_bin", offset=self._fw_offset),
+            artifact=(Artifact(path=str(remote_bin), kind="combined_bin", offset=self._fw_offset)
+                      if remote_bin is not None else None),
             workspace_dir=self.params.get("workspace_dir", ""),
             pio_env=self.params.get("pio_env", ""),
             esptool_chip=self.params.get("esptool_chip", "auto"),

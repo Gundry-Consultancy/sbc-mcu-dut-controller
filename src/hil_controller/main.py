@@ -204,6 +204,8 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
 
     app.include_router(health_router)
     app.include_router(jobs_router)
+    from hil_controller.api.job_profiles import router as job_profiles_router
+    app.include_router(job_profiles_router)
     app.include_router(hosts_router)
     app.include_router(devices_router)
     app.include_router(aux_router)
