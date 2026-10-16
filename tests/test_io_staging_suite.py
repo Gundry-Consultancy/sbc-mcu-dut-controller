@@ -85,6 +85,19 @@ def test_labels_are_unique_and_every_probe_has_stages() -> None:
     assert {p.label for p in sj.probes} - {"ui-topic"} <= set(labels)
 
 
+def test_lifecycle_updates_reuse_the_created_feed_key() -> None:
+    # IO returns "{device_key}.{key}" from the create; a bare key would 404.
+    sj = suite.build_v2_job(_opts())
+    api = {
+        s["label"]: s
+        for s in walk_stages(sj.job["params"]["stages"])
+        if s["type"] == "io_api_component"
+    }
+    assert api["cleanup-before"]["feed_key"] == suite.feed_key(_opts())
+    for label in ("modify-period.api", "rename-only.api", "rename-same-pin-info.api", "remove.api"):
+        assert "feed_key" not in api[label]
+
+
 # --------------------------------------------------------------------------- #
 # simulated IO stack                                                          #
 # --------------------------------------------------------------------------- #

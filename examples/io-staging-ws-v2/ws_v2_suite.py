@@ -244,7 +244,7 @@ def judge_lifecycle(
             return Outcome(
                 "prereq",
                 "HTTP 404: the device isn't an IO group on this account yet (accept it in "
-                "the UI once), or the checkin deviceId isn't the group key",
+                "the UI once, or create the group from the checkin)",
             )
         if rename:
             if status >= 500:
@@ -456,7 +456,9 @@ def build_v2_job(opts: Options) -> SuiteJob:
         )
     )
 
-    # A previous run that stopped early may have left the feed behind.
+    # A previous run that stopped early may have left the feed behind. Later
+    # updates/deletes reuse the key the create returns: IO stores feeds in a
+    # device group under "{device_key}.{key}", not the bare key sent.
     stages.append(_api("cleanup-before", "delete", feed_key=key, expect_status=[200, 404]))
 
     lifecycle = [
@@ -471,14 +473,14 @@ def build_v2_job(opts: Options) -> SuiteJob:
             "modify-period",
             "update",
             "modifyComponent",
-            {"feed_key": key, "feed": {"name": name, "wipper_pin_info": pin_info(opts, period=60)}},
+            {"feed": {"name": name, "wipper_pin_info": pin_info(opts, period=60)}},
             {"match": {"newComponent.period": 60}},
         ),
         (
             "rename-only",
             "update",
             "modifyComponent",
-            {"feed_key": key, "feed": {"name": f"{name} renamed"}},
+            {"feed": {"name": f"{name} renamed"}},
             {},
         ),
         (
@@ -486,7 +488,6 @@ def build_v2_job(opts: Options) -> SuiteJob:
             "update",
             "modifyComponent",
             {
-                "feed_key": key,
                 "feed": {
                     "name": f"{name} renamed again",
                     "wipper_pin_info": pin_info(opts, period=60),
@@ -494,7 +495,7 @@ def build_v2_job(opts: Options) -> SuiteJob:
             },
             {},
         ),
-        ("remove", "delete", "removeComponent", {"feed_key": key}, {}),
+        ("remove", "delete", "removeComponent", {}, {}),
     ]
     questions = {
         "add": "Does a REST create emit addComponent on ws-r2b?",

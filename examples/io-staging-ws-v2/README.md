@@ -61,9 +61,12 @@ test, not a bench job.
    memory, and the MCP server redacts it from every saved response. Use a key,
    never a password.
 2. **The DUT registered on that account once.** A device becomes an IO group
-   only when someone accepts it in the UI. Until then the lifecycle probes
-   report *prereq* (HTTP 404). A 404 can also mean the checkin's `deviceId`
-   isn't the group key, which is still unverified.
+   when someone accepts it in the UI, or with
+   `POST /api/v2/{user}/groups {"group": {"key": <checkin deviceId>,
+   "machine_name": <args.machineName>, "wipper_semver": <args.semver>}}`
+   (the checkin `deviceId` is the group key). Until then the lifecycle probes
+   report *prereq* (HTTP 404). IO stores a device's feeds under
+   `{device_key}.{key}`, so updates and deletes reuse the key the create returns.
 3. **2.x firmware that speaks the deployment's v2 protocol** (`--firmware-json`,
    an AgentJob firmware object). If no checkin arrives, the result is *prereq*.
 4. **The exact `wipper_pin_info`.** The default is a BME280 sketch. For a real
