@@ -21,7 +21,9 @@ protoMQ; no personal Adafruit IO credentials are needed. Controller auth still
 applies. Optional explicit credentials can target production `io.adafruit.com`,
 staging `io.adafruit.us`, or a dev-LAN host/port. `GET /v1/job-profiles` provides
 the same guidance. External jobs need their own serial/test assertions; local
-`verify_checkin` and `inject_*` cannot establish cloud success.
+`verify_checkin` and `inject_*` cannot establish cloud success. On `staging` /
+`dev-lan` (never production) the `io_*` stages drive the real IO stack instead;
+see the vocabulary table and `docs/api.md` "Real IO stack stages".
 
 CircuitPython uses `write_circuitpython` to deploy UTF-8 files and settings.toml,
 then `serial_checkpoint`, reset, and `assert_serial` for proof. The installed
@@ -111,6 +113,9 @@ DUT. See hil-i2c-strands for the strand model.
 | `select_i2c_strand` / `isolate_i2c_strand` | route / disconnect a shared component strand (hil-i2c-strands) |
 | `capture_display` | autofocus + manual-exposure camera grab + ROI crop → job asset (hil-camera-proof) |
 | `diagnose` | classify a stuck boot state |
+| `io_api_component` | **staging / dev-lan only.** Create / update / delete a v2 component feed via the IO REST API with the job's `IO_KEY`; logs `IO_API_VERDICT status=<http> key=<feed key>` |
+| `io_ws_publish` | **staging / dev-lan only.** Publish an `i2cScanAll` / `i2cProbe` JSON frame to `{user}/ws-w2b/{device_key}` over IO MQTT |
+| `io_ws_expect` | **staging / dev-lan only.** Subscribe to `ws-b2w` / `ws-r2b`, run its guarded `step`, wait (`timeout_s` 5) for a matching JSON frame; logs `IO_WS_VERDICT matched=true|false`. A matched `checkin` captures the device key. Auth/ACL failures log `IO_INFRA_ERROR` (no verdict) |
 
 The proven ESP32 combined-bin order (and why) lives in **hil-author-test**;
 SAMD/UF2 boards use a bossac/UF2-MSC default cycle instead — both are seeded

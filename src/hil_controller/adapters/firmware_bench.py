@@ -39,6 +39,7 @@ from hil_controller.adapters.bench_stages import (
     HostUsbWedgedError,
     run_stages,
     validate_stages,
+    walk_stages,
 )
 from hil_controller.adapters.flashers.base import Artifact
 from hil_controller.adapters.flashers.bossac import SAMD51_APP_OFFSET
@@ -591,7 +592,8 @@ class FirmwareBenchAdapter:
         # (e.g. io.adafruit.com for an AirLift board) doesn't need it — skipping
         # avoids a wasted ~60s clone/build + the strict-broker CONNECT-reject noise.
         need_protomq = any(
-            s.get("type") == "write_secrets_msc" and not s.get("io_url") for s in stages
+            s.get("type") == "write_secrets_msc" and not s.get("io_url")
+            for s in walk_stages(stages)
         ) or bool(self.params.get("launch_protomq", False))
         # The local protomq broker (aedes) is ANONYMOUS — any username/key
         # authenticates. So for a local-broker secrets write with no real creds

@@ -151,9 +151,74 @@ the linked `firmware`. CI pulls these as proof instead of scraping the UI.
 | `capture_display` | photograph the DUT panel via the camera server (+ ROI crop), registered as a job asset; logs `DISPLAY_CAPTURE_VERDICT` | `camera_url`, `roi`, exposure/focus opts |
 | `bootloader_touch` | 1200-baud touch to flip a running app into ROM download (lighter than `enter_bootloader`) | — |
 | `diagnose` | classify a stuck boot state | — |
+| `io_api_component` | **staging / dev-lan only.** Create / update / delete a WipperSnapper v2 component feed through the real IO REST API (`POST\|PUT\|DELETE /api/v2/{IO_USERNAME}/groups/{device_key}/feeds[/{feed_key}]`, `X-AIO-Key` from job secrets); logs `IO_API_VERDICT status=<http> key=<feed key> action=<a> ok=…` | `action`, `feed`, `device_key`, `feed_key`, `expect_status`, `soft` |
+| `io_ws_publish` | **staging / dev-lan only.** Publish a JSON frame (`i2cScanAll` / `i2cProbe`) to `{IO_USERNAME}/ws-w2b/{device_key}` over IO MQTT (TLS on 8883); logs `IO_WS_PUBLISH published=true` | `payload`, `device_key`, `qos` |
+| `io_ws_expect` | **staging / dev-lan only.** Subscribe to `ws-b2w` / `ws-r2b`, run the guarded `step`, wait for a matching JSON frame; logs `IO_WS_VERDICT matched=true\|false action=<a> topic=<t>`. A matched `checkin` captures the device key | `action`, `step`, `match`, `match_contains`, `topics`, `timeout_s` (5), `soft` |
 
 `launch_protomq` / `start_serial_log` / `print_boot_log` are inserted
 automatically at the right moments unless you place them explicitly.
+
+### Real IO stack stages (`broker: staging` / `dev-lan`)
+
+`launch_protomq`, `verify_checkin` and every `inject_*` stage only work against
+the per-job protoMQ, so an external-broker job used to be limited to flash,
+secrets and `assert_serial`. The three `io_*` stages drive WipperSnapper v2
+through the real IO stack (io-rails "WS V2"): Rails emits
+`{action: addComponent|modifyComponent|removeComponent}` on
+`{user}/ws-r2b/{device_key}` after a feed create/update/destroy; the browser
+publishes `i2cScanAll` / `i2cProbe` on `{user}/ws-w2b/{device_key}` and listens
+on `{user}/ws-b2w` for `{deviceId, action: checkin|i2cScanResults|error, args}`.
+
+- **Gating.** The job profile (`/v1/job-profiles`, MCP `prepare_job`) allows
+  them only for `broker: staging` or `dev-lan`, never production or protoMQ,
+  including when nested as a `step`. It stamps `io_host` / `io_port` from the
+  job's broker; a stage that sets its own host or credentials is rejected. The
+  handler also refuses any `*.adafruit.com` host on raw `POST /v1/jobs`, and
+  `io_api_base` may change only scheme/port, never the host.
+- **Credentials** are the job's `IO_USERNAME` / `IO_KEY` secrets (an AIO key,
+  never a password); the key is masked to its last 4 characters in every log
+  line, error and asset.
+- **Subscribe before acting.** Wrap the action as the `step` of an
+  `io_ws_expect`: it subscribes (and checks the SUBACK) first, then runs the
+  step, then waits. A standalone `io_ws_expect` after the action can miss the
+  reply.
+- **Device key** comes from a stage `device_key`, or from an earlier
+  `io_ws_expect action: checkin` (its `deviceId`, assumed to equal the IO group
+  key; not yet verified against staging). The last `io_api_component` create's
+  feed key is reused by later update / delete stages.
+- **Matching.** `action` must equal; `match` is `{dotted.path: value}` exact
+  equality (`args.results.0.sda`); `match_contains` is list-contains /
+  substring. When a device key is known, a frame must carry it as `deviceId`
+  (or in the topic), because `ws-b2w` is shared by every device on the
+  account; set `match_device: false` to opt out. Default topics:
+  `ws-r2b/<key|#>` for the component actions, else `ws-b2w` + `ws-b2w/#`.
+- **Infra vs verdict.** HTTP 401/403/429, network/TLS errors, MQTT CONNACK
+  refusal, a SUBACK 0x80, or a message on `{user}/errors` / `{user}/throttle`
+  log `IO_INFRA_ERROR stage=… kind=auth|acl|throttle|network` and fail the
+  stage **without** a verdict line. Broker ACLs on `ws-w2b` / `ws-r2b` for user
+  keys are not yet verified on staging, so expect `kind=acl` until they are.
+  Any other HTTP status (e.g. a 500 from a rename-only PUT) is a verdict.
+
+```json
+{"stages": [
+  {"type": "enter_bootloader"}, {"type": "erase"}, {"type": "flash"}, {"type": "power_cycle"},
+  {"type": "write_secrets_msc"},
+  {"type": "io_ws_expect", "action": "checkin", "timeout_s": 120,
+   "step": {"type": "power_cycle"}},
+  {"type": "io_ws_expect", "action": "i2cScanResults",
+   "match_contains": {"args.results.0.found": [118]},
+   "step": {"type": "io_ws_publish",
+            "payload": {"action": "i2cProbe", "targets": [{"sda": 41, "scl": 40}],
+                        "addresses": [118]}}},
+  {"type": "io_ws_expect", "action": "addComponent",
+   "step": {"type": "io_api_component", "action": "create",
+            "feed": {"name": "bme280 pressure", "wipper_pin_info": {
+              "isI2C": true, "type": "bme280:pressure", "period": 30,
+              "i2cDescriptor": {"sda": 41, "scl": 40, "i2cAddress": 118}}}}},
+  {"type": "io_ws_expect", "action": "removeComponent",
+   "step": {"type": "io_api_component", "action": "delete"}}
+]}
+```
 
 **v2 broker wire contract.** The injection stages talk to the DUT over the
 per-job protoMQ broker on two per-device topics: `<io_user>/ws-b2d/<uid>`

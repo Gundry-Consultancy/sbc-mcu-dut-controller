@@ -18,6 +18,13 @@ PUBLIC_SECRETS = {
 }
 Runtime = Literal["wippersnapper-arduino", "wippersnapper-python", "circuitpython"]
 Broker = Literal["protomq", "production", "staging", "dev-lan"]
+#: Stages that call the real Adafruit IO REST API / MQTT with the job's IO_KEY.
+IO_STACK_STAGES = frozenset({"io_api_component", "io_ws_publish", "io_ws_expect"})
+IO_STACK_BROKERS = frozenset({"staging", "dev-lan"})
+_IO_STAGE_RESERVED = (
+    "io_host", "io_port", "io_url", "io_username", "io_key", "username", "key",
+    "password", "secrets",
+)
 
 
 class AgentJob(BaseModel):
@@ -86,6 +93,8 @@ def job_guide() -> dict[str, Any]:
             "CircuitPython needs a writable CIRCUITPY volume; boot.py must enable host writes.",
             "External brokers need firmware/test support for TLS and the chosen host/port.",
             "verify_checkin/inject_* inspect local protoMQ only; use other assertions for cloud.",
+            "staging/dev-lan only: io_api_component (REST feeds), io_ws_publish (ws-w2b JSON)"
+            " and io_ws_expect (ws-b2w/ws-r2b assert, guarded step) drive the real IO stack.",
             "Inspect result, verdicts, and assets. Finished or skipped tests do not prove success.",
         ],
     }
@@ -93,7 +102,11 @@ def job_guide() -> dict[str, Any]:
 
 def build_job(spec: AgentJob) -> dict[str, Any]:
     """Build the controller request, with routing isolated from secret defaults."""
-    from hil_controller.adapters.bench_stages import DEFAULT_FLASH_STAGES, validate_stages
+    from hil_controller.adapters.bench_stages import (
+        DEFAULT_FLASH_STAGES,
+        validate_stages,
+        walk_stages,
+    )
     from hil_controller.api.jobs import JobRequest
 
     params = deepcopy(spec.params)
@@ -213,7 +226,7 @@ def build_job(spec: AgentJob) -> dict[str, Any]:
         if not isinstance(stages, list) or not stages:
             raise ValueError("stages must be a nonempty list")
         validate_stages(stages)
-        for stage in stages:
+        for stage in walk_stages(stages):
             kind = stage["type"]
             if external and (
                 kind in {"launch_protomq", "verify_checkin"} or kind.startswith("inject_")
@@ -221,6 +234,17 @@ def build_job(spec: AgentJob) -> dict[str, Any]:
                 raise ValueError(
                     "External-broker recipes cannot use local protoMQ assertion/injection stages"
                 )
+            if kind in IO_STACK_STAGES:
+                if spec.broker not in IO_STACK_BROKERS:
+                    raise ValueError(
+                        f"{kind} drives the real IO stack and is allowed only for "
+                        "broker=staging or dev-lan (never production or protoMQ)"
+                    )
+                if any(k in stage for k in _IO_STAGE_RESERVED):
+                    raise ValueError(
+                        "IO host and credentials come from the job broker/secrets, not stages"
+                    )
+                stage.update(io_host=host, io_port=port)
             if kind in {"write_secrets_msc", "write_circuitpython"}:
                 if any(k in stage for k in ("io_url", "io_port", "settings", "secrets")):
                     raise ValueError("Set broker/secrets on the job, not on individual stages")
