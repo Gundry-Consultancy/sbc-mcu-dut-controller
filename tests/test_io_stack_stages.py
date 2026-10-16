@@ -65,9 +65,10 @@ def _topic_matches(sub: str, topic: str) -> bool:
 
 
 class _Msg:
-    def __init__(self, topic: str, payload: bytes) -> None:
+    def __init__(self, topic: str, payload: bytes, retain: bool = False) -> None:
         self.topic = topic
         self.payload = payload
+        self.retain = retain
 
 
 class FakeBroker:
@@ -82,11 +83,11 @@ class FakeBroker:
         self.replies: dict[str, list[tuple[str, Any]]] = {}
         self.tls: list[bool] = []
 
-    def deliver(self, topic: str, obj: Any) -> None:
+    def deliver(self, topic: str, obj: Any, *, retain: bool = False) -> None:
         payload = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
         for c in self.clients:
             if any(_topic_matches(s, topic) for s in c.subs):
-                c.queue.put_nowait(_Msg(topic, payload))
+                c.queue.put_nowait(_Msg(topic, payload, retain))
 
     def factory(self, target: Any, *, tls: bool) -> FakeClient:
         self.tls.append(tls)
@@ -245,6 +246,8 @@ async def test_api_server_error_is_a_verdict(monkeypatch: pytest.MonkeyPatch) ->
         ({"io_host": "evil.example/path"}, "needs io_host"),
         ({"io_key": "x"}, "job secrets"),
         ({"io_api_base": "https://attacker.example"}, "io_api_base"),
+        ({"io_api_base": f"http://{HOST}"}, "must use https"),
+        ({"tls": False}, "must use https"),
         ({"device_key": "../../users"}, "invalid device_key"),
         ({"action": "update"}, "feed_key"),
         ({"action": "explode"}, "action must be"),
@@ -299,7 +302,10 @@ async def test_expect_subscribes_before_guarded_publish(broker: FakeBroker) -> N
     assert ("sub", f"{USER}/ws-b2w/#") in kinds
     assert ("pub", f"{USER}/ws-w2b/{DEVICE}", PROBE) in broker.events
     assert broker.tls == [True, True]
-    assert "IO_WS_VERDICT matched=true action=i2cScanResults topic=bench_demo/ws-b2w" in lines
+    verdict = next(ln for ln in lines if ln.startswith("IO_WS_VERDICT"))
+    assert verdict.startswith(
+        "IO_WS_VERDICT matched=true action=i2cScanResults topic=bench_demo/ws-b2w elapsed_s="
+    )
     assert any(ln.startswith("IO_WS_PUBLISH published=true") for ln in lines)
     _no_key_leak(lines)
 
@@ -312,7 +318,7 @@ async def test_expect_ignores_other_devices_and_times_out(broker: FakeBroker) ->
         "io_ws_expect",
         action="i2cScanResults",
         timeout_s=0.2,
-        step=_stage("io_ws_publish", payload=PROBE),
+        step=_stage("io_ws_publish", payload=PROBE, errors_window_s=0),
     )
     with pytest.raises(StageError, match="no i2cScanResults frame"):
         await run_stages([stage], ctx)
@@ -377,7 +383,8 @@ async def test_expect_r2b_component_add_from_api(
         ctx,
     )
     assert ("sub", f"{USER}/ws-r2b/{DEVICE}") in broker.events  # default r2b topic
-    assert f"IO_WS_VERDICT matched=true action=addComponent topic={USER}/ws-r2b/{DEVICE}" in lines
+    want = f"IO_WS_VERDICT matched=true action=addComponent topic={USER}/ws-r2b/{DEVICE}"
+    assert any(ln.startswith(want) for ln in lines)
     assert ctx.io_feed_key == FEED
 
 
@@ -387,6 +394,48 @@ async def test_expect_suback_denied_is_infra(broker: FakeBroker) -> None:
     with pytest.raises(StageError, match="infra error \\(acl\\)"):
         await run_stages([_stage("io_ws_expect", action="addComponent")], ctx)
     assert not any("IO_WS_VERDICT" in ln for ln in lines)
+
+
+async def test_one_denied_b2w_variant_is_not_fatal(broker: FakeBroker) -> None:
+    broker.denied.add(f"{USER}/ws-b2w/#")
+    broker.replies[f"{USER}/ws-w2b/{DEVICE}"] = [(f"{USER}/ws-b2w", SCAN_RESULT)]
+    ctx, lines = _ctx(io_device_key=DEVICE)
+    await run_stages(
+        [
+            _stage(
+                "io_ws_expect",
+                action="i2cScanResults",
+                step=_stage("io_ws_publish", payload=PROBE, errors_window_s=0),
+            )
+        ],
+        ctx,
+    )
+    assert any(f"subscribe to {USER}/ws-b2w/# refused" in ln for ln in lines)
+    assert any(ln.startswith("IO_WS_VERDICT matched=true") for ln in lines)
+    assert not any("IO_INFRA_ERROR" in ln for ln in lines)
+
+
+async def test_retained_frames_are_ignored(
+    broker: FakeBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = {"deviceId": DEVICE, "action": "checkin", "args": {"semver": "1.0.0"}}
+
+    async def replay_retained(stage: dict[str, Any], ctx: BenchContext) -> None:
+        broker.deliver(f"{USER}/ws-b2w", stale, retain=True)
+
+    monkeypatch.setitem(bs.STAGE_HANDLERS, "power_cycle", replay_retained)
+    ctx, lines = _ctx()
+    with pytest.raises(StageError, match="no checkin frame"):
+        await run_stages(
+            [
+                _stage(
+                    "io_ws_expect", action="checkin", timeout_s=0.2,
+                    step={"type": "power_cycle"},
+                )
+            ],
+            ctx,
+        )
+    assert ctx.io_device_key == ""
 
 
 async def test_broker_errors_topic_is_infra(broker: FakeBroker) -> None:
@@ -500,6 +549,7 @@ def _spec(broker: str, stages: list[dict[str, Any]], **kw: Any) -> AgentJob:
 )
 def test_profile_stamps_io_host_on_nested_stages(broker: str, host: str, port: int) -> None:
     stages = build_job(_spec(broker, IO_STAGES))["params"]["stages"]
+    assert stages[0]["type"] == "power_cycle" and stages[1]["type"] == "write_secrets_msc"
     publish = stages[3]["step"]
     assert (stages[2]["io_host"], stages[2]["io_port"]) == (host, port)
     assert (publish["io_host"], publish["io_port"]) == (host, port)
@@ -525,8 +575,19 @@ def test_profile_rejects_io_stages_off_staging(broker: str) -> None:
         [{"type": "io_ws_publish", "io_host": "attacker.example", "payload": PROBE}],
         [{"type": "io_ws_expect", "step": {"type": "io_api_component", "io_key": "x"}}],
         [{"type": "io_ws_expect", "step": {"type": "write_secrets_msc", "io_url": "x"}}],
+        [{"type": "io_api_component", "io_api_base": f"http://{HOST}"}],
+        [{"type": "io_ws_publish", "tls": False, "payload": PROBE}],
     ],
 )
 def test_profile_rejects_smuggled_or_rerouted_stages(stages: list[dict[str, Any]]) -> None:
     with pytest.raises(ValueError):
         build_job(_spec("staging", stages))
+
+
+def test_auto_insert_sees_power_cycle_nested_in_expect() -> None:
+    from hil_controller.adapters.firmware_bench import FirmwareBenchAdapter
+
+    # print_boot_log goes after the LAST power_cycle; the checkin expect's nested
+    # reboot (index 2) must count, or the dump would precede write_secrets_msc.
+    assert FirmwareBenchAdapter._last_index(IO_STAGES, "power_cycle") == 2
+    assert FirmwareBenchAdapter._first_index(IO_STAGES, "io_ws_publish") == 3

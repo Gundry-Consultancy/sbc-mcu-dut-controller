@@ -153,7 +153,7 @@ the linked `firmware`. CI pulls these as proof instead of scraping the UI.
 | `diagnose` | classify a stuck boot state | — |
 | `io_api_component` | **staging / dev-lan only.** Create / update / delete a WipperSnapper v2 component feed through the real IO REST API (`POST\|PUT\|DELETE /api/v2/{IO_USERNAME}/groups/{device_key}/feeds[/{feed_key}]`, `X-AIO-Key` from job secrets); logs `IO_API_VERDICT status=<http> key=<feed key> action=<a> ok=…` | `action`, `feed`, `device_key`, `feed_key`, `expect_status`, `soft` |
 | `io_ws_publish` | **staging / dev-lan only.** Publish a JSON frame (`i2cScanAll` / `i2cProbe`) to `{IO_USERNAME}/ws-w2b/{device_key}` over IO MQTT (TLS on 8883); logs `IO_WS_PUBLISH published=true` | `payload`, `device_key`, `qos` |
-| `io_ws_expect` | **staging / dev-lan only.** Subscribe to `ws-b2w` / `ws-r2b`, run the guarded `step`, wait for a matching JSON frame; logs `IO_WS_VERDICT matched=true\|false action=<a> topic=<t>`. A matched `checkin` captures the device key | `action`, `step`, `match`, `match_contains`, `topics`, `timeout_s` (5), `soft` |
+| `io_ws_expect` | **staging / dev-lan only.** Subscribe to `ws-b2w` / `ws-r2b`, run the guarded `step`, wait for a matching JSON frame; logs `IO_WS_VERDICT matched=true\|false action=<a> topic=<t> elapsed_s=<s>`. A matched `checkin` captures the device key | `action`, `step`, `match`, `match_contains`, `topics`, `timeout_s` (5), `soft` |
 
 `launch_protomq` / `start_serial_log` / `print_boot_log` are inserted
 automatically at the right moments unless you place them explicitly.
@@ -174,18 +174,28 @@ on `{user}/ws-b2w` for `{deviceId, action: checkin|i2cScanResults|error, args}`.
   including when nested as a `step`. It stamps `io_host` / `io_port` from the
   job's broker; a stage that sets its own host or credentials is rejected. The
   handler also refuses any `*.adafruit.com` host on raw `POST /v1/jobs`, and
-  `io_api_base` may change only scheme/port, never the host.
+  `io_api_base` may change only scheme/port, never the host. `io_api_base` /
+  `tls` overrides are accepted only for `dev-lan`; staging always uses HTTPS
+  and MQTT TLS (8883).
 - **Credentials** are the job's `IO_USERNAME` / `IO_KEY` secrets (an AIO key,
   never a password); the key is masked to its last 4 characters in every log
   line, error and asset.
 - **Subscribe before acting.** Wrap the action as the `step` of an
   `io_ws_expect`: it subscribes (and checks the SUBACK) first, then runs the
   step, then waits. A standalone `io_ws_expect` after the action can miss the
-  reply.
+  reply. `timeout_s` counts from just before the step (publish → reply, like
+  the IO UI's scan timer), so a `checkin` around a `power_cycle` needs a budget
+  that covers the reboot (e.g. 120). The verdict carries `elapsed_s=`, the
+  measured publish-to-reply gap. Retained frames are ignored. If one of the
+  default `ws-b2w` / `ws-b2w/#` subscriptions is ACL-denied it is logged and
+  skipped; only all-denied is infra.
 - **Device key** comes from a stage `device_key`, or from an earlier
   `io_ws_expect action: checkin` (its `deviceId`, assumed to equal the IO group
   key; not yet verified against staging). The last `io_api_component` create's
-  feed key is reused by later update / delete stages.
+  feed key is reused by later update / delete stages. On a shared account
+  (several bench DUTs on one IO user), a key-less `checkin` expect captures the
+  first device that checks in: pass `device_key`, or add a
+  `match: {"args.machineName": ...}`.
 - **Matching.** `action` must equal; `match` is `{dotted.path: value}` exact
   equality (`args.results.0.sda`); `match_contains` is list-contains /
   substring. When a device key is known, a frame must carry it as `deviceId`

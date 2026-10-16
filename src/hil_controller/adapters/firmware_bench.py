@@ -657,11 +657,19 @@ class FirmwareBenchAdapter:
 
     @staticmethod
     def _first_index(stages: list[dict[str, Any]], stype: str) -> int | None:
-        return next((i for i, s in enumerate(stages) if s.get("type") == stype), None)
+        # A stage counts if it, or a nested io_ws_expect ``step``, is ``stype``.
+        return next(
+            (i for i, s in enumerate(stages)
+             if any(n.get("type") == stype for n in walk_stages([s]))),
+            None,
+        )
 
     @staticmethod
     def _last_index(stages: list[dict[str, Any]], stype: str) -> int | None:
-        idxs = [i for i, s in enumerate(stages) if s.get("type") == stype]
+        idxs = [
+            i for i, s in enumerate(stages)
+            if any(n.get("type") == stype for n in walk_stages([s]))
+        ]
         return idxs[-1] if idxs else None
 
     async def _do_launch_protomq(self) -> tuple[str, int]:

@@ -2042,6 +2042,8 @@ def _io_target(stage: dict[str, Any], ctx: BenchContext) -> _IoTarget:
     m = re.match(r"^(https?)://([^/:@?#\s]+)(:\d{1,5})?$", api_base)
     if not m or m.group(2).lower() != host:
         raise StageError(f"{stype}: io_api_base must be http(s)://{host}[:port]")
+    if host.endswith("adafruit.us") and (m.group(1) != "https" or stage.get("tls") is False):
+        raise StageError(f"{stype}: staging IO ({host}) must use https and MQTT TLS")
     return _IoTarget(
         host=host,
         mqtt_port=int(stage.get("io_port") or 8883),
@@ -2111,7 +2113,7 @@ async def _io_subscribe(
     if any(isinstance(c, int) and c >= 0x80 for c in codes):
         if required:
             raise _io_infra(ctx, stype, "acl", f"subscribe to {topic} refused (SUBACK {codes})")
-        ctx.log_line(f"{stype}: optional subscribe to {topic} refused (SUBACK {codes})")
+        ctx.log_line(f"{stype}: subscribe to {topic} refused (SUBACK {codes}); continuing")
         return False
     return True
 
@@ -2337,7 +2339,9 @@ async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
       match_contains  {dotted.path: value} list-contains / substring checks
       match_device    require deviceId (or topic) == device key when known (true)
       step            a nested stage run after subscribing
-      timeout_s (5), soft (false)
+      timeout_s       budget from just before ``step`` to the match (5; give a
+                      checkin around a power_cycle e.g. 120)
+      soft (false)
 
     A matched ``checkin`` with no device key yet captures ``deviceId`` into the
     job context for later io_* stages. Emits
@@ -2368,23 +2372,32 @@ async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
     loop = asyncio.get_running_loop()
     matched: tuple[str, Any] | None = None
     seen = 0
+    started = elapsed = 0.0
     try:
         async with _io_mqtt_client(target, tls=_io_tls(stage, target)) as client:
-            for t in topics:
-                await _io_subscribe(client, t, ctx, stype)
+            # Subscribing to both b2w variants is how we learn which one carries
+            # traffic, so one ACL-denied variant is logged, not fatal; all denied is.
+            granted = [
+                t for t in topics if await _io_subscribe(client, t, ctx, stype, required=False)
+            ]
+            if not granted:
+                raise _io_infra(ctx, stype, "acl", f"every subscribe refused: {', '.join(topics)}")
             for t in error_topics:
                 await _io_subscribe(client, t, ctx, stype, required=False)
             ctx.log_line(
-                f"{stype}: subscribed {', '.join(topics)}; waiting <={timeout:g}s "
+                f"{stype}: subscribed {', '.join(granted)}; waiting <={timeout:g}s "
                 f"for action={action or '*'}"
             )
+            # The budget starts BEFORE the guarded step (publish → reply, like the
+            # IO UI's scan timer), so a checkin timeout must cover a power_cycle.
+            started = loop.time()
+            deadline = started + timeout
             if step is not None:
                 ctx.log_line(f"{stype}: running guarded step {step['type']}")
                 try:
                     await STAGE_HANDLERS[step["type"]](step, ctx)
                 except Exception as exc:  # noqa: BLE001 — re-raised unchanged below
                     raise _IoStepFailed(exc) from exc
-            deadline = loop.time() + timeout
             messages = aiter(client.messages)
             while matched is None:
                 remaining = deadline - loop.time()
@@ -2395,6 +2408,8 @@ async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
                 except (TimeoutError, StopAsyncIteration):
                     break
                 mtopic = str(msg.topic)
+                if getattr(msg, "retain", False):
+                    continue  # a stale retained frame (e.g. last boot's checkin) proves nothing
                 frame = _io_parse_frame(msg.payload)
                 if mtopic in error_topics:
                     raise _io_infra(
@@ -2405,6 +2420,7 @@ async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
                 ctx.log_line(f"{stype}: frame on {mtopic}: {_io_short(frame, 300)}")
                 if _io_frame_matches(frame, mtopic, stage, device_key):
                     matched = (mtopic, frame)
+                    elapsed = loop.time() - started
     except _IoStepFailed as failed:
         raise failed.inner from None  # the guarded step's own error, not IO infra
     except StageError:
@@ -2423,12 +2439,15 @@ async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
             if _IO_KEY_RE.match(captured):
                 ctx.io_device_key = captured
                 ctx.log_line(f"IO_DEVICE_KEY key={captured} (from checkin deviceId)")
-        ctx.log_line(f"IO_WS_VERDICT matched=true action={action or '*'} topic={mtopic}")
+        ctx.log_line(
+            f"IO_WS_VERDICT matched=true action={action or '*'} topic={mtopic} "
+            f"elapsed_s={elapsed:.2f}"
+        )
         ctx.log_line(f"{stype}: matched frame {_io_short(frame)}")
         return
     ctx.log_line(
         f"IO_WS_VERDICT matched=false action={action or '*'} topic={','.join(topics)} "
-        f"frames_seen={seen}"
+        f"frames_seen={seen} elapsed_s={timeout:.2f}"
     )
     if not stage.get("soft", False):
         raise StageError(

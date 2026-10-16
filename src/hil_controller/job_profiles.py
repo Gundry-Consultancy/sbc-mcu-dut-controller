@@ -244,6 +244,8 @@ def build_job(spec: AgentJob) -> dict[str, Any]:
                     raise ValueError(
                         "IO host and credentials come from the job broker/secrets, not stages"
                     )
+                if spec.broker != "dev-lan" and ("io_api_base" in stage or "tls" in stage):
+                    raise ValueError("io_api_base / tls overrides are only for dev-lan brokers")
                 stage.update(io_host=host, io_port=port)
             if kind in {"write_secrets_msc", "write_circuitpython"}:
                 if any(k in stage for k in ("io_url", "io_port", "settings", "secrets")):

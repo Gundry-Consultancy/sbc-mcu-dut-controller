@@ -113,8 +113,9 @@ After the flash cycle, drive the running firmware with injection stages
   (protoMQ-only `inject_*` / `verify_checkin` are rejected there). Always put
   the action inside an `io_ws_expect` as its `step`, so the subscription exists
   before the reply can arrive: `checkin` around a `power_cycle` (captures the
-  device key), `i2cScanResults` around an `io_ws_publish` probe (default 5s,
-  the IO UI's staging budget), `addComponent` / `modifyComponent` /
+  device key; `timeout_s` counts from before the step, so give it ~120),
+  `i2cScanResults` around an `io_ws_publish` probe (default 5s, the IO UI's
+  staging budget), `addComponent` / `modifyComponent` /
   `removeComponent` on `ws-r2b` around an `io_api_component`. Pair with
   `assert_serial` for the device side. Recipe and matching rules are in
   `docs/api.md` "Real IO stack stages".
@@ -136,7 +137,7 @@ Stages emit grep-able lines; assert on these, not on prose:
 | `inject_pixelwrite` | `PIXELWRITE_VERDICT rebooted=true\|false …` | depends on build (A/B compares the two) |
 | `capture_display` | `DISPLAY_CAPTURE_VERDICT saved=… exposure_us=…` | `saved=` a real path |
 | `io_api_component` | `IO_API_VERDICT status=<http> key=<feed key> action=… ok=…` | `ok=true` (2xx, or `expect_status`) |
-| `io_ws_expect` | `IO_WS_VERDICT matched=true\|false action=… topic=…` | `matched=true` |
+| `io_ws_expect` | `IO_WS_VERDICT matched=true\|false action=… topic=… elapsed_s=…` | `matched=true` |
 
 `IO_INFRA_ERROR stage=… kind=auth|acl|throttle|network` means the IO stack
 refused the request or was unreachable (bad key, broker ACL, rate limit). It is
