@@ -310,6 +310,41 @@ async def test_expect_subscribes_before_guarded_publish(broker: FakeBroker) -> N
     _no_key_leak(lines)
 
 
+async def test_labels_are_echoed_on_every_io_line(
+    broker: FakeBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker.replies[f"{USER}/ws-w2b/{DEVICE}"] = [(f"{USER}/ws-b2w", SCAN_RESULT)]
+    _http(monkeypatch, lambda r: httpx.Response(401, text="nope"))
+    ctx, lines = _ctx(io_device_key=DEVICE)
+    await run_stages(
+        [
+            _stage(
+                "io_ws_expect",
+                label="probe1",
+                action="i2cScanResults",
+                step=_stage("io_ws_publish", label="probe1.pub", payload=PROBE),
+            )
+        ],
+        ctx,
+    )
+    assert any(ln.startswith("IO_WS_PUBLISH label=probe1.pub published=true") for ln in lines)
+    assert any(ln.startswith("IO_WS_VERDICT label=probe1 matched=true") for ln in lines)
+    with pytest.raises(StageError, match="io_api_component label=add: infra error"):
+        await run_stages(
+            [_stage("io_api_component", label="add", feed={"name": "x"})], ctx
+        )
+    assert any(
+        ln.startswith("IO_INFRA_ERROR stage=io_api_component label=add kind=auth") for ln in lines
+    )
+
+
+@pytest.mark.parametrize("label", ["", "has space", "x" * 200, 7])
+async def test_bad_label_is_rejected(broker: FakeBroker, label: Any) -> None:
+    ctx, _ = _ctx(io_device_key=DEVICE)
+    with pytest.raises(StageError, match="label must match"):
+        await run_stages([_stage("io_ws_publish", label=label, payload=PROBE)], ctx)
+
+
 async def test_expect_ignores_other_devices_and_times_out(broker: FakeBroker) -> None:
     other = {**SCAN_RESULT, "deviceId": "io-wipper-someoneelse"}
     broker.replies[f"{USER}/ws-w2b/{DEVICE}"] = [(f"{USER}/ws-b2w", other)]
