@@ -56,6 +56,12 @@ async def run(args):
             job_id = args.job_id
         else:
             job = json.loads(Path(args.job).read_text(encoding="utf-8-sig"))
+            # Secrets named by --secret-env are added in memory, never written to disk;
+            # the MCP server redacts them from every response saved below.
+            for name in args.secret_env:
+                if not os.environ.get(name):
+                    raise SystemExit(f"--secret-env {name}: environment variable is not set")
+                job.setdefault("secrets", {})[name] = os.environ[name]
             for tool, arguments in [
                 ("job_guide", {}),
                 ("list_targets", {}),
@@ -118,6 +124,13 @@ def main():
     request.add_argument("--job-id", help="Resume observing a submitted job")
     parser.add_argument("--output", required=True)
     parser.add_argument("--mcp-config", help="Tachyon Codex TOML or Claude/Gemini JSON config")
+    parser.add_argument(
+        "--secret-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="add job secret NAME from the environment (repeatable), e.g. IO_KEY",
+    )
     parser.add_argument("--command", default="ssh")
     parser.add_argument("server_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()

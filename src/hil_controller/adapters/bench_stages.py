@@ -2013,6 +2013,22 @@ def _io_infra(ctx: BenchContext, stage_type: str, kind: str, detail: str) -> Sta
     return StageError(f"{stage_type}: infra error ({kind}), not a test verdict: {detail}")
 
 
+def _io_label(stage: dict[str, Any]) -> str:
+    """`` label=<l>`` for an io_* stage's log lines, or "" when it has none.
+
+    Echoed in IO_API_VERDICT / IO_WS_PUBLISH / IO_WS_VERDICT / IO_INFRA_ERROR so
+    a suite can tie each verdict to the probe that produced it.
+    """
+    label = stage.get("label")
+    if label is None:
+        return ""
+    if not isinstance(label, str) or not _IO_KEY_RE.match(label):
+        raise StageError(
+            f"{stage.get('type')}: label must match [A-Za-z0-9][A-Za-z0-9_.-]* (got {label!r})"
+        )
+    return f" label={label}"
+
+
 def _io_target(stage: dict[str, Any], ctx: BenchContext) -> _IoTarget:
     """Resolve the IO host + credentials for an io_* stage.
 
@@ -2203,7 +2219,8 @@ async def _stage_io_api_component(stage: dict[str, Any], ctx: BenchContext) -> N
     Emits ``IO_API_VERDICT status=<http> key=<feed key> action=<a>``; 401/403/429
     and network errors are ``IO_INFRA_ERROR`` (no verdict).
     """
-    stype = "io_api_component"
+    lbl = _io_label(stage)
+    stype = "io_api_component" + lbl
     target = _io_target(stage, ctx)
     action = str(stage.get("action", "create")).lower()
     if action not in ("create", "update", "delete"):
@@ -2253,7 +2270,7 @@ async def _stage_io_api_component(stage: dict[str, Any], ctx: BenchContext) -> N
         allowed = expect if isinstance(expect, list) else [expect]
         ok = resp.status_code in {int(s) for s in allowed}
     ctx.log_line(
-        f"IO_API_VERDICT status={resp.status_code} key={feed_key} action={action} "
+        f"IO_API_VERDICT{lbl} status={resp.status_code} key={feed_key} action={action} "
         f"ok={'true' if ok else 'false'}"
     )
     ctx.log_line(f"{stype}: response body: {_io_short(text)}")
@@ -2278,7 +2295,8 @@ async def _stage_io_ws_publish(stage: dict[str, Any], ctx: BenchContext) -> None
 
     Emits ``IO_WS_PUBLISH published=true topic=<t> bytes=<n> action=<a>``.
     """
-    stype = "io_ws_publish"
+    lbl = _io_label(stage)
+    stype = "io_ws_publish" + lbl
     target = _io_target(stage, ctx)
     payload = stage.get("payload")
     if not isinstance(payload, dict) or not payload.get("action"):
@@ -2295,7 +2313,7 @@ async def _stage_io_ws_publish(stage: dict[str, Any], ctx: BenchContext) -> None
                     watching.append(t)
             await client.publish(topic, data, qos=int(stage.get("qos", 1)))
             ctx.log_line(
-                f"IO_WS_PUBLISH published=true topic={topic} bytes={len(data)} "
+                f"IO_WS_PUBLISH{lbl} published=true topic={topic} bytes={len(data)} "
                 f"action={payload['action']}"
             )
             if watching and window > 0:
@@ -2347,7 +2365,8 @@ async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
     job context for later io_* stages. Emits
     ``IO_WS_VERDICT matched=true|false action=<a> topic=<t>``.
     """
-    stype = "io_ws_expect"
+    lbl = _io_label(stage)
+    stype = "io_ws_expect" + lbl
     target = _io_target(stage, ctx)
     action = str(stage.get("action") or "")
     device_key = _io_device_key(stage, ctx, required=False)
@@ -2440,13 +2459,13 @@ async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
                 ctx.io_device_key = captured
                 ctx.log_line(f"IO_DEVICE_KEY key={captured} (from checkin deviceId)")
         ctx.log_line(
-            f"IO_WS_VERDICT matched=true action={action or '*'} topic={mtopic} "
+            f"IO_WS_VERDICT{lbl} matched=true action={action or '*'} topic={mtopic} "
             f"elapsed_s={elapsed:.2f}"
         )
         ctx.log_line(f"{stype}: matched frame {_io_short(frame)}")
         return
     ctx.log_line(
-        f"IO_WS_VERDICT matched=false action={action or '*'} topic={','.join(topics)} "
+        f"IO_WS_VERDICT{lbl} matched=false action={action or '*'} topic={','.join(topics)} "
         f"frames_seen={seen} elapsed_s={timeout:.2f}"
     )
     if not stage.get("soft", False):

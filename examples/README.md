@@ -13,6 +13,8 @@ examples/
   wippersnapper-python/
     secrets.example.json     # WS Python SBC client secrets
     .env.example             # pytest env loader, same fields
+  io-staging-ws-v2/
+    ws_v2_suite.py           # WS v2 through the real IO stack (staging): render, run, judge
   hil-call.sh                 # reference CI step: submit job + long-poll
   ws-python-caller.yml        # WS-Python repo drops this in as .github/workflows/hil.yml
 
