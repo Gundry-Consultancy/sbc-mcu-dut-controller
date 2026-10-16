@@ -67,6 +67,9 @@ test, not a bench job.
    (the checkin `deviceId` is the group key). Until then the lifecycle probes
    report *prereq* (HTTP 404). IO stores a device's feeds under
    `{device_key}.{key}`, so updates and deletes reuse the key the create returns.
+   Once registered, the bridge sends **no** `ws-b2w` checkin for the device
+   (only unregistered devices get one), so pass `--device-key <group key>`:
+   every `io_*` stage gets the key and a missing checkin reports *info*.
 3. **2.x firmware that speaks the deployment's v2 protocol** (`--firmware-json`,
    an AgentJob firmware object). If no checkin arrives, the result is *prereq*.
 4. **The exact `wipper_pin_info`.** The default is a BME280 sketch. For a real

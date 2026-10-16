@@ -293,3 +293,21 @@ def test_only_the_controller_log_is_judged(tmp_path: Path) -> None:
 def test_probe_count_below_two_is_refused() -> None:
     with pytest.raises(ValueError, match="at least 2"):
         suite.build_v2_job(_opts(probes=1))
+
+
+def test_registered_device_key_is_stamped_and_checkin_is_soft() -> None:
+    sj = suite.build_v2_job(_opts(device_key=DEVICE))
+    io = list(suite.walk_io_stages(sj.job["params"]["stages"]))
+    assert io and all(st["device_key"] == DEVICE for st in io)
+    checkin = next(st for st in io if st.get("label") == "checkin")
+    assert checkin["soft"] is True
+    suite.validate(sj.job)  # still builds through the job profile
+
+
+def test_missing_checkin_for_a_registered_device_is_info() -> None:
+    rows = _rows(
+        "IO_WS_VERDICT label=checkin matched=false action=checkin topic=a,b "
+        "frames_seen=0 elapsed_s=90\n",
+        device_key=DEVICE,
+    )
+    assert rows["checkin"]["status"] == "info"

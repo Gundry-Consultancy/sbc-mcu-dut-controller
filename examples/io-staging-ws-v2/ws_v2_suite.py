@@ -134,13 +134,22 @@ def _elapsed(ws: Line) -> float:
 # --------------------------------------------------------------------------- #
 
 
-def judge_checkin(label: str) -> Callable[[dict[str, list[Line]]], Outcome]:
+def judge_checkin(
+    label: str, *, registered: bool = False
+) -> Callable[[dict[str, list[Line]]], Outcome]:
     def judge(lines: dict[str, list[Line]]) -> Outcome:
         if bad := _infra(lines, label):
             return bad
         ws = _first(lines, label, "IO_WS_VERDICT")
         if ws is None:
             return Outcome("not_run", "checkin probe never ran")
+        if ws.fields.get("matched") != "true" and registered:
+            # The bridge forwards a checkin to the web only for a device that is
+            # not yet an IO group; a registered one just has its semver updated.
+            return Outcome(
+                "info",
+                "no ws-b2w checkin, as expected for a registered device (device key given)",
+            )
         if ws.fields.get("matched") != "true":
             return Outcome(
                 "prereq",
@@ -301,6 +310,9 @@ class Options:
     skip_flash: bool = False
     probes: int = 3
     machine_name: str | None = None
+    #: An already-registered device's IO group key. The bridge sends no ws-b2w
+    #: checkin for registered devices, so every io_* stage is given the key.
+    device_key: str | None = None
     timeout_scale: float = 1.0
     v1_firmware: dict[str, Any] | None = None
     v1_add_marker: str | None = None
@@ -391,11 +403,24 @@ def build_v2_job(opts: Options) -> SuiteJob:
     checkin_kw: dict[str, Any] = {}
     if opts.machine_name:
         checkin_kw["match"] = {"args.machineName": opts.machine_name}
+    if opts.device_key:
+        # No frame will come for a registered device: the stage is the boot wait.
+        checkin_kw.update(soft=True)
     stages.append(
-        _expect("checkin", "checkin", _t(opts, 150), {"type": "power_cycle"}, **checkin_kw)
+        _expect(
+            "checkin",
+            "checkin",
+            _t(opts, 90 if opts.device_key else 150),
+            {"type": "power_cycle"},
+            **checkin_kw,
+        )
     )
     probes.append(
-        Probe("checkin", "Which ws-b2w topic carries the checkin?", judge_checkin("checkin"))
+        Probe(
+            "checkin",
+            "Which ws-b2w topic carries the checkin?",
+            judge_checkin("checkin", registered=bool(opts.device_key)),
+        )
     )
 
     probe_frame = {
@@ -530,7 +555,21 @@ def build_v2_job(opts: Options) -> SuiteJob:
             )
         )
 
+    if opts.device_key:
+        for st in walk_io_stages(stages):
+            st["device_key"] = opts.device_key
     return SuiteJob("v2-real-io", _agent_job(opts, opts.firmware, stages, opts.broker), probes)
+
+
+def walk_io_stages(stages: list[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+    """Every io_* stage, including ones nested as an io_ws_expect ``step``."""
+    for st in stages:
+        node: dict[str, Any] | None = st
+        while node is not None:
+            if str(node.get("type", "")).startswith("io_"):
+                yield node
+            step = node.get("step")
+            node = step if isinstance(step, dict) else None
 
 
 def build_v1_assisted_job(opts: Options, broker: str) -> SuiteJob:
@@ -688,6 +727,7 @@ def _options(args: argparse.Namespace) -> Options:
         skip_flash=args.skip_flash,
         probes=args.probes,
         machine_name=args.machine_name,
+        device_key=getattr(args, "device_key", None),
         v1_firmware=_load_json_arg(args.v1_firmware_json),
         v1_add_marker=args.v1_add_marker,
         pool=args.pool,
@@ -718,6 +758,10 @@ def _add_render_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--pin-info-json", help="wipper_pin_info copied from a UI-created feed")
     p.add_argument("--probes", type=int, default=3)
     p.add_argument("--machine-name", help="match the checkin's args.machineName (shared account)")
+    p.add_argument(
+        "--device-key",
+        help="IO group key of an already-registered device (it gets no ws-b2w checkin)",
+    )
     p.add_argument("--v1-firmware-json", help="1.x firmware for the assisted UI run")
     p.add_argument("--v1-add-marker", help="serial line a 1.x build prints on component add")
     p.add_argument(
