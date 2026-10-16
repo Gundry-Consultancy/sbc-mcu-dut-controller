@@ -22,14 +22,17 @@ orchestrator wires to job events.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timezone
 from typing import Any, Optional
+
+import httpx
 
 from hil_controller.adapters.analog_mux import AnalogMuxAdapter, AnalogMuxError
 from hil_controller.adapters.circuitpython import (
@@ -201,6 +204,12 @@ class BenchContext:
     protomq_host: str = ""
     protomq_port: int = 0
     protomq_uid: str = ""
+    #: Real-IO-stack (staging / dev-lan) state shared by the ``io_*`` stages: the
+    #: WipperSnapper device (group) key — from a stage param or captured from an
+    #: ``io_ws_expect`` checkin — and the feed key the last ``io_api_component``
+    #: create returned, so create → update → delete chain without repeating keys.
+    io_device_key: str = ""
+    io_feed_key: str = ""
     #: Full command transcript (argv + stdout/stderr + exit) of every command a
     #: stage runs, for a downloadable, self-verifiable flash.log.
     transcript: list[dict[str, Any]] = field(default_factory=list)
@@ -1949,6 +1958,504 @@ async def _stage_isolate_i2c_strand(stage: dict[str, Any], ctx: BenchContext) ->
     ctx.log_line("I2C_STRAND_MUX_VERDICT status=isolated")
 
 
+# --------------------------------------------------------------------------- #
+# Real IO stack (staging / dev-lan): REST feeds API + ws-w2b/ws-b2w/ws-r2b    #
+# --------------------------------------------------------------------------- #
+#
+# WipperSnapper v2 on the real Adafruit IO stack (io-rails "WS V2") moves the
+# component lifecycle to the Rails API — a feed create/update/destroy emits JSON
+# ``{action: addComponent|modifyComponent|removeComponent, ...}`` on
+# ``{user}/ws-r2b/{device_key}`` — while the browser publishes only
+# ``i2cScanAll``/``i2cProbe`` on ``{user}/ws-w2b/{device_key}`` and listens on
+# ``{user}/ws-b2w`` for ``{deviceId, action: checkin|i2cScanResults|error, args}``.
+# A bridge (outside the controller) translates those to device protobuf. These
+# stages drive that path with the job's own IO_USERNAME / IO_KEY secrets.
+#
+# The host is never a caller choice: the job profile stamps ``io_host`` /
+# ``io_port`` from the job's broker (staging / dev-lan only) and the handlers
+# refuse production. Auth / ACL / network failures log ``IO_INFRA_ERROR`` and
+# raise WITHOUT a verdict line — "no verdict" is the infra signal every CI
+# harness keys on.
+
+#: Hosts the io_* stages refuse outright (live customer data). Staging
+#: (io.adafruit.us) and dev-lan hosts are the only intended targets.
+_IO_PRODUCTION_SUFFIXES = ("adafruit.com",)
+#: Device / feed keys are interpolated into URL paths and MQTT topics.
+_IO_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+#: io_ws_expect may only subscribe below these per-user prefixes.
+_IO_WS_TOPIC_RE = re.compile(r"^ws-(b2w|r2b)(/#|/[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$")
+#: ws-r2b carries the Rails-emitted component lifecycle; everything else is b2w.
+_IO_R2B_ACTIONS = frozenset({"addComponent", "modifyComponent", "removeComponent", "value"})
+_IO_HTTP_INFRA_STATUSES = frozenset({401, 403, 429})
+
+
+class _IoStepFailed(Exception):
+    """Carries an io_ws_expect guarded step's failure past the MQTT infra handler."""
+
+    def __init__(self, inner: Exception) -> None:
+        super().__init__(str(inner))
+        self.inner = inner
+
+
+@dataclass
+class _IoTarget:
+    host: str
+    mqtt_port: int
+    api_base: str
+    username: str
+    key: str
+
+
+def _io_infra(ctx: BenchContext, stage_type: str, kind: str, detail: str) -> StageError:
+    """Log an ``IO_INFRA_ERROR`` and build the (masked) StageError to raise."""
+    detail = mask_values(detail, ctx._secret_values())
+    ctx.log_line(f"IO_INFRA_ERROR stage={stage_type} kind={kind} detail={detail}")
+    return StageError(f"{stage_type}: infra error ({kind}), not a test verdict: {detail}")
+
+
+def _io_target(stage: dict[str, Any], ctx: BenchContext) -> _IoTarget:
+    """Resolve the IO host + credentials for an io_* stage.
+
+    Credentials come ONLY from the job secrets; the host from the stage's
+    profile-stamped ``io_host`` (``io_api_base`` may change scheme/port, never the
+    host, so the key can't be pointed elsewhere).
+    """
+    stype = str(stage.get("type"))
+    host = str(stage.get("io_host") or "").strip().lower()
+    if not host or any(c in host for c in "/@?# \r\n"):
+        raise StageError(
+            f"{stype}: needs io_host (set by broker=staging|dev-lan on the job, "
+            "or explicitly on a raw firmware-bench stage)"
+        )
+    if any(host == s or host.endswith("." + s) for s in _IO_PRODUCTION_SUFFIXES):
+        raise StageError(f"{stype}: refusing production IO host {host!r}; use staging or dev-lan")
+    for forbidden in ("io_username", "io_key", "username", "key", "password"):
+        if forbidden in stage:
+            raise StageError(f"{stype}: credentials come from job secrets, not stage {forbidden!r}")
+    username = (ctx.secrets or {}).get("IO_USERNAME", "")
+    key = (ctx.secrets or {}).get("IO_KEY", "")
+    if not username or not key:
+        raise StageError(f"{stype}: job secrets must supply IO_USERNAME and IO_KEY")
+    if not _IO_KEY_RE.match(username):
+        raise StageError(f"{stype}: IO_USERNAME is not a valid IO username")
+    api_base = str(stage.get("io_api_base") or f"https://{host}").rstrip("/")
+    m = re.match(r"^(https?)://([^/:@?#\s]+)(:\d{1,5})?$", api_base)
+    if not m or m.group(2).lower() != host:
+        raise StageError(f"{stype}: io_api_base must be http(s)://{host}[:port]")
+    if host.endswith("adafruit.us") and (m.group(1) != "https" or stage.get("tls") is False):
+        raise StageError(f"{stype}: staging IO ({host}) must use https and MQTT TLS")
+    return _IoTarget(
+        host=host,
+        mqtt_port=int(stage.get("io_port") or 8883),
+        api_base=api_base,
+        username=username,
+        key=key,
+    )
+
+
+def _io_device_key(stage: dict[str, Any], ctx: BenchContext, *, required: bool) -> str:
+    key = str(stage.get("device_key") or ctx.io_device_key or "")
+    if not key:
+        if required:
+            raise StageError(
+                f"{stage.get('type')}: no device key — set device_key, or capture one "
+                "with an earlier io_ws_expect action=checkin"
+            )
+        return ""
+    if not _IO_KEY_RE.match(key):
+        raise StageError(f"{stage.get('type')}: invalid device_key {key!r}")
+    return key
+
+
+def _io_http_client(api_base: str, io_key: str) -> httpx.AsyncClient:
+    """IO REST client (test seam: monkeypatch to inject an httpx.MockTransport)."""
+    return httpx.AsyncClient(
+        base_url=api_base,
+        headers={"X-AIO-Key": io_key, "Accept": "application/json"},
+        timeout=httpx.Timeout(20.0),
+    )
+
+
+def _io_mqtt_client(target: _IoTarget, *, tls: bool) -> Any:
+    """IO MQTT client (test seam). TLS when the port is 8883 (or ``tls: true``)."""
+    import ssl
+
+    import aiomqtt
+
+    return aiomqtt.Client(
+        hostname=target.host,
+        port=target.mqtt_port,
+        username=target.username,
+        password=target.key,
+        tls_context=ssl.create_default_context() if tls else None,
+        timeout=15,
+    )
+
+
+def _io_tls(stage: dict[str, Any], target: _IoTarget) -> bool:
+    tls = stage.get("tls")
+    return target.mqtt_port == 8883 if tls is None else bool(tls)
+
+
+def _io_mqtt_infra_kind(exc: Exception) -> str:
+    rc = getattr(exc, "rc", None)
+    value = getattr(rc, "value", rc)
+    # CONNACK 4 = bad username/password, 5 = not authorized (v3.1.1); v5 0x86/0x87.
+    return "auth" if value in (4, 5, 0x86, 0x87) else "network"
+
+
+async def _io_subscribe(
+    client: Any, topic: str, ctx: BenchContext, stype: str, *, required: bool = True
+) -> bool:
+    """Subscribe and check the SUBACK; a 0x80 grant is an ACL denial (infra)."""
+    granted = await client.subscribe(topic, qos=1)
+    codes = [getattr(g, "value", g) for g in (granted or [])]
+    if any(isinstance(c, int) and c >= 0x80 for c in codes):
+        if required:
+            raise _io_infra(ctx, stype, "acl", f"subscribe to {topic} refused (SUBACK {codes})")
+        ctx.log_line(f"{stype}: subscribe to {topic} refused (SUBACK {codes}); continuing")
+        return False
+    return True
+
+
+def _io_error_topics(user: str) -> list[str]:
+    # Adafruit IO reports rejected publishes/subscribes and rate limits here.
+    return [f"{user}/errors", f"{user}/throttle"]
+
+
+def _io_parse_frame(payload: Any) -> Any:
+    raw = payload.decode("utf-8", "replace") if isinstance(payload, bytes) else str(payload)
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def _io_lookup(obj: Any, path: str) -> tuple[bool, Any]:
+    """Resolve a dotted path (``args.results.0.found``) into nested JSON."""
+    cur = obj
+    for part in path.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        else:
+            return False, None
+    return True, cur
+
+
+def _io_contains(actual: Any, expected: Any) -> bool:
+    if isinstance(actual, list):
+        wanted = expected if isinstance(expected, list) else [expected]
+        return all(w in actual for w in wanted)
+    if isinstance(actual, str) and isinstance(expected, str):
+        return expected in actual
+    return bool(actual == expected)
+
+
+def _io_frame_matches(
+    frame: Any, topic: str, stage: dict[str, Any], device_key: str
+) -> bool:
+    if not isinstance(frame, dict):
+        return False
+    action = stage.get("action")
+    if action and frame.get("action") != action:
+        return False
+    if device_key and stage.get("match_device", True):
+        # b2w frames carry deviceId; r2b/per-device topics carry the key in the topic.
+        args = frame.get("args")
+        ids = {frame.get("deviceId"), args.get("deviceId") if isinstance(args, dict) else None}
+        if device_key not in ids and not topic.endswith("/" + device_key):
+            return False
+    for path, want in (stage.get("match") or {}).items():
+        ok, got = _io_lookup(frame, path)
+        if not ok or got != want:
+            return False
+    for path, want in (stage.get("match_contains") or {}).items():
+        ok, got = _io_lookup(frame, path)
+        if not ok or not _io_contains(got, want):
+            return False
+    return True
+
+
+def _io_short(obj: Any, limit: int = 600) -> str:
+    text = obj if isinstance(obj, str) else json.dumps(obj, separators=(",", ":"))
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+async def _stage_io_api_component(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Create / update / delete a WipperSnapper v2 component feed via the IO REST API.
+
+    The bench equivalent of the IO wizard's save / edit / delete:
+    ``POST|PUT|DELETE {api}/api/v2/{IO_USERNAME}/groups/{device_key}/feeds[/{feed_key}]``
+    with ``X-AIO-Key`` from the job secrets. Rails then emits the matching
+    ``ws-r2b`` add/modify/remove frame (assert it by wrapping this stage as the
+    ``step`` of an ``io_ws_expect``).
+
+    Params:
+      action        create (default) | update | delete
+      device_key    group key; else the key captured by io_ws_expect checkin
+      feed_key      update/delete target; else the key the last create returned
+      feed          the ``{"name":..., "wipper_pin_info": {...}}`` body (create/update)
+      expect_status int or list; default any 2xx
+      soft          log the verdict but don't fail on an unexpected status
+
+    Emits ``IO_API_VERDICT status=<http> key=<feed key> action=<a>``; 401/403/429
+    and network errors are ``IO_INFRA_ERROR`` (no verdict).
+    """
+    stype = "io_api_component"
+    target = _io_target(stage, ctx)
+    action = str(stage.get("action", "create")).lower()
+    if action not in ("create", "update", "delete"):
+        raise StageError(f"{stype}: action must be create, update or delete (got {action!r})")
+    device_key = _io_device_key(stage, ctx, required=True)
+    path = f"/api/v2/{target.username}/groups/{device_key}/feeds"
+    feed_key = ""
+    if action != "create":
+        feed_key = str(stage.get("feed_key") or ctx.io_feed_key or "")
+        if not feed_key or not _IO_KEY_RE.match(feed_key):
+            raise StageError(f"{stype}: {action} needs a valid feed_key (or an earlier create)")
+        path += f"/{feed_key}"
+    body: dict[str, Any] | None = None
+    if action != "delete":
+        feed = stage.get("feed")
+        if not isinstance(feed, dict) or not feed:
+            raise StageError(f"{stype}: {action} needs a 'feed' object (name, wipper_pin_info)")
+        body = {"feed": feed}
+    method = {"create": "POST", "update": "PUT", "delete": "DELETE"}[action]
+    ctx.log_line(f"{stype}: {method} {target.api_base}{path}")
+    try:
+        async with _io_http_client(target.api_base, target.key) as client:
+            resp = await client.request(method, path, json=body)
+    except httpx.HTTPError as exc:
+        raise _io_infra(ctx, stype, "network", f"{method} {path}: {exc!r}") from exc
+
+    text = mask_values(resp.text or "", ctx._secret_values())
+    if resp.status_code in _IO_HTTP_INFRA_STATUSES:
+        kind = "throttle" if resp.status_code == 429 else "auth"
+        raise _io_infra(
+            ctx, stype, kind, f"{method} {path} → HTTP {resp.status_code}: {_io_short(text, 300)}"
+        )
+    data: Any = None
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if action == "create" and isinstance(data, dict) and data.get("key"):
+        feed_key = str(data["key"])
+        ctx.io_feed_key = feed_key
+    elif action == "delete" and resp.is_success and ctx.io_feed_key == feed_key:
+        ctx.io_feed_key = ""
+    expect = stage.get("expect_status")
+    if expect is None:
+        ok = resp.is_success
+    else:
+        allowed = expect if isinstance(expect, list) else [expect]
+        ok = resp.status_code in {int(s) for s in allowed}
+    ctx.log_line(
+        f"IO_API_VERDICT status={resp.status_code} key={feed_key} action={action} "
+        f"ok={'true' if ok else 'false'}"
+    )
+    ctx.log_line(f"{stype}: response body: {_io_short(text)}")
+    if not ok and not stage.get("soft", False):
+        raise StageError(
+            f"{stype}: {method} {path} returned HTTP {resp.status_code} "
+            f"(expected {expect if expect is not None else '2xx'})"
+        )
+
+
+async def _stage_io_ws_publish(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Publish a JSON frame to ``{IO_USERNAME}/ws-w2b/{device_key}`` over IO MQTT.
+
+    The bench equivalent of the IO UI's scan / probe buttons, e.g.
+    ``{"action":"i2cProbe","targets":[{"sda":41,"scl":40}],"addresses":[118]}`` or
+    ``{"action":"i2cScanAll","sda":41,"scl":40}``. TLS on 8883.
+
+    Params: ``payload`` (JSON object with an ``action``), ``device_key``,
+    ``qos`` (1), ``errors_window_s`` (1.0 — how long to watch ``{user}/errors``
+    for an ACL rejection after the publish). Assert the reply by wrapping this
+    stage as the ``step`` of an ``io_ws_expect``.
+
+    Emits ``IO_WS_PUBLISH published=true topic=<t> bytes=<n> action=<a>``.
+    """
+    stype = "io_ws_publish"
+    target = _io_target(stage, ctx)
+    payload = stage.get("payload")
+    if not isinstance(payload, dict) or not payload.get("action"):
+        raise StageError(f"{stype}: payload must be a JSON object with an 'action'")
+    device_key = _io_device_key(stage, ctx, required=True)
+    topic = f"{target.username}/ws-w2b/{device_key}"
+    data = json.dumps(payload, separators=(",", ":")).encode()
+    window = float(stage.get("errors_window_s", 1.0))
+    try:
+        async with _io_mqtt_client(target, tls=_io_tls(stage, target)) as client:
+            watching = []
+            for t in _io_error_topics(target.username):
+                if await _io_subscribe(client, t, ctx, stype, required=False):
+                    watching.append(t)
+            await client.publish(topic, data, qos=int(stage.get("qos", 1)))
+            ctx.log_line(
+                f"IO_WS_PUBLISH published=true topic={topic} bytes={len(data)} "
+                f"action={payload['action']}"
+            )
+            if watching and window > 0:
+                err = await _io_next_message(client, window)
+                if err is not None:
+                    raise _io_infra(
+                        ctx, stype, "acl",
+                        f"broker reported on {err[0]}: {_io_short(err[1], 300)}",
+                    )
+    except StageError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any MQTT/TLS/socket failure is infra
+        raise _io_infra(ctx, stype, _io_mqtt_infra_kind(exc), f"{topic}: {exc!r}") from exc
+    ctx.log_line(f"{stype}: payload {_io_short(payload)}")
+
+
+async def _io_next_message(client: Any, timeout: float) -> tuple[str, Any] | None:
+    """Next ``(topic, parsed payload)`` within ``timeout`` seconds, else None."""
+    try:
+        msg = await asyncio.wait_for(anext(aiter(client.messages)), timeout)
+    except (TimeoutError, StopAsyncIteration):
+        return None
+    return str(msg.topic), _io_parse_frame(msg.payload)
+
+
+async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Wait for a matching JSON frame on ``ws-b2w`` / ``ws-r2b`` (real IO stack).
+
+    Subscribes FIRST (SUBACK checked), then runs the optional guarded ``step``
+    (any stage — usually ``io_ws_publish``, ``io_api_component`` or
+    ``power_cycle``), then waits up to ``timeout_s`` (default 5, the IO UI's
+    staging scan budget) for a frame whose ``action`` and fields match. Also
+    watches ``{user}/errors`` / ``{user}/throttle``: a hit there is infra.
+
+    Params:
+      action          e.g. checkin | i2cScanResults | error | addComponent | ...
+      topics          suffixes under ``{user}/``: ws-b2w, ws-b2w/#, ws-b2w/<key>,
+                      ws-r2b/#, ws-r2b/<key>. Default: ws-r2b/<key|#> for the
+                      component actions, else [ws-b2w, ws-b2w/#].
+      match           {dotted.path: value} exact-equality checks
+      match_contains  {dotted.path: value} list-contains / substring checks
+      match_device    require deviceId (or topic) == device key when known (true)
+      step            a nested stage run after subscribing
+      timeout_s       budget from just before ``step`` to the match (5; give a
+                      checkin around a power_cycle e.g. 120)
+      soft (false)
+
+    A matched ``checkin`` with no device key yet captures ``deviceId`` into the
+    job context for later io_* stages. Emits
+    ``IO_WS_VERDICT matched=true|false action=<a> topic=<t>``.
+    """
+    stype = "io_ws_expect"
+    target = _io_target(stage, ctx)
+    action = str(stage.get("action") or "")
+    device_key = _io_device_key(stage, ctx, required=False)
+    suffixes = stage.get("topics")
+    if suffixes is None:
+        suffixes = (
+            [f"ws-r2b/{device_key or '#'}"] if action in _IO_R2B_ACTIONS
+            else ["ws-b2w", "ws-b2w/#"]
+        )
+    if isinstance(suffixes, str):
+        suffixes = [suffixes]
+    if not suffixes or any(not _IO_WS_TOPIC_RE.match(str(s)) for s in suffixes):
+        raise StageError(
+            f"{stype}: topics must be ws-b2w[/#|/<key>] or ws-r2b[/#|/<key>] (got {suffixes!r})"
+        )
+    topics = [f"{target.username}/{s}" for s in suffixes]
+    error_topics = _io_error_topics(target.username)
+    timeout = float(stage.get("timeout_s", 5.0))
+    step = stage.get("step")
+    if step is not None and (not isinstance(step, dict) or step.get("type") not in STAGE_HANDLERS):
+        raise StageError(f"{stype}: step must be a known stage object")
+    loop = asyncio.get_running_loop()
+    matched: tuple[str, Any] | None = None
+    seen = 0
+    started = elapsed = 0.0
+    try:
+        async with _io_mqtt_client(target, tls=_io_tls(stage, target)) as client:
+            # Subscribing to both b2w variants is how we learn which one carries
+            # traffic, so one ACL-denied variant is logged, not fatal; all denied is.
+            granted = [
+                t for t in topics if await _io_subscribe(client, t, ctx, stype, required=False)
+            ]
+            if not granted:
+                raise _io_infra(ctx, stype, "acl", f"every subscribe refused: {', '.join(topics)}")
+            for t in error_topics:
+                await _io_subscribe(client, t, ctx, stype, required=False)
+            ctx.log_line(
+                f"{stype}: subscribed {', '.join(granted)}; waiting <={timeout:g}s "
+                f"for action={action or '*'}"
+            )
+            # The budget starts BEFORE the guarded step (publish → reply, like the
+            # IO UI's scan timer), so a checkin timeout must cover a power_cycle.
+            started = loop.time()
+            deadline = started + timeout
+            if step is not None:
+                ctx.log_line(f"{stype}: running guarded step {step['type']}")
+                try:
+                    await STAGE_HANDLERS[step["type"]](step, ctx)
+                except Exception as exc:  # noqa: BLE001 — re-raised unchanged below
+                    raise _IoStepFailed(exc) from exc
+            messages = aiter(client.messages)
+            while matched is None:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    msg = await asyncio.wait_for(anext(messages), remaining)
+                except (TimeoutError, StopAsyncIteration):
+                    break
+                mtopic = str(msg.topic)
+                if getattr(msg, "retain", False):
+                    continue  # a stale retained frame (e.g. last boot's checkin) proves nothing
+                frame = _io_parse_frame(msg.payload)
+                if mtopic in error_topics:
+                    raise _io_infra(
+                        ctx, stype, "acl" if mtopic.endswith("/errors") else "throttle",
+                        f"broker reported on {mtopic}: {_io_short(frame, 300)}",
+                    )
+                seen += 1
+                ctx.log_line(f"{stype}: frame on {mtopic}: {_io_short(frame, 300)}")
+                if _io_frame_matches(frame, mtopic, stage, device_key):
+                    matched = (mtopic, frame)
+                    elapsed = loop.time() - started
+    except _IoStepFailed as failed:
+        raise failed.inner from None  # the guarded step's own error, not IO infra
+    except StageError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any MQTT/TLS/socket failure is infra
+        raise _io_infra(
+            ctx, stype, _io_mqtt_infra_kind(exc), f"{', '.join(topics)}: {exc!r}"
+        ) from exc
+
+    if matched is not None:
+        mtopic, frame = matched
+        if frame.get("action") == "checkin" and not ctx.io_device_key:
+            args = frame.get("args")
+            nested = args.get("deviceId") if isinstance(args, dict) else None
+            captured = str(frame.get("deviceId") or nested or "")
+            if _IO_KEY_RE.match(captured):
+                ctx.io_device_key = captured
+                ctx.log_line(f"IO_DEVICE_KEY key={captured} (from checkin deviceId)")
+        ctx.log_line(
+            f"IO_WS_VERDICT matched=true action={action or '*'} topic={mtopic} "
+            f"elapsed_s={elapsed:.2f}"
+        )
+        ctx.log_line(f"{stype}: matched frame {_io_short(frame)}")
+        return
+    ctx.log_line(
+        f"IO_WS_VERDICT matched=false action={action or '*'} topic={','.join(topics)} "
+        f"frames_seen={seen} elapsed_s={timeout:.2f}"
+    )
+    if not stage.get("soft", False):
+        raise StageError(
+            f"{stype}: no {action or 'matching'} frame on {', '.join(topics)} "
+            f"within {timeout:g}s ({seen} other frames seen)"
+        )
+
+
 STAGE_HANDLERS: dict[str, Handler] = {
     "write_circuitpython": write_circuitpython,
     "assert_serial": assert_serial,
@@ -1973,6 +2480,9 @@ STAGE_HANDLERS: dict[str, Handler] = {
     "power_cycle": _stage_power_cycle,
     "write_secrets_msc": _stage_write_secrets_msc,
     "print_boot_log": _stage_print_boot_log,
+    "io_api_component": _stage_io_api_component,
+    "io_ws_publish": _stage_io_ws_publish,
+    "io_ws_expect": _stage_io_ws_expect,
 }
 
 
@@ -2018,18 +2528,36 @@ SAMD51_BOSSAC_FLASH_STAGES: list[dict[str, Any]] = [
 ]
 
 
+def walk_stages(stages: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Yield every stage, including ones nested as an ``io_ws_expect`` ``step``.
+
+    Every policy check (type validation, broker gating, routing stamps) must walk
+    nested steps too, or a wrapper could smuggle a disallowed stage past it.
+    """
+    for stage in stages:
+        yield stage
+        step = stage.get("step") if isinstance(stage, dict) else None
+        if isinstance(step, dict):
+            yield from walk_stages([step])
+
+
 def validate_stages(stages: list[dict[str, Any]]) -> None:
-    """Raise :class:`StageError` if any stage has an unknown type.
+    """Raise :class:`StageError` if any stage (or nested ``step``) has an unknown type.
 
     Called before a run starts so a typo'd stage fails fast at submit time
     rather than mid-flash.
     """
     for i, stage in enumerate(stages):
-        stype = stage.get("type")
-        if stype not in STAGE_HANDLERS:
-            raise StageError(
-                f"unknown bench stage type {stype!r} at index {i}; known: {sorted(STAGE_HANDLERS)}"
-            )
+        for inner in walk_stages([stage]):
+            stype = inner.get("type") if isinstance(inner, dict) else None
+            if stype not in STAGE_HANDLERS:
+                raise StageError(
+                    f"unknown bench stage type {stype!r} at index {i}; "
+                    f"known: {sorted(STAGE_HANDLERS)}"
+                )
+            step = inner.get("step")
+            if step is not None and (stype != "io_ws_expect" or not isinstance(step, dict)):
+                raise StageError(f"stage {i}: 'step' is only valid as an object on io_ws_expect")
 
 
 async def run_stages(stages: list[dict[str, Any]], ctx: BenchContext) -> None:

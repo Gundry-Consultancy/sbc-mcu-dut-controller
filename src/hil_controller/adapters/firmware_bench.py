@@ -39,6 +39,7 @@ from hil_controller.adapters.bench_stages import (
     HostUsbWedgedError,
     run_stages,
     validate_stages,
+    walk_stages,
 )
 from hil_controller.adapters.flashers.base import Artifact
 from hil_controller.adapters.flashers.bossac import SAMD51_APP_OFFSET
@@ -591,7 +592,8 @@ class FirmwareBenchAdapter:
         # (e.g. io.adafruit.com for an AirLift board) doesn't need it — skipping
         # avoids a wasted ~60s clone/build + the strict-broker CONNECT-reject noise.
         need_protomq = any(
-            s.get("type") == "write_secrets_msc" and not s.get("io_url") for s in stages
+            s.get("type") == "write_secrets_msc" and not s.get("io_url")
+            for s in walk_stages(stages)
         ) or bool(self.params.get("launch_protomq", False))
         # The local protomq broker (aedes) is ANONYMOUS — any username/key
         # authenticates. So for a local-broker secrets write with no real creds
@@ -655,11 +657,19 @@ class FirmwareBenchAdapter:
 
     @staticmethod
     def _first_index(stages: list[dict[str, Any]], stype: str) -> int | None:
-        return next((i for i, s in enumerate(stages) if s.get("type") == stype), None)
+        # A stage counts if it, or a nested io_ws_expect ``step``, is ``stype``.
+        return next(
+            (i for i, s in enumerate(stages)
+             if any(n.get("type") == stype for n in walk_stages([s]))),
+            None,
+        )
 
     @staticmethod
     def _last_index(stages: list[dict[str, Any]], stype: str) -> int | None:
-        idxs = [i for i, s in enumerate(stages) if s.get("type") == stype]
+        idxs = [
+            i for i, s in enumerate(stages)
+            if any(n.get("type") == stype for n in walk_stages([s]))
+        ]
         return idxs[-1] if idxs else None
 
     async def _do_launch_protomq(self) -> tuple[str, int]:
