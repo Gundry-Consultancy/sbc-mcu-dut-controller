@@ -170,6 +170,15 @@ mind for very high-frequency collectors. These endpoints are inventory operation
 telemetry streaming. Exact serials should remain in the private runtime DB/evidence,
 not committed test fixtures or public logs.
 
+## Web UI
+
+`/ui/twins` shows the same inventory to a human: twins with identities, ports,
+connections, slot history and observations; unassigned slots; paste/upload →
+Preview → Apply (the same rolled-back preview and immediate-transaction apply as
+the API); **Collect from bridge** for esp-usbip-bridge hosts (always lands on the
+preview); the exact Linux collector command per host. The end-to-end inventory
+procedure, for humans and agents alike, is the `hil-inventory-twins` skill.
+
 ## Offline import and migration
 
 Use `python -m hil_controller.twin_import --db controller.db --input observations.json`
