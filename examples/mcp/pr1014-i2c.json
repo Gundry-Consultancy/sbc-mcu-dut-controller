@@ -1,0 +1,69 @@
+{
+  "runtime": "wippersnapper-arduino",
+  "device_id": "mcu-qtpy-esp32s3-n4r2-hil006",
+  "total_s": 1200,
+  "firmware": {
+    "path": "/home/particle/dev-projects/python/usbip-hil-controller/run/firmware_uploads/pr1014-71209daa.combined.bin",
+    "offset": "0x0",
+    "sha256": "5dd28b75770dda58442d508c283cce4952b53975200845538abe49ccb85bf643"
+  },
+  "requires": [
+    {
+      "kind": "i2c_strand",
+      "capabilities": [
+        "pmsa003i"
+      ]
+    }
+  ],
+  "params": {
+    "protobuf_ref": "be593b784cfa3ec15b434ea960c72d1ce84f8d08",
+    "stages": [
+      {
+        "type": "enter_bootloader",
+        "attempts": 1,
+        "reset_attempts": 4,
+        "diagnose_s": 2
+      },
+      {
+        "type": "erase",
+        "before": "no_reset",
+        "after": "no_reset"
+      },
+      {
+        "type": "flash",
+        "offset": "0x0",
+        "before": "no_reset",
+        "after": "no_reset"
+      },
+      {
+        "type": "verify",
+        "before": "no_reset",
+        "after": "no_reset"
+      },
+      {
+        "type": "power_cycle"
+      },
+      {
+        "type": "write_secrets_msc"
+      },
+      {
+        "type": "power_cycle"
+      },
+      {
+        "type": "select_i2c_strand",
+        "strand_id": "strand-hil006-air"
+      },
+      {
+        "type": "inject_i2c_probe",
+        "channels": [
+          0,
+          1
+        ],
+        "mux_address": 119,
+        "pin_scl": "D40",
+        "pin_sda": "D41",
+        "observe_s": 15
+      }
+    ]
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "runtime": "wippersnapper-arduino",
+  "device_id": "mcu-qtpy-esp32s3-n4r2-hil006",
+  "total_s": 1200,
+  "firmware": {
+    "path": "/home/particle/dev-projects/python/usbip-hil-controller/run/firmware_uploads/pr1014-71209daa.combined.bin",
+    "offset": "0x0",
+    "sha256": "5dd28b75770dda58442d508c283cce4952b53975200845538abe49ccb85bf643"
+  },
+  "requires": [
+    {
+      "kind": "i2c_strand",
+      "capabilities": [
+        "bme280"
+      ]
+    }
+  ],
+  "params": {
+    "protobuf_ref": "be593b784cfa3ec15b434ea960c72d1ce84f8d08",
+    "stages": [
+      {
+        "type": "enter_bootloader",
+        "attempts": 1,
+        "reset_attempts": 4,
+        "diagnose_s": 2
+      },
+      {
+        "type": "erase",
+        "before": "no_reset",
+        "after": "no_reset"
+      },
+      {
+        "type": "flash",
+        "offset": "0x0",
+        "before": "no_reset",
+        "after": "no_reset"
+      },
+      {
+        "type": "verify",
+        "before": "no_reset",
+        "after": "no_reset"
+      },
+      {
+        "type": "power_cycle"
+      },
+      {
+        "type": "write_secrets_msc"
+      },
+      {
+        "type": "power_cycle"
+      },
+      {
+        "type": "select_i2c_strand",
+        "strand_id": "strand-hil006-air"
+      },
+      {
+        "type": "inject_i2c_probe",
+        "channels": [
+          0,
+          1
+        ],
+        "mux_address": 119,
+        "pin_scl": "D40",
+        "pin_sda": "D41",
+        "observe_s": 15
+      },
+      {
+        "type": "inject_protobuf",
+        "label": "add_bme280_ref1000",
+        "payload_json": {
+          "i2c": {
+            "add": {
+              "descriptor": {
+                "addressSpace": {
+                  "pinScl": "D40",
+                  "pinSda": "D41",
+                  "muxAddress": 119,
+                  "muxChannel": 0
+                },
+                "address": 118
+              },
+              "name": "bme280",
+              "period": 1,
+              "types": {
+                "0": "T_PRESSURE",
+                "1": "T_ALTITUDE"
+              },
+              "settings": {
+                "settings": {
+                  "sea_level_pressure": {
+                    "floatValue": 1000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "expect_i2c": {
+          "address": 118,
+          "mux_channel": 0,
+          "sea_level_pressure": 1000,
+          "readings": {
+            "6": {
+              "min": 800,
+              "max": 1200
+            },
+            "27": {
+              "min": -2000,
+              "max": 2000
+            }
+          }
+        }
+      },
+      {
+        "type": "inject_protobuf",
+        "label": "modify_bme280_ref1100",
+        "payload_json": {
+          "i2c": {
+            "modify": {
+              "remove": {
+                "descriptor": {
+                  "addressSpace": {
+                    "pinScl": "D40",
+                    "pinSda": "D41",
+                    "muxAddress": 119,
+                    "muxChannel": 0
+                  },
+                  "address": 118
+                }
+              },
+              "add": {
+                "descriptor": {
+                  "addressSpace": {
+                    "pinScl": "D40",
+                    "pinSda": "D41",
+                    "muxAddress": 119,
+                    "muxChannel": 0
+                  },
+                  "address": 118
+                },
+                "name": "bme280",
+                "period": 1,
+                "types": {
+                  "0": 6,
+                  "1": 27
+                },
+                "settings": {
+                  "settings": {
+                    "sea_level_pressure": {
+                      "floatValue": 1100
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "expect_i2c": {
+          "address": 118,
+          "mux_channel": 0,
+          "sea_level_pressure": 1100,
+          "readings": {
+            "6": {
+              "min": 800,
+              "max": 1200
+            },
+            "27": {
+              "min": -2000,
+              "max": 3000
+            }
+          }
+        }
+      },
+      {
+        "type": "inject_protobuf",
+        "label": "remove_bme280_cleanup",
+        "payload_json": {
+          "i2c": {
+            "remove": {
+              "descriptor": {
+                "addressSpace": {
+                  "pinScl": "D40",
+                  "pinSda": "D41",
+                  "muxAddress": 119,
+                  "muxChannel": 0
+                },
+                "address": 118
+              }
+            }
+          }
+        },
+        "settle_s": 1
+      }
+    ]
+  }
+}

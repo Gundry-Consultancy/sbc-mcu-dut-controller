@@ -39,6 +39,7 @@ from hil_controller.adapters.bench_stages import (
     HostUsbWedgedError,
     run_stages,
     validate_stages,
+    walk_stages,
 )
 from hil_controller.adapters.flashers.base import Artifact
 from hil_controller.adapters.flashers.bossac import SAMD51_APP_OFFSET
@@ -262,7 +263,13 @@ class FirmwareBenchAdapter:
             await self._attach_usbip()
 
         work_root = PurePosixPath(f"/tmp/hil/{self.job_id}")
-        remote_bin = await self._stage_firmware(work_root)
+        # Explicit no-flash pipelines can deploy CircuitPython files or re-drive
+        # installed firmware without staging an unrelated firmware artifact.
+        requested = self.params.get("stages") or DEFAULT_FLASH_STAGES
+        needs_artifact = any(
+            s.get("type") in {"flash", "verify"} and not s.get("path") for s in requested
+        )
+        remote_bin = await self._stage_firmware(work_root) if needs_artifact else None
 
         # Controller-side log files for this session (registered as assets on
         # teardown). The serial capture writes here live; protomq stdout is
@@ -300,7 +307,8 @@ class FirmwareBenchAdapter:
             ),
             device=self.device,
             db_path=self._db_path,
-            artifact=Artifact(path=str(remote_bin), kind="combined_bin", offset=self._fw_offset),
+            artifact=(Artifact(path=str(remote_bin), kind="combined_bin", offset=self._fw_offset)
+                      if remote_bin is not None else None),
             workspace_dir=self.params.get("workspace_dir", ""),
             pio_env=self.params.get("pio_env", ""),
             esptool_chip=self.params.get("esptool_chip", "auto"),
@@ -314,6 +322,7 @@ class FirmwareBenchAdapter:
             protomq_host="",
             protomq_port=0,
             launch_protomq=self._do_launch_protomq,
+            encode_protobuf=self._encode_protobuf,
             start_serial=lambda: self._start_serial(log_port),
             pause_serial=self._pause_serial,
             resume_serial=self._resume_serial,
@@ -583,7 +592,8 @@ class FirmwareBenchAdapter:
         # (e.g. io.adafruit.com for an AirLift board) doesn't need it — skipping
         # avoids a wasted ~60s clone/build + the strict-broker CONNECT-reject noise.
         need_protomq = any(
-            s.get("type") == "write_secrets_msc" and not s.get("io_url") for s in stages
+            s.get("type") == "write_secrets_msc" and not s.get("io_url")
+            for s in walk_stages(stages)
         ) or bool(self.params.get("launch_protomq", False))
         # The local protomq broker (aedes) is ANONYMOUS — any username/key
         # authenticates. So for a local-broker secrets write with no real creds
@@ -647,11 +657,19 @@ class FirmwareBenchAdapter:
 
     @staticmethod
     def _first_index(stages: list[dict[str, Any]], stype: str) -> int | None:
-        return next((i for i, s in enumerate(stages) if s.get("type") == stype), None)
+        # A stage counts if it, or a nested io_ws_expect ``step``, is ``stype``.
+        return next(
+            (i for i, s in enumerate(stages)
+             if any(n.get("type") == stype for n in walk_stages([s]))),
+            None,
+        )
 
     @staticmethod
     def _last_index(stages: list[dict[str, Any]], stype: str) -> int | None:
-        idxs = [i for i, s in enumerate(stages) if s.get("type") == stype]
+        idxs = [
+            i for i, s in enumerate(stages)
+            if any(n.get("type") == stype for n in walk_stages([s]))
+        ]
         return idxs[-1] if idxs else None
 
     async def _do_launch_protomq(self) -> tuple[str, int]:
@@ -728,6 +746,11 @@ class FirmwareBenchAdapter:
         await self.dut_transport.copy_to(Path(self._fw_local_path), remote_bin)
         self._sink("bench", f"staged firmware → {remote_bin} on DUT host")
         return remote_bin
+
+    async def _encode_protobuf(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._protomq is None:
+            raise RuntimeError("ProtoMQ must be launched before JSON injection")
+        return await self._protomq.encode_payload(payload)
 
     async def _launch_protomq(self) -> None:
         from hil_controller.config import get_settings

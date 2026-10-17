@@ -108,6 +108,17 @@ After the flash cycle, drive the running firmware with injection stages
   `I2C_SETTINGS_VERDICT label=… status=ok|error|no_event readings={…} errors=[…]`
   per test. Needs protomq up + secrets pointing at it.
 - **`inject_i2c_probe` / `inject_i2c_scan_v1`** — I2C presence checks.
+- **`io_api_component` / `io_ws_publish` / `io_ws_expect`** — the same drives
+  through the *real* IO stack, for `broker: staging` / `dev-lan` jobs only
+  (protoMQ-only `inject_*` / `verify_checkin` are rejected there). Always put
+  the action inside an `io_ws_expect` as its `step`, so the subscription exists
+  before the reply can arrive: `checkin` around a `power_cycle` (captures the
+  device key; `timeout_s` counts from before the step, so give it ~120),
+  `i2cScanResults` around an `io_ws_publish` probe (default 5s, the IO UI's
+  staging budget), `addComponent` / `modifyComponent` /
+  `removeComponent` on `ws-r2b` around an `io_api_component`. Pair with
+  `assert_serial` for the device side. Recipe and matching rules are in
+  `docs/api.md` "Real IO stack stages".
 - **Strand auto-inject** — a job whose `target.requires` includes
   `kind: i2c_strand` (matched by component capabilities or model short-names,
   case-insensitive) gets a **`select_i2c_strand` stage auto-prepended**, routing
@@ -125,6 +136,12 @@ Stages emit grep-able lines; assert on these, not on prose:
 | `inject_i2c_settings` | `I2C_SETTINGS_VERDICT label=… status=…` | `status=ok` (or `error` when the setting is *meant* to be rejected) |
 | `inject_pixelwrite` | `PIXELWRITE_VERDICT rebooted=true\|false …` | depends on build (A/B compares the two) |
 | `capture_display` | `DISPLAY_CAPTURE_VERDICT saved=… exposure_us=…` | `saved=` a real path |
+| `io_api_component` | `IO_API_VERDICT status=<http> key=<feed key> action=… ok=…` | `ok=true` (2xx, or `expect_status`) |
+| `io_ws_expect` | `IO_WS_VERDICT matched=true\|false action=… topic=… elapsed_s=…` | `matched=true` |
+
+`IO_INFRA_ERROR stage=… kind=auth|acl|throttle|network` means the IO stack
+refused the request or was unreachable (bad key, broker ACL, rate limit). It is
+infra, never a firmware verdict, and no `IO_*_VERDICT` line is emitted for it.
 
 `verify_checkin` is a **WipperSnapper-shaped stage** (it watches the WS broker
 check-in topics, v1 and v2 aware) — for a different app, assert on your own
@@ -276,3 +293,32 @@ are the worked examples.
   you need explicit placement; they're auto-inserted.
 - Assert on the **verdict lines**, and on the **finished** captured logs where you
   can, not the racing live stream.
+
+
+## MCP PR tests with updated protobufs
+
+For the ready Tachyon MCP connection and provider configs, see
+`examples/mcp/configs/README.md`. `examples/mcp/pr1014-i2c.json` is a real MCU
+recipe using the rpi-hil006 solenoid hub (not rpi-displays), a firmware SHA-256,
+and `params.protobuf_ref` pinned to a full commit SHA. ProtoMQ is cloned and
+rebuilt with `npm run import-protos` per job; inspect `BUILD_SOURCE` and
+`PROTOBUF_IMPORT_VERDICT` in proof logs.
+
+For `inject_i2c_probe`, current api-v2 uses string pin names, e.g. `"D40"` and
+`"D41"` for QT Py S3 STEMMA. Legacy pre-alignment firmware uses integer `40`
+and `41`. Do not cast named pins to integers: their protobuf wire types differ.
+The stage now fails if a scan receives no Probed reply. Confirm actual found
+addresses, not only the terminal job state. Discover strand routes from the
+live DB; the tested QT Py route was muxA channel 2, with on-strand TCA9548 at 0x77.
+The initial `scan=bus` does not reset a powered TCA9548: a channel retained
+from an earlier job may expose downstream devices. Report it as the initial bus
+state, not guaranteed direct-only wiring. Explicit `scan=chN` selects channel N.
+
+
+Use `inject_protobuf.payload_json` for current-schema component Add/Modify tests.
+It encodes against the per-job imported schema, accepts enum names or numbers,
+and rejects invalid values before publication. The legacy `inject_i2c_settings`
+wire builder targets older firmware; prefer the generic JSON path for current
+api-v2. See `examples/mcp/pr1014-i2c-modify.json` for an observable BME280
+`sea_level_pressure` setting change checked against actual pressure/altitude
+events, and `docs/mcp-pr1014-validation-2026-10-14.md` for evidence and limitations.

@@ -1,0 +1,183 @@
+[
+  {
+    "runtime": "wippersnapper-python",
+    "job": {
+      "id": "09ea9fd6-d556-4005-aba7-d3d543be98ac",
+      "state": "finished",
+      "result": "pass",
+      "assigned_host": "rpi-hil006",
+      "assigned_device": "rpi-hil006-pi4-a",
+      "created_at": "2026-10-14T14:08:29.893111+00:00",
+      "started_at": "2026-10-14T14:08:29.924324+00:00",
+      "finished_at": "2026-10-14T14:09:02.271597+00:00",
+      "summary": null
+    },
+    "assets": [
+      {
+        "id": "90908d4d-dab3-4196-a06e-e8a84e71e8e7",
+        "filename": "deploy.log",
+        "controller_size_bytes": 411,
+        "mcp_text_sha256": "15652ec147262d26621c329337cc6d56f40271ff849e15f64d98ca21af18827f",
+        "excerpts": []
+      },
+      {
+        "id": "5fb98742-a38d-4333-ac05-85e688371c31",
+        "filename": "run.log",
+        "controller_size_bytes": 1724,
+        "mcp_text_sha256": "58c50b6d2b85598616269706ea52e843ed261ad2dc78144ce5ec52ea7b6449d8",
+        "excerpts": [
+          "2 packets transmitted, 2 received, 0% packet loss, time 1002ms",
+          "MCP_PY_WIFI_OK 192.168.1.188 free4all",
+          "MCP_PY_CHECKIN_OK"
+        ]
+      }
+    ],
+    "verdicts": []
+  },
+  {
+    "runtime": "wippersnapper-arduino",
+    "job": {
+      "id": "4eebd473-5f0d-41c8-87ab-7725f1d39c3f",
+      "state": "finished",
+      "result": "pass",
+      "assigned_host": "rpi-hil006",
+      "assigned_device": "mcu-qtpy-esp32s3-n4r2-hil006",
+      "created_at": "2026-10-14T14:17:16.417861+00:00",
+      "started_at": "2026-10-14T14:17:16.448144+00:00",
+      "finished_at": "2026-10-14T14:21:11.807615+00:00",
+      "summary": null
+    },
+    "assets": [
+      {
+        "id": "6df7ea47-ece3-4d77-a8b0-39ae63fe80f5",
+        "filename": "flash.log",
+        "controller_size_bytes": 24508,
+        "mcp_text_sha256": "0d782464b83dd3f256edf05fef8cfa53efcf2dece8bd15db86a3d79cf4e1766f",
+        "excerpts": []
+      },
+      {
+        "id": "e3acfef3-5351-4015-93fa-ac572b24494f",
+        "filename": "serial.log",
+        "controller_size_bytes": 2972,
+        "mcp_text_sha256": "506563bff72217b954b10133af358e82879064fad40bfba94756476e02e9b9dd",
+        "excerpts": [
+          "2026-10-14T14:21:03.063+00:00  Connected to WiFi!"
+        ]
+      },
+      {
+        "id": "ea2bef72-e38f-4cd9-9551-130b853242ac",
+        "filename": "protomq.log",
+        "controller_size_bytes": 38431,
+        "mcp_text_sha256": "c707b849178c8b7e8b9317417d23d356bad30e019a6deb654ca2bf8ce7a523a5",
+        "excerpts": []
+      }
+    ],
+    "verdicts": [
+      {
+        "at": "2026-10-14T14:21:06.334506+00:00",
+        "message": "CHECKIN_VERDICT ok=true uid=io-wipper-qtpy-esp32s3-n4r213210089 proto=v1"
+      }
+    ]
+  },
+  {
+    "runtime": "circuitpython",
+    "job": {
+      "id": "5ff5a6f1-c7e7-4c4a-97dd-74d33f924fd0",
+      "state": "finished",
+      "result": "pass",
+      "assigned_host": "rpi-hil006",
+      "assigned_device": "mcu-qtpy-esp32s3-n4r2-hil006",
+      "created_at": "2026-10-14T14:11:10.321217+00:00",
+      "started_at": "2026-10-14T14:11:10.356830+00:00",
+      "finished_at": "2026-10-14T14:16:34.889349+00:00",
+      "summary": null
+    },
+    "assets": [
+      {
+        "id": "aeaefa92-a487-4a8d-a7e8-d4fdfabef7c8",
+        "filename": "flash.log",
+        "controller_size_bytes": 76755,
+        "mcp_text_sha256": "43c939315fc6b13405ca3f08ba08a0318a056a6c2bf48a3c3fd1ff586bf4ce8e",
+        "excerpts": []
+      },
+      {
+        "id": "1e697190-8f78-49c3-8e9f-45b49023a4da",
+        "filename": "serial.log",
+        "controller_size_bytes": 168910,
+        "mcp_text_sha256": "8b589a3bfe48d32953acec5f504105e0440ff5a6b09de0415d03295e312a34f5",
+        "excerpts": [
+          "2026-10-14T14:16:25.512+00:00  MCP_CP_WIFI_OK 192.168.1.203 free4all",
+          "2026-10-14T14:16:27.511+00:00  MCP_CP_WIFI_OK 192.168.1.203 free4all"
+        ]
+      },
+      {
+        "id": "4ee89244-12ab-4d50-9da0-f67dddf0a45a",
+        "filename": "protomq.log",
+        "controller_size_bytes": 8705,
+        "mcp_text_sha256": "9d65f05e8b335b381fee3a73ceaa47eba4f050dead564047687bacb8c78285c4",
+        "excerpts": []
+      }
+    ],
+    "verdicts": [
+      {
+        "at": "2026-10-14T14:16:08.625708+00:00",
+        "message": "CIRCUITPYTHON_DEPLOY_VERDICT written=true"
+      },
+      {
+        "at": "2026-10-14T14:16:28.645077+00:00",
+        "message": "SERIAL_ASSERT_VERDICT ok=true"
+      }
+    ]
+  },
+  {
+    "runtime": "circuitpython-final-serial-fix",
+    "job": {
+      "id": "8d703665-7ca1-4a72-88f0-101c918205e5",
+      "state": "finished",
+      "result": "pass",
+      "assigned_host": "rpi-hil006",
+      "assigned_device": "mcu-qtpy-esp32s3-n4r2-hil006",
+      "created_at": "2026-10-14T14:21:58.231903+00:00",
+      "started_at": "2026-10-14T14:21:58.267738+00:00",
+      "finished_at": "2026-10-14T14:24:19.937585+00:00",
+      "summary": null
+    },
+    "assets": [
+      {
+        "id": "b7373ca4-f302-4e6a-9023-5d8a919b869b",
+        "filename": "flash.log",
+        "controller_size_bytes": 24379,
+        "mcp_text_sha256": "328788eb2572522ead7dfa46c836995d8505c6a102f5d99e9f43c0f0023d9220",
+        "excerpts": []
+      },
+      {
+        "id": "5af98043-4c44-4842-b8cf-1e075ab25f89",
+        "filename": "serial.log",
+        "controller_size_bytes": 743,
+        "mcp_text_sha256": "ba1b150d6ed065fc9ba76da40ec67b88378253a884bad51bf63b3db83b86a966",
+        "excerpts": [
+          "2026-10-14T14:24:08.397+00:00  \u001b]0;\ud83d\udc0dWi-Fi: No IP | BLE:Off | code.py | 10.3.1\u001b\\\u001b]0;\ud83d\udc0d192.168.1.203 | BLE:Off | code.py | 10.3.1\u001b\\MCP_CP_WIFI_OK 192.168.1.203 free4all",
+          "2026-10-14T14:24:10.401+00:00  MCP_CP_WIFI_OK 192.168.1.203 free4all",
+          "2026-10-14T14:24:12.399+00:00  MCP_CP_WIFI_OK 192.168.1.203 free4all"
+        ]
+      },
+      {
+        "id": "6872b48f-32e9-4f22-8406-d0eab7f226ca",
+        "filename": "protomq.log",
+        "controller_size_bytes": 30077,
+        "mcp_text_sha256": "30ecd1a3272f367995b88108b98daf6ad9bce8fb629f11cded3a96cf1e5dbc58",
+        "excerpts": []
+      }
+    ],
+    "verdicts": [
+      {
+        "at": "2026-10-14T14:23:53.600473+00:00",
+        "message": "CIRCUITPYTHON_DEPLOY_VERDICT written=true"
+      },
+      {
+        "at": "2026-10-14T14:24:14.024591+00:00",
+        "message": "SERIAL_ASSERT_VERDICT ok=true"
+      }
+    ]
+  }
+]
