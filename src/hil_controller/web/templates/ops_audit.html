@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Audit log</h1>
+{% include "ops_nav.html" %}
+<p class="form-hint" style="max-width:900px;margin-bottom:1rem;">
+  Controller <code>audit_log</code>: job submit/cancel/extend, auth failures, renames
+  (<code>topology/rename.py</code>) and topology-seed drift (<code>topology/seeder.py</code>).
+  Newest first. End an event filter with <code>*</code> for a prefix match (e.g. <code>job.*</code>).
+</p>
+
+<form method="get" action="/ui/audit" class="form-panel" style="max-width:900px;">
+  <div class="form-grid">
+    <div class="form-group">
+      <label for="event">Event</label>
+      <input type="text" id="event" name="event" list="audit-events" value="{{ filters.event }}" placeholder="any">
+      <datalist id="audit-events">{% for e in events %}<option value="{{ e }}">{% endfor %}</datalist>
+    </div>
+    <div class="form-group">
+      <label for="entity_id">Entity id contains</label>
+      <input type="text" id="entity_id" name="entity_id" value="{{ filters.entity_id }}">
+    </div>
+    <div class="form-group">
+      <label for="per_page">Per page</label>
+      <select id="per_page" name="per_page">
+        {% for n in [25, 50, 100, 250] %}<option value="{{ n }}" {% if filters.per_page == n %}selected{% endif %}>{{ n }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Filter</button>
+    <a class="btn btn-outline" href="/ui/audit">Clear</a>
+  </div>
+</form>
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>Entries <span class="tbl-count">{{ total }}</span></h2>
+    <div style="display:flex;gap:0.5rem;align-items:center;font-size:0.85rem;">
+      {% if prev_url %}<a class="btn btn-outline btn-sm" href="{{ prev_url }}">← Newer</a>{% endif %}
+      <span>page {{ page }} / {{ pages }}</span>
+      {% if next_url %}<a class="btn btn-outline btn-sm" href="{{ next_url }}">Older →</a>{% endif %}
+    </div>
+  </div>
+  <table>
+    <thead><tr><th>#</th><th>At</th><th>Event</th><th>Subject</th><th>Repo</th><th>Entity</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-audit-id="{{ r.id }}">
+        <td class="mono">{{ r.id }}</td>
+        <td class="mono">{{ r.at }}</td>
+        <td><a href="/ui/audit?event={{ r.event|urlencode }}"><span class="badge badge-gray">{{ r.event }}</span></a></td>
+        <td class="mono">{{ r.subject }}</td>
+        <td class="mono">{{ r.repo }}</td>
+        <td class="mono">{% if r.entity_id %}<a href="/ui/audit?entity_id={{ r.entity_id|urlencode }}">{{ r.entity_id }}</a>{% endif %}</td>
+        <td>
+          <details>
+            <summary class="mono">{{ r.detail_short }}</summary>
+            <pre class="ops-pre">{{ r.detail_pretty }}</pre>
+          </details>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7">No audit entries match.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

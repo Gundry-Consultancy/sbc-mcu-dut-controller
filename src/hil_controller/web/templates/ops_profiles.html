@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Job profiles &amp; recipes</h1>
+{% include "ops_nav.html" %}
+<p class="form-hint" style="max-width:900px;margin-bottom:1rem;">
+  The same guidance agents get from <code>GET /v1/job-profiles</code> and the MCP
+  <code>job_guide</code> tool. Recipes are MCP <code>AgentJob</code>s: <em>Use this</em> opens
+  the raw submit page pre-filled, where Validate shows the exact (redacted) request.
+</p>
+
+<h2>Recipes</h2>
+<div class="ops-cards">
+  {% for r in recipes %}
+  <div class="ops-card" data-recipe="{{ r.key }}">
+    <h3>{{ r.title }}</h3>
+    <p class="form-hint">{{ r.summary }}</p>
+    <details>
+      <summary>AgentJob JSON</summary>
+      <pre class="ops-pre">{{ r.json }}</pre>
+    </details>
+    <div class="form-actions" style="margin-top:0.6rem;">
+      <a class="btn btn-primary btn-sm" href="/ui/jobs/raw?recipe={{ r.key|urlencode }}">Use this</a>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<h2>Broker modes</h2>
+<div class="ops-cards">
+  {% for name, info in guide.broker_modes.items() %}
+  <div class="ops-card">
+    <h3><span class="mono">{{ name }}</span>
+      {% if name in io_brokers %}<span class="badge badge-info">io_* stages</span>{% endif %}
+      {% if name == 'production' %}<span class="badge badge-warn">no io_* stages</span>{% endif %}
+    </h3>
+    <dl class="ops-kv">
+      {% for k, v in info.items() %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}
+    </dl>
+    {% if name in io_brokers %}
+    <p class="form-hint" style="margin-top:0.5rem;">
+      Real IO stack: {% for s in io_stages %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+      get <code>io_host</code>/<code>io_port</code> stamped from this broker; credentials come only
+      from the job's <code>IO_USERNAME</code>/<code>IO_KEY</code>.
+    </p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="ops-cards">
+  <div class="ops-card">
+    <h3>Credentials (names only)</h3>
+    <dl class="ops-kv">
+      <dt>Optional</dt><dd>{% for n in guide.secrets.optional %}<code>{{ n }}</code> {% endfor %}</dd>
+      <dt>External broker</dt><dd>{% for n in guide.secrets.required_for_external_broker %}<code>{{ n }}</code> {% endfor %}</dd>
+      <dt>Handling</dt><dd>{{ guide.secrets.handling }}</dd>
+      <dt>Wi-Fi</dt><dd>{{ guide.wifi.help }}</dd>
+    </dl>
+  </div>
+  <div class="ops-card">
+    <h3>Runtimes &amp; workflow</h3>
+    <dl class="ops-kv">
+      <dt>Runtimes</dt><dd>{% for n in guide.runtimes %}<code>{{ n }}</code> {% endfor %}</dd>
+      <dt>Agent workflow</dt><dd>{{ guide.workflow|join(' → ') }}</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="form-panel">
+  <h2>Notes</h2>
+  <ul class="ops-list">{% for n in guide.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+</div>
+
+<details class="form-panel">
+  <summary><strong>AgentJob JSON schema</strong> (MCP <code>request_schema</code>)</summary>
+  <pre class="ops-pre">{{ schema_json }}</pre>
+</details>
+{% endblock %}

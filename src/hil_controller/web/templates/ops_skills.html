@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Skills</h1>
+{% include "ops_nav.html" %}
+<p class="form-hint" style="max-width:900px;margin-bottom:1rem;">
+  The canonical skills the MCP server serves (<code>list_skills</code> / <code>read_skill</code>),
+  read fresh from <span class="mono">{{ root }}</span>. Start with <a href="/ui/skills/hil-job-api">hil-job-api</a>.
+  The sha256 matches <code>list_skills</code>, so agents and operators can confirm they read the same revision.
+</p>
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Skills <span class="tbl-count">{{ skills|length }}</span></h2></div>
+  <table>
+    <thead><tr><th>Name</th><th>Description</th><th>sha256</th></tr></thead>
+    <tbody>
+    {% for s in skills %}
+      <tr>
+        <td><a class="mono" href="/ui/skills/{{ s.name|urlencode }}">{{ s.name }}</a></td>
+        <td style="font-size:0.85rem;">{{ s.description|truncate(260) }}</td>
+        <td class="mono" title="{{ s.sha256 }}">{{ s.sha256[:12] }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3">No skills found.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
