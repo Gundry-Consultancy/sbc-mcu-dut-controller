@@ -1249,6 +1249,65 @@ async def retry_device_availability_ui(
     return HTMLResponse("", headers={"HX-Refresh": "true"})
 
 
+@router.get("/devices/lookup-usb", response_class=HTMLResponse, include_in_schema=False)
+async def lookup_usb_ui(
+    request: Request,
+    hil_token: str = Cookie(default=""),
+    vid: str = "",
+    pid: str = "",
+    iserial: str = "",
+) -> HTMLResponse:
+    """Who owns this USB device? Learned USB IDs, device iSerials and twin identities."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+
+    def _hex(v: str) -> str:
+        v = v.strip().lower()
+        return v[2:] if v.startswith("0x") else v
+
+    vid, pid, iserial = _hex(vid), _hex(pid), iserial.strip()
+    if not ((vid and pid) or iserial):
+        return HTMLResponse(
+            '<div class="form-hint">Give a VID and PID (e.g. 239a / 8143), an iSerial, or both.'
+            "</div>"
+        )
+    async with get_db(request.app.state.db_path) as db:
+        sql = "SELECT * FROM device_usb_ids WHERE 1=1"
+        params: list = []
+        if vid and pid:
+            sql += " AND lower(vid) = ? AND lower(pid) = ?"
+            params += [vid, pid]
+        if iserial:
+            sql += " AND COALESCE(iserial,'') = ?"
+            params.append(iserial)
+        async with db.execute(sql + " ORDER BY last_seen_at DESC, id", params) as cur:
+            learned = [dict(r) for r in await cur.fetchall()]
+        by_serial: list[dict] = []
+        twins: list[dict] = []
+        if iserial:
+            async with db.execute(
+                "SELECT id, host_id, hub_host_id, hub_port_path, status FROM devices "
+                "WHERE usb_serial = ?",
+                (iserial,),
+            ) as cur:
+                by_serial = [dict(r) for r in await cur.fetchall()]
+            try:
+                async with db.execute(
+                    "SELECT twin_id, namespace, kind, owner, component FROM twin_identities "
+                    "WHERE value = ? ORDER BY twin_id",
+                    (iserial,),
+                ) as cur:
+                    twins = [dict(r) for r in await cur.fetchall()]
+            except Exception:
+                twins = []  # older DB without the physical-twins tables
+    return _tr(
+        request,
+        "usb_lookup_result.html",
+        {"learned": learned, "by_serial": by_serial, "twins": twins,
+         "vid": vid, "pid": pid, "iserial": iserial},
+    )
+
+
 @router.post(
     "/devices/availability/retry-all",
     response_class=HTMLResponse,

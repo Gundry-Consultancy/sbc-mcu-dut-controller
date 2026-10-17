@@ -1,0 +1,23 @@
+{% if not learned and not by_serial and not twins %}
+<div class="alert alert-info">No device, learned USB ID or physical twin matches
+  {% if vid %}<span class="mono">{{ vid }}:{{ pid }}</span>{% endif %}{% if iserial %} iSerial <span class="mono">{{ iserial }}</span>{% endif %}.
+  Learn it from a device's form (USB IDs → Learn) or assign its busid on the <a href="/ui/usbip">USB-IP</a> page.</div>
+{% else %}
+<table style="font-size:0.82rem;">
+  <thead><tr><th>Match</th><th>Owner</th><th>Detail</th></tr></thead>
+  <tbody>
+  {% for r in learned %}
+  <tr><td>learned USB ID</td><td class="mono"><a href="/ui/devices/{{ r.device_id }}/form">{{ r.device_id }}</a></td>
+    <td class="mono">{{ r.vid }}:{{ r.pid }}{% if r.iserial %} · SN {{ r.iserial }}{% endif %} · role {{ r.role }} · source {{ r.source }}{% if r.last_seen_at %} · seen {{ r.last_seen_at[:19] }}{% endif %}</td></tr>
+  {% endfor %}
+  {% for d in by_serial %}
+  <tr><td>device iSerial</td><td class="mono"><a href="/ui/devices/{{ d.id }}/form">{{ d.id }}</a></td>
+    <td class="mono">{{ d.hub_host_id or d.host_id }} · {{ d.hub_port_path or '—' }} · {{ d.status }}</td></tr>
+  {% endfor %}
+  {% for t in twins %}
+  <tr><td>physical twin identity</td><td class="mono"><a href="/ui/twins/{{ t.twin_id }}">{{ t.twin_id }}</a></td>
+    <td class="mono">{{ t.namespace }}/{{ t.kind }} · owner {{ t.owner }}{% if t.component %} · {{ t.component }}{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

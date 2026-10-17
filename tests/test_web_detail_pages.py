@@ -141,3 +141,49 @@ async def test_leases_create_conflict_history_and_release(app_db):
     assert "mcu-l" in active.text and "Force release" in active.text
     assert "mcu-l" not in after.text
     assert "mcu-l" in history.text and "Force release" not in history.text
+
+
+async def test_usb_lookup_and_hardware_detail(app_db):
+    app, db_file = app_db
+    async with get_db(db_file) as db:
+        await db.execute("INSERT INTO hosts (id, addr, capabilities_json) VALUES ('h','x','[]')")
+        await db.execute(
+            "INSERT INTO devices (id, host_id, kind, capabilities_json, usb_serial) "
+            "VALUES ('mcu-u', 'h', 'microcontroller', '[]', 'E663AC91')"
+        )
+        await db.execute(
+            "INSERT INTO device_usb_ids (device_id, vid, pid, iserial, role, first_seen_at, "
+            "last_seen_at, source) VALUES ('mcu-u', '239a', '8143', 'E663AC91', 'app', "
+            "'2026-10-01', '2026-10-02', 'learned')"
+        )
+        await db.execute(
+            "INSERT INTO auxes (id, kind, model, capabilities_json, interface, observability) "
+            "VALUES ('mux-bridge-s31', 'i2c-mux', 'ADG729', '[]', 'bridge:usbip-bridge-s31', "
+            "'none')"
+        )
+        await db.commit()
+    async with _client(app) as c:
+        await c.post(
+            "/v1/strands",
+            headers={"Authorization": "Bearer test-token-for-ci"},
+            json={
+                "id": "strand-a",
+                "components": [
+                    {"id": "c1", "model": "SCD30", "address": 0x61, "capabilities": ["co2"]},
+                    {"id": "c2", "model": "BME280", "address": 0x77, "tca_channel": 3},
+                ],
+                "routes": [{"device": "mcu-u", "channel": 1}],
+            },
+        )
+        by_vidpid = await c.get("/ui/devices/lookup-usb?vid=0x239A&pid=8143")
+        by_serial = await c.get("/ui/devices/lookup-usb?iserial=E663AC91")
+        nothing = await c.get("/ui/devices/lookup-usb?vid=dead&pid=beef")
+        hardware = await c.get("/ui/hardware")
+        devices = await c.get("/ui/devices")
+    assert "learned USB ID" in by_vidpid.text and "mcu-u" in by_vidpid.text
+    assert "device iSerial" in by_serial.text
+    assert "No device" in nothing.text
+    assert "Who owns this USB device?" in devices.text
+    h = hardware.text
+    assert "SCD30" in h and "@0x61" in h and "direct" in h and "TCA ch 3" in h and "co2" in h
+    assert '<a href="/ui/hosts/usbip-bridge-s31">' in h
