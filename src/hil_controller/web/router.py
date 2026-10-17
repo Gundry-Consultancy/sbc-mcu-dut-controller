@@ -408,6 +408,71 @@ async def edit_host_form(
     return _tr(request, "hosts_form.html", {"host": h})
 
 
+@router.get("/hosts/{host_id}", response_class=HTMLResponse, include_in_schema=False)
+async def host_detail(
+    request: Request, host_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Everything about one host on one page: config, hardware, devices, jobs, leases."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return HTMLResponse("Host not found", status_code=404)
+        async with db.execute(
+            "SELECT * FROM devices WHERE host_id = ? OR hub_host_id = ? ORDER BY id",
+            (host_id, host_id),
+        ) as cur:
+            devices = [dict(r) for r in await cur.fetchall()]
+        async with db.execute(
+            "SELECT id, model, source, kind, status FROM cameras WHERE host_id = ? ORDER BY id",
+            (host_id,),
+        ) as cur:
+            cameras = [dict(r) for r in await cur.fetchall()]
+        async with db.execute(
+            "SELECT id, state, result, assigned_device, created_at, finished_at, summary "
+            "FROM jobs WHERE assigned_host = ? ORDER BY created_at DESC LIMIT 25",
+            (host_id,),
+        ) as cur:
+            jobs = [dict(r) for r in await cur.fetchall()]
+        async with db.execute(
+            "SELECT * FROM device_leases WHERE released_at IS NULL AND (hub_host_id = ? "
+            "OR device_id IN (SELECT id FROM devices WHERE host_id = ? OR hub_host_id = ?)) "
+            "ORDER BY acquired_at",
+            (host_id, host_id, host_id),
+        ) as cur:
+            leases = [dict(r) for r in await cur.fetchall()]
+    h = dict(row)
+    h["capabilities"] = json.loads(h.pop("capabilities_json") or "[]")
+    h["hw"] = host_hardware.host_hw_view(dict(row))
+    for d in devices:
+        d["capabilities"] = json.loads(d.pop("capabilities_json") or "[]")
+    registry = getattr(request.app.state, "host_registry", None)
+    has_transport = False
+    if registry is not None:
+        try:
+            registry.transport_for(host_id)
+            has_transport = True
+        except (KeyError, ValueError):
+            has_transport = False
+    return _tr(
+        request,
+        "host_detail.html",
+        {
+            "token": hil_token,
+            "active": "hosts",
+            "host": h,
+            "devices": devices,
+            "cameras": cameras,
+            "jobs": jobs,
+            "leases": leases,
+            "has_transport": has_transport,
+        },
+    )
+
+
 @router.post("/hosts", response_class=HTMLResponse, include_in_schema=False)
 async def create_host(
     request: Request,
@@ -2184,6 +2249,42 @@ async def _job_rows(db_path: str, limit: int = 100) -> list[dict]:
     return result
 
 
+#: Request keys whose string values are credentials (masked to their last 4 chars).
+_SECRET_KEY_HINTS = ("secret", "password", "passwd", "token", "authkey", "api_key", "apikey",
+                     "io_key", "credential", "private_key")
+
+
+def _redact_request(value, *, under_secrets: bool = False):  # noqa: ANN001, ANN202
+    """A copy of a job request safe to render: credential values masked (redact.py policy).
+
+    Every string under a ``secrets`` mapping is masked, as is any string whose key
+    names a credential (``*token*``, ``*password*``, ``*_key``…). Everything else —
+    script, stages, target, params — is kept so the run stays reproducible.
+    """
+    from hil_controller.redact import mask_secret
+
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            key = str(k).lower()
+            secretish = (
+                under_secrets
+                or any(h in key for h in _SECRET_KEY_HINTS)
+                or key.endswith("_key")
+                or key == "key"
+            )
+            if isinstance(v, str) and secretish and not key.endswith(("_env", "_profile")):
+                out[k] = mask_secret(v)
+            else:
+                out[k] = _redact_request(v, under_secrets=under_secrets or key == "secrets")
+        return out
+    if isinstance(value, list):
+        return [_redact_request(v, under_secrets=under_secrets) for v in value]
+    if isinstance(value, str) and under_secrets:
+        return mask_secret(value)
+    return value
+
+
 def _render_events(events: list[dict]) -> str:
     lines = []
     colours = {
@@ -2202,16 +2303,26 @@ def _render_events(events: list[dict]) -> str:
             msg = html.escape(payload.get("msg", ""))
             colour = colours.get(stream, "#c9d1d9")
             lines.append(
-                f'<div style="color:{colour};font-family:monospace;font-size:0.75rem;white-space:pre-wrap;">'  # noqa: E501
+                f'<div class="ev" data-kind="log" data-stream="{html.escape(stream)}" '
+                f'style="color:{colour};font-family:monospace;font-size:0.75rem;white-space:pre-wrap;">'  # noqa: E501
                 f'<span style="color:#6c757d;user-select:none;">[{at}] </span>{msg}</div>'
             )
         elif kind == "state":
             st = payload.get("state", "")
             colour = colours["state"]
             lines.append(
-                f'<div style="color:{colour};font-family:monospace;font-size:0.75rem;">'
+                f'<div class="ev" data-kind="state" data-stream="state" '
+                f'style="color:{colour};font-family:monospace;font-size:0.75rem;">'
                 f'<span style="color:#6c757d;user-select:none;">[{at}] </span>'
                 f"<b>── state: {html.escape(st)} ──</b></div>"
+            )
+        elif kind in ("metric", "artifact"):
+            # Previously dropped: show them so the UI log matches /v1/jobs/{id}/wait.
+            body = html.escape(json.dumps(payload, sort_keys=True))
+            lines.append(
+                f'<div class="ev" data-kind="{kind}" data-stream="{kind}" '
+                'style="color:#e3b341;font-family:monospace;font-size:0.75rem;white-space:pre-wrap;">'  # noqa: E501
+                f'<span style="color:#6c757d;user-select:none;">[{at}] </span>{kind}: {body}</div>'
             )
     return (
         "\n".join(lines)
@@ -3075,6 +3186,11 @@ async def job_detail(
     j["duration"] = _duration(j.get("started_at"), j.get("finished_at"))
     meta = req.get("metadata") or {}
     j["rerun_of"] = meta.get("rerun_of")
+    j["script"] = req.get("script", "")
+    target = req.get("target") or {}
+    j["pool"] = target.get("pool", "")
+    j["target_summary"] = json.dumps(_redact_request(target), sort_keys=True)
+    j["request_redacted"] = json.dumps(_redact_request(req), indent=2, sort_keys=True)
 
     # Other instances spawned from this job (reruns link back via metadata).
     async with get_db(db_path) as db:

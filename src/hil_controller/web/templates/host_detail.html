@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block content %}
+{% set hw = host.hw or {} %}
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">
+  <h1 style="margin-bottom:0.25rem;">Host <span class="mono">{{ host.id }}</span>
+    <span class="badge {% if host.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ host.status }}</span>
+  </h1>
+  <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <button class="btn btn-outline" hx-get="/ui/hosts/{{ host.id }}/form" hx-target="#form-panel" hx-swap="innerHTML">Edit</button>
+    <a class="btn btn-outline" href="/ui/usbip#host-{{ host.id }}">USB-IP / power</a>
+    <a class="btn btn-outline" href="/ui/hosts">← All hosts</a>
+  </div>
+</div>
+<div id="form-panel"></div>
+
+<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(210px,1fr));margin:1rem 0;">
+  <div class="card"><div class="lbl">Transport</div>
+    <div class="mono">{{ host.transport }}</div>
+    {% if not has_transport %}<div class="badge badge-warn" style="margin-top:0.3rem;" title="The registry cannot build a transport for this host">no transport</div>{% endif %}
+  </div>
+  <div class="card"><div class="lbl">Address</div><div class="mono">{{ host.addr or '—' }}</div>
+    {% if host.transport == 'ssh' %}<div class="form-hint">ssh {{ host.ssh_user }}@ · key <span class="mono">{{ host.ssh_key_path or 'default' }}</span></div>{% endif %}
+  </div>
+  {% if host.transport == 'esp-usbip-bridge' %}
+  <div class="card"><div class="lbl">Bridge API</div>
+    <div class="mono" style="word-break:break-all;">{{ host.api_url or ('http://' ~ host.addr) }}</div>
+    <div class="form-hint">token env <span class="mono">{{ host.token_env or '—' }}</span>
+      {% if host.token_env %}{% if env_is_set(host.token_env) %}<span class="badge badge-ok">set</span>{% else %}<span class="badge badge-warn">NOT set</span>{% endif %}{% endif %}</div>
+  </div>
+  {% endif %}
+  <div class="card"><div class="lbl">Role · max jobs</div>
+    <div>{{ host.role or '—' }} · {{ host.max_concurrent_jobs if host.max_concurrent_jobs is not none else '∞' }}</div></div>
+  <div class="card"><div class="lbl">Last seen</div><div class="mono" style="font-size:0.8rem;">{{ host.last_seen_at or '—' }}</div></div>
+  <div class="card"><div class="lbl">Hardware</div>
+    <div style="font-size:0.85rem;">{{ hw.model or '—' }}</div>
+    <div class="form-hint">{% if hw.cpu_cores %}{{ hw.cpu_cores }}× {{ hw.cpu_model or '' }}{% endif %}{% if hw.mem_total_kb %} · {{ hw.mem_total_kb // 1024 }} MB{% endif %}{% if hw.load1 is not none %} · load {{ hw.load1 }}{% endif %}{% if hw.temp_c is not none %} · {{ hw.temp_c }}°C{% endif %}{% if hw.speed_score is not none %} · speed {{ hw.speed_score }}×{% endif %}</div>
+  </div>
+</div>
+<div class="caps" style="margin-bottom:1rem;">{% for c in host.capabilities %}<span class="badge badge-gray">{{ c }}</span>{% endfor %}</div>
+
+<div class="tbl-wrap" style="margin-bottom:1.25rem;">
+  <div class="tbl-header"><h2>Devices on this host <span class="tbl-count">{{ devices|length }}</span></h2></div>
+  <table>
+    <thead><tr><th>ID</th><th>Model</th><th>Role here</th><th>Hub port · power</th><th>Serial port</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for d in devices %}
+    <tr>
+      <td class="mono"><a href="/ui/devices/{{ d.id }}/form">{{ d.id }}</a></td>
+      <td>{{ d.model }}</td>
+      <td class="form-hint">{% if d.host_id == host.id %}owner{% endif %}{% if d.hub_host_id == host.id and d.host_id != host.id %}USB hub host (owner {{ d.host_id }}){% elif d.hub_host_id == host.id %} · USB hub{% endif %}</td>
+      <td class="mono" style="font-size:0.75rem;">{{ d.hub_port_path or '—' }}{% if d.solenoid_channel is not none %} · sol {{ d.solenoid_channel }}{% endif %}{% if d.power_control %} · {{ d.power_control }}{% endif %}</td>
+      <td class="mono" style="font-size:0.72rem;word-break:break-all;">{{ d.serial_port or '—' }}</td>
+      <td><span class="badge {% if d.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ d.status }}{% if d.unavailable_kind %} · {{ d.unavailable_kind }}{% endif %}</span>
+        {% if d.unavailable_reason %}<div class="form-hint" style="font-size:0.72rem;">{{ d.unavailable_reason }}</div>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="form-hint" style="text-align:center;padding:1rem;">No devices reference this host.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if cameras %}
+<div class="tbl-wrap" style="margin-bottom:1.25rem;">
+  <div class="tbl-header"><h2>Cameras <span class="tbl-count">{{ cameras|length }}</span></h2></div>
+  <table><thead><tr><th>ID</th><th>Model</th><th>Kind</th><th>Source</th><th>Status</th></tr></thead><tbody>
+  {% for c in cameras %}<tr><td class="mono">{{ c.id }}</td><td>{{ c.model }}</td><td>{{ c.kind or 'auto' }}</td><td class="mono" style="font-size:0.75rem;">{{ c.source }}</td><td>{{ c.status }}</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+{% endif %}
+
+<div class="tbl-wrap" style="margin-bottom:1.25rem;">
+  <div class="tbl-header"><h2>Active leases <span class="tbl-count">{{ leases|length }}</span></h2><a class="btn btn-sm btn-outline" href="/ui/leases">All leases</a></div>
+  <table><thead><tr><th>ID</th><th>Kind</th><th>Device</th><th>Job</th><th>Acquired</th><th>Expires</th></tr></thead><tbody>
+  {% for l in leases %}<tr><td>{{ l.id }}</td><td>{{ l.kind }}</td><td class="mono">{{ l.device_id or '—' }}</td><td class="mono">{% if l.job_id %}<a href="/ui/jobs/{{ l.job_id }}">{{ l.job_id[:12] }}…</a>{% else %}—{% endif %}</td><td class="mono" style="font-size:0.75rem;">{{ l.acquired_at[:19] }}</td><td class="mono" style="font-size:0.75rem;">{{ (l.expires_at or '—')[:19] }}</td></tr>
+  {% else %}<tr><td colspan="6" class="form-hint" style="text-align:center;padding:1rem;">No active leases.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Recent jobs on this host <span class="tbl-count">{{ jobs|length }}</span></h2></div>
+  <table><thead><tr><th>Job</th><th>Device</th><th>State</th><th>Result</th><th>Created</th><th>Summary</th></tr></thead><tbody>
+  {% for j in jobs %}<tr><td class="mono"><a href="/ui/jobs/{{ j.id }}">{{ j.id[:12] }}…</a></td><td class="mono">{{ j.assigned_device or '—' }}</td><td>{{ j.state }}</td><td>{{ j.result or '—' }}</td><td class="mono" style="font-size:0.75rem;">{{ j.created_at[:19] }}</td><td style="font-size:0.78rem;">{{ (j.summary or '')[:120] }}</td></tr>
+  {% else %}<tr><td colspan="6" class="form-hint" style="text-align:center;padding:1rem;">No jobs have run on this host yet.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+{% endblock %}
