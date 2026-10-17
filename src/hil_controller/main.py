@@ -205,6 +205,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     from hil_controller.api.topology import router as topology_router
     from hil_controller.api.twins import router as twins_router
     from hil_controller.web.router import router as web_router
+    from hil_controller.web.twins_views import router as twins_web_router
 
     app.include_router(health_router)
     app.include_router(jobs_router)
@@ -221,6 +222,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     app.include_router(targets_router)
     app.include_router(firmware_router)
     app.include_router(web_router)
+    app.include_router(twins_web_router)
 
     _static = Path(__file__).parent / "web" / "static"
     app.mount("/ui/static", StaticFiles(directory=str(_static)), name="ui-static")
