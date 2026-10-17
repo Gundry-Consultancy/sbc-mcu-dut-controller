@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ heading }}</h1>
+{% set subnav = '' %}{% include "twins_subnav.html" %}
+
+<div class="alert alert-error">
+  <strong>HTTP {{ status_code }}.</strong>
+  {% if missing %}
+  The physical-twin inventory pages use the same policy as <code>/v1/twins</code>:
+  {% if write %}this action needs <code>inventory:write</code>{% else %}reading needs <code>inventory:read</code> or <code>inventory:write</code>{% endif %}
+  <strong>and</strong> access to all pools, because physical hosts and shared peripherals span scheduler pools.
+  {% else %}
+  {{ detail }}
+  {% endif %}
+</div>
+
+{% if missing %}
+<div class="form-panel">
+  <h2>Your token is missing</h2>
+  <ul style="margin-left:1.25rem;">
+    {% for m in missing %}<li>{{ m }}</li>{% endfor %}
+  </ul>
+  <p class="form-hint" style="margin-top:0.75rem;">
+    Current capabilities:
+    {% for c in principal_caps %}<span class="badge badge-gray">{{ c }}</span> {% else %}<em>none</em>{% endfor %}
+    &middot; allowed pools:
+    {% for p in principal_pools %}<span class="badge badge-gray">{{ p }}</span> {% else %}<em>none</em>{% endfor %}
+  </p>
+  <p class="form-hint" style="margin-top:0.5rem;">
+    Ask an administrator for a token minted with <code>inventory:read</code> (or <code>inventory:write</code>
+    to apply observations / close connections) and <code>allowed_pools: ["*"]</code>, then log in again.
+  </p>
+</div>
+{% endif %}
+<p><a href="/ui/twins">Back to physical twins</a></p>
+{% endblock %}

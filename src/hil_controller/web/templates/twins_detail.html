@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ twin.label }} <span class="badge badge-info">{{ twin.kind }}</span></h1>
+{% set subnav = '' %}{% include "twins_subnav.html" %}
+
+{% if notice %}<div class="alert alert-success" id="detail-notice">{{ notice }}</div>{% endif %}
+{% if error %}<div class="alert alert-error" id="detail-error">{{ error }}</div>{% endif %}
+
+<div class="cards">
+  <div class="card"><div class="mono" style="font-size:0.72rem;word-break:break-all;">{{ twin.id }}</div><div class="lbl">physical twin id</div></div>
+  <div class="card"><div class="num" style="font-size:1rem;">{{ twin.pool }}</div><div class="lbl">pool</div></div>
+  <div class="card"><div class="mono" style="font-size:0.72rem;">{{ twin.created_at }}</div><div class="lbl">created</div></div>
+  <div class="card"><div class="num">{{ twin.identities|length }}</div><div class="lbl">identities</div></div>
+  <div class="card"><div class="num">{{ twin.ports|length }}</div><div class="lbl">ports</div></div>
+  <div class="card"><div class="num">{{ open_connections|length }}</div><div class="lbl">open connections</div></div>
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Current slot assignment</h2></div>
+  {% if current_slots %}
+    {% for s in current_slots %}
+      <span class="badge badge-ok">{{ s.slot_kind }}:{% if s.link %}<a href="{{ s.link }}">{{ s.slot_id }}</a>{% else %}{{ s.slot_id }}{% endif %}</span>
+      <span class="form-hint">since {{ s.assigned_at }}</span>
+    {% endfor %}
+  {% else %}<span class="badge badge-gray">unassigned</span> <span class="form-hint">Not bound to any logical slot.</span>{% endif %}
+</div>
+
+<details style="margin-bottom:1.5rem;">
+  <summary><strong>Current attributes</strong> <span class="form-hint">(shallow merge of observation attributes by observed_at)</span></summary>
+  <pre class="mono" style="white-space:pre-wrap;background:#fff;padding:0.75rem;border-radius:6px;">{{ attributes_pretty }}</pre>
+</details>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Identities <span class="tbl-count">{{ twin.identities|length }}</span></h2></div>
+  {% if twin.identities %}
+  <table>
+    <thead><tr><th>Namespace</th><th>Kind</th><th>Value</th><th>Owner</th><th>Component</th><th>Unique</th><th>Confidence</th><th>Evidence</th><th>First seen</th><th>Last seen</th></tr></thead>
+    <tbody>
+    {% for i in twin.identities %}
+      <tr>
+        <td class="mono">{{ i.namespace }}</td>
+        <td>{{ i.kind }}</td>
+        <td class="mono">{{ i.value }}</td>
+        <td>{{ i.owner }}</td>
+        <td class="mono">{{ i.component }}</td>
+        <td>{% if i.unique %}<span class="badge badge-ok">unique</span>{% else %}<span class="badge badge-gray">no</span>{% endif %}</td>
+        <td><span class="badge {% if i.confidence == 'verified' %}badge-ok{% elif i.confidence == 'reported' %}badge-info{% else %}badge-warn{% endif %}">{{ i.confidence }}</span></td>
+        <td style="font-size:0.75rem;">{{ i.evidence }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ i.first_seen_at }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ i.last_seen_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="form-hint">No identities recorded (e.g. a sensor with no readable serial).</p>{% endif %}
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Ports <span class="tbl-count">{{ twin.ports|length }}</span></h2></div>
+  {% if twin.ports %}
+  <table>
+    <thead><tr><th>ID</th><th>Kind</th><th>Mode</th><th>Attributes</th><th>Observed</th></tr></thead>
+    <tbody>
+    {% for p in twin.ports %}
+      <tr>
+        <td class="mono">{{ p.id }}</td>
+        <td>{{ p.kind }}</td>
+        <td>{{ p.mode or '—' }}</td>
+        <td class="mono" style="font-size:0.72rem;word-break:break-all;">{{ p.attributes_pretty }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ p.observed_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="form-hint">No ports recorded.</p>{% endif %}
+</div>
+
+<div class="tbl-wrap" id="connections">
+  <div class="tbl-header"><h2>Connections <span class="tbl-count">{{ open_connections|length }} open, {{ closed_connections|length }} closed</span></h2></div>
+  {% if twin.connections %}
+  <table>
+    <thead><tr><th>ID</th><th>Dir</th><th>Local port</th><th>Peer</th><th>Kind / state</th><th>Evidence</th><th>Started</th><th>Ended / reason</th><th></th></tr></thead>
+    <tbody>
+    {% for c in open_connections + closed_connections %}
+      <tr id="conn-{{ c.id }}">
+        <td class="mono" style="font-size:0.72rem;">{{ c.id }}</td>
+        <td>{% if c.direction == 'out' %}&rarr; out{% else %}&larr; in{% endif %}</td>
+        <td class="mono">{{ c.local_port }}</td>
+        <td class="mono" style="font-size:0.72rem;">
+          <a href="/ui/twins/{{ c.peer_id }}">{{ c.peer_label or c.peer_id }}</a>:{{ c.peer_port }}
+        </td>
+        <td>{{ c.kind }} <span class="badge {% if c.state == 'connected' %}badge-ok{% else %}badge-gray{% endif %}">{{ c.state }}</span>
+          {% if c.attributes %}<div class="mono form-hint">{{ c.attributes_pretty }}</div>{% endif %}</td>
+        <td style="font-size:0.75rem;">{{ c.source }} ({{ c.confidence }})<br>{{ c.evidence }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ c.started_at }}</td>
+        <td style="font-size:0.75rem;">
+          {% if c.ended_at %}
+            <span class="badge badge-gray">closed</span> <span class="mono">{{ c.ended_at }}</span>
+            <br>{{ c.close_reason }} <span class="form-hint">({{ c.close_source }})</span>
+          {% else %}<span class="badge badge-ok">open</span>{% endif %}
+        </td>
+        <td>
+          {% if not c.ended_at and can_write %}
+          <details>
+            <summary class="btn btn-sm btn-danger">Close</summary>
+            <form method="post" action="/ui/twins/{{ twin.id }}/connections/{{ c.id }}/close" style="margin-top:0.4rem;min-width:220px;">
+              <div class="form-group"><label>Ended at (timezone-aware ISO)</label><input type="text" name="ended_at" value="{{ now }}" required></div>
+              <div class="form-group"><label>Source</label><input type="text" name="source" value="operator:web-ui" required></div>
+              <div class="form-group"><label>Reason</label><input type="text" name="reason" placeholder="e.g. cable moved to hub port 3" required></div>
+              <button class="btn btn-sm btn-danger" type="submit" style="margin-top:0.4rem;">Close connection</button>
+            </form>
+          </details>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="form-hint">No wiring recorded. Create connections with <code>POST /v1/twins/connections</code> or a <code>hil-twins-import</code> batch.</p>{% endif %}
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Slot assignment history <span class="tbl-count">{{ twin.slot_history|length }}</span></h2></div>
+  {% if twin.slot_history %}
+  <table>
+    <thead><tr><th>Slot</th><th>Assigned</th><th>Ended</th><th>By observation</th><th>Ended by</th></tr></thead>
+    <tbody>
+    {% for s in twin.slot_history|reverse %}
+      <tr {% if not s.ended_at %}style="background:#d1e7dd;font-weight:600;"{% endif %}>
+        <td>{{ s.slot_kind }}:{% if s.link %}<a href="{{ s.link }}">{{ s.slot_id }}</a>{% else %}<span class="mono">{{ s.slot_id }}</span>{% endif %}
+          {% if not s.ended_at %}<span class="badge badge-ok">current</span>{% endif %}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ s.assigned_at }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ s.ended_at or '—' }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ s.observation_id }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ s.ended_by_observation or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="form-hint">Never assigned to a logical slot.</p>{% endif %}
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Observations <span class="tbl-count">{{ twin.observations|length }}, newest first</span></h2></div>
+  <table>
+    <thead><tr><th>Observed</th><th>Observation</th><th>Source</th><th>Actor</th><th>Received</th></tr></thead>
+    <tbody>
+    {% for o in twin.observations %}
+      <tr>
+        <td class="mono" style="font-size:0.72rem;">{{ o.observed_at }}</td>
+        <td class="mono" style="font-size:0.72rem;">
+          {{ o.observation_id }}
+          <details><summary class="form-hint">payload</summary>
+            <pre class="mono" style="white-space:pre-wrap;background:#f8f9fa;padding:0.5rem;border-radius:4px;">{{ o.pretty }}</pre>
+          </details>
+        </td>
+        <td>{{ o.source }}</td>
+        <td class="mono">{{ o.actor }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ o.received_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Logical slots &rarr; physical twins</h1>
+{% set subnav = 'slots' %}{% include "twins_subnav.html" %}
+
+<div class="form-actions" style="margin-bottom:1rem;flex-wrap:wrap;">
+  {% for k in slot_kinds %}
+  <a class="btn btn-sm {% if k == kind %}btn-primary{% else %}btn-outline{% endif %}" href="/ui/twins/slots?kind={{ k }}">{{ k }}</a>
+  {% endfor %}
+</div>
+
+<div class="alert {% if unassigned %}alert-error{% else %}alert-success{% endif %}" id="unassigned">
+  {% if unassigned %}
+  <strong>{{ unassigned|length }} of {{ slots|length }} {{ kind }} slot(s) have no physical twin.</strong>
+  Their hardware has not been identified in the inventory:
+  <div class="caps" style="margin-top:0.4rem;">
+    {% for s in unassigned %}
+      {% set link = slot_link(kind, s.id) %}
+      <span class="badge badge-warn">{% if link %}<a href="{{ link }}">{{ s.id }}</a>{% else %}{{ s.id }}{% endif %}</span>
+    {% endfor %}
+  </div>
+  <div class="form-hint" style="margin-top:0.4rem;">Bind one with an observation carrying <code>{"slot": {"kind": "{{ kind }}", "id": "&lt;slot&gt;", "expected_twin_id": null}}</code> via the <a href="/ui/twins#import">import preview</a>.</div>
+  {% elif slots %}
+  All {{ slots|length }} {{ kind }} slot(s) have a current physical twin.
+  {% else %}
+  No {{ kind }} slots exist in the runtime topology.
+  {% endif %}
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Current occupants <span class="tbl-count">{{ slots|length }}</span></h2></div>
+  {% if slots %}
+  <table>
+    <thead><tr><th>Slot</th><th>Physical twin</th><th>Assigned</th><th>By observation</th></tr></thead>
+    <tbody>
+    {% for s in slots %}
+      {% set link = slot_link(kind, s.id) %}
+      <tr>
+        <td class="mono">{% if link %}<a href="{{ link }}">{{ s.id }}</a>{% else %}{{ s.id }}{% endif %}</td>
+        <td>{% if s.twin_id %}<a class="mono" href="/ui/twins/{{ s.twin_id }}">{{ s.twin_label or s.twin_id }}</a><div class="mono form-hint">{{ s.twin_id }}</div>{% else %}<span class="badge badge-warn">UNASSIGNED</span>{% endif %}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ s.assigned_at or '—' }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ s.observation_id or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Assignment history <span class="tbl-count">{{ history|length }}, newest first</span></h2></div>
+  {% if history %}
+  <table>
+    <thead><tr><th>Slot</th><th>Physical twin</th><th>Assigned</th><th>Ended</th><th>Observation</th><th>Ended by</th></tr></thead>
+    <tbody>
+    {% for h in history %}
+      {% set link = slot_link(kind, h.slot_id) if h.slot_exists else None %}
+      <tr {% if not h.ended_at %}style="background:#d1e7dd;"{% endif %}>
+        <td class="mono">{% if link %}<a href="{{ link }}">{{ h.slot_id }}</a>{% else %}{{ h.slot_id }}{% endif %}
+          {% if not h.slot_exists %}<span class="badge badge-gray" title="Slot was deleted from the runtime topology; history is retained">deleted slot</span>{% endif %}
+          {% if not h.ended_at %}<span class="badge badge-ok">current</span>{% endif %}</td>
+        <td><a class="mono" href="/ui/twins/{{ h.twin_id }}">{{ h.twin_label or h.twin_id }}</a></td>
+        <td class="mono" style="font-size:0.72rem;">{{ h.assigned_at }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ h.ended_at or '—' }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ h.observation_id }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ h.ended_by_observation or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="form-hint">No {{ kind }} slot has ever been assigned a physical twin.</p>{% endif %}
+</div>
+{% endblock %}
