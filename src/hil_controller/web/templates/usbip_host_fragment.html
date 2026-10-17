@@ -50,7 +50,7 @@
   <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
     <strong>esp-usbip-bridge — {{ host_id }}</strong>
     <span class="mono form-hint">{{ bridge.base_url }}</span>
-    {% if bridge.token_configured %}<span class="badge badge-ok">token configured</span>{% else %}<span class="badge badge-gray">no token</span>{% endif %}
+    {% if bridge.token_configured %}<span class="badge badge-ok">token configured</span>{% elif bridge.token_env %}<span class="badge badge-warn">token env {{ bridge.token_env }} NOT set on controller</span>{% else %}<span class="badge badge-gray">no token (bridge has none)</span>{% endif %}
     {% if bridge.info_error %}<span class="badge badge-warn">API unreachable</span>{% elif bridge.info %}<span class="badge badge-ok">API answering</span>{% endif %}
     <a class="btn btn-sm btn-outline" href="/ui/hosts" title="Edit address / API URL / token env var">Edit host</a>
   </div>

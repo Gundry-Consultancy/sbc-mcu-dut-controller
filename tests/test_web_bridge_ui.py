@@ -279,3 +279,16 @@ async def test_ui_created_device_and_api_strand_are_schedulable_without_restart(
         assert registry.strand_for_device("mcu-qtpy-s31", {"co2"}) is not None
         await c.delete("/ui/devices/mcu-qtpy-s31")
     assert registry.find_device_for_job(job) is None
+
+
+async def test_usbip_fragment_names_unset_token_env(app_db, monkeypatch):
+    app, db_file = app_db
+    await _seed_bridge_device(db_file, "bridge-port")
+    async with get_db(db_file) as db:
+        await db.execute("UPDATE hosts SET token_env='HIL_BRIDGE_TOKEN_S31' WHERE id=?", (BRIDGE,))
+        await db.commit()
+    monkeypatch.delenv("HIL_BRIDGE_TOKEN_S31", raising=False)
+    app.state.host_registry = _bridge_registry(FakeBridge())
+    async with _client(app) as c:
+        resp = await c.get(f"/ui/usbip/host/{BRIDGE}")
+    assert "token env HIL_BRIDGE_TOKEN_S31 NOT set on controller" in resp.text

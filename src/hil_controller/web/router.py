@@ -4568,8 +4568,11 @@ async def _bridge_fragment_context(db_path: str, host_id: str, transport) -> dic
             (host_id, host_id),
         ) as cur:
             power_control = {r["id"]: r["power_control"] for r in await cur.fetchall()}
+        async with db.execute("SELECT token_env FROM hosts WHERE id = ?", (host_id,)) as cur:
+            host_row = await cur.fetchone()
     return {
         "base_url": bridge.base_url,
+        "token_env": host_row["token_env"] if host_row else None,
         "token_configured": bool(bridge.token),
         "info": info,
         "info_error": info_error,
