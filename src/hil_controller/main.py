@@ -158,6 +158,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
             await hw_monitor.start()
 
         app.state.db_path = _db_path
+        app.state.topology_file = _topology_file
         app.state.event_bus = event_bus
         app.state.scheduler = scheduler
         app.state.host_registry = host_registry

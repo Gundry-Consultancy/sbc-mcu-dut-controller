@@ -316,6 +316,58 @@ async def dashboard(request: Request, hil_token: str = Cookie(default="")) -> HT
 
 
 # ---------------------------------------------------------------------------
+# Topology: DB-vs-YAML drift + export (what a restart would revert)
+# ---------------------------------------------------------------------------
+
+
+async def _drift(request: Request) -> dict:
+    from hil_controller.topology.drift import topology_drift
+
+    return await topology_drift(
+        request.app.state.db_path, getattr(request.app.state, "topology_file", "")
+    )
+
+
+@router.get("/topology", response_class=HTMLResponse, include_in_schema=False)
+async def topology_page(request: Request, hil_token: str = Cookie(default="")) -> HTMLResponse:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.topology.export import build_export_yaml
+
+    drift = await _drift(request)
+    export_yaml = await build_export_yaml(request.app.state.db_path)
+    return _tr(
+        request,
+        "topology.html",
+        {"token": hil_token, "active": "topology", "drift": drift, "export_yaml": export_yaml},
+    )
+
+
+@router.get("/topology/export.yaml", include_in_schema=False)
+async def topology_export_download(
+    request: Request, hil_token: str = Cookie(default="")
+) -> Response:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.topology.export import build_export_yaml
+
+    return Response(
+        await build_export_yaml(request.app.state.db_path),
+        media_type="application/yaml",
+        headers={"Content-Disposition": 'attachment; filename="topology.yaml"'},
+    )
+
+
+@router.get("/topology/banner", response_class=HTMLResponse, include_in_schema=False)
+async def topology_banner(request: Request, hil_token: str = Cookie(default="")) -> HTMLResponse:
+    """HTMX fragment: a warning when UI edits differ from the topology YAML."""
+    if not (await _check_web_token(request, hil_token)):
+        return HTMLResponse("")
+    drift = await _drift(request)
+    return _tr(request, "topology_banner.html", {"drift": drift})
+
+
+# ---------------------------------------------------------------------------
 # Hosts CRUD
 # ---------------------------------------------------------------------------
 
