@@ -28,7 +28,7 @@
 {% endif %}
 
 {% for h in hosts %}
-<div class="tbl-wrap" style="margin-bottom:1.25rem;">
+<div class="tbl-wrap" id="host-{{ h.id }}" style="margin-bottom:1.25rem;">
   <div class="tbl-header">
     <h2 style="display:flex;align-items:baseline;gap:0.5rem;">
       <a href="/ui/hosts" class="mono">{{ h.id }}</a>

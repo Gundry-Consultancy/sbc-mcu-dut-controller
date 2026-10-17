@@ -32,6 +32,16 @@ from hil_controller.adapters.usb_scan import split_dev_path as _split_dev_path
 
 templates.env.filters["dev_path_segments"] = _split_dev_path
 
+
+def _env_is_set(name: str | None) -> bool:
+    """Whether the named controller env var is set (never exposes its value)."""
+    import os
+
+    return bool(name) and bool(os.environ.get(str(name)))
+
+
+templates.env.globals["env_is_set"] = _env_is_set
+
 router = APIRouter(prefix="/ui", tags=["web"])
 
 
@@ -359,11 +369,16 @@ async def create_host(
     max_concurrent_jobs: Annotated[str, Form()] = "",
     capabilities: Annotated[str, Form()] = "",
     status: Annotated[str, Form()] = "available",
+    api_url: Annotated[str, Form()] = "",
+    token_env: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
     if not id:
         return _tr(request, "hosts_form.html", {"host": None, "error": "ID is required"})
+    bridge_error = _bridge_fields_error(transport, addr, api_url, token_env)
+    if bridge_error:
+        return _tr(request, "hosts_form.html", {"host": None, "error": bridge_error})
     db_path: str = request.app.state.db_path
     max_jobs = int(max_concurrent_jobs) if max_concurrent_jobs.strip() else None
     async with get_db(db_path) as db:
@@ -371,8 +386,8 @@ async def create_host(
             await db.execute(
                 """INSERT INTO hosts
                    (id, role, addr, transport, ssh_user, ssh_key_path,
-                    max_concurrent_jobs, capabilities_json, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    max_concurrent_jobs, capabilities_json, status, api_url, token_env)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     id,
                     role,
@@ -383,12 +398,47 @@ async def create_host(
                     max_jobs,
                     json.dumps(_parse_caps(capabilities)),
                     status,
+                    api_url.strip() or None,
+                    token_env.strip() or None,
                 ),
             )
             await db.commit()
         except Exception as exc:
             return _tr(request, "hosts_form.html", {"host": None, "error": str(exc)})
+    await _registry_sync_host(request, id)
     return _redirect("/ui/hosts")
+
+
+def _bridge_fields_error(transport: str, addr: str, api_url: str, token_env: str) -> str:
+    """Validate the esp-usbip-bridge host fields; '' when they are fine.
+
+    ``token_env`` names the controller environment variable that holds the
+    bridge's bearer token; the token itself never goes in the DB.
+    """
+    import re
+
+    if transport == "esp-usbip-bridge" and not (addr.strip() or api_url.strip()):
+        return "An esp-usbip-bridge host needs an Address (its usbip/mDNS host) or an API URL"
+    if api_url.strip() and not re.match(r"^https?://", api_url.strip()):
+        return "API URL must start with http:// or https://"
+    if token_env.strip() and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env.strip()):
+        return (
+            "Token env var must be an environment variable NAME (e.g. HIL_BRIDGE_TOKEN_S31), "
+            "not the token itself — put the value in run/controller.env"
+        )
+    return ""
+
+
+async def _registry_sync_host(request: Request, host_id: str) -> None:
+    """Make a web-UI host change live in the host registry (no restart needed)."""
+    registry = getattr(request.app.state, "host_registry", None)
+    if registry is None or not hasattr(registry, "sync_host"):
+        return
+    async with get_db(request.app.state.db_path) as db:
+        async with db.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)) as cur:
+            row = await cur.fetchone()
+    if row is not None:
+        registry.sync_host(row)
 
 
 @router.post("/hosts/{host_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -412,6 +462,8 @@ async def update_host(
     ov_cpu_mhz: Annotated[str, Form()] = "",
     ov_mem_total_kb: Annotated[str, Form()] = "",
     ov_storage_total_kb: Annotated[str, Form()] = "",
+    api_url: Annotated[str, Form()] = "",
+    token_env: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -434,10 +486,15 @@ async def update_host(
             existing = await cur.fetchone()
         if existing is None:
             return HTMLResponse("Host not found", status_code=404)
+        bridge_error = _bridge_fields_error(transport, addr, api_url, token_env)
+        if bridge_error:
+            return _reshow(existing, bridge_error)
+        new_id = host_id
         try:
             await db.execute(
                 """UPDATE hosts SET role=?, addr=?, transport=?, ssh_user=?, ssh_key_path=?,
-                   max_concurrent_jobs=?, capabilities_json=?, status=?, hw_override_json=?
+                   max_concurrent_jobs=?, capabilities_json=?, status=?, hw_override_json=?,
+                   api_url=?, token_env=?
                    WHERE id=?""",
                 (
                     role,
@@ -449,6 +506,8 @@ async def update_host(
                     json.dumps(_parse_caps(capabilities)),
                     status,
                     json.dumps(override) if override else None,
+                    api_url.strip() or None,
+                    token_env.strip() or None,
                     host_id,
                 ),
             )
@@ -457,10 +516,16 @@ async def update_host(
             # leaves the field edits intact and surfaces a clear error.
             if id.strip() and id.strip() != host_id:
                 await rename_host(db, host_id, id.strip())
+                new_id = id.strip()
         except (ValueError, KeyError) as exc:
+            await _registry_sync_host(request, host_id)
             return _reshow(existing, str(exc).strip("'"))
         except Exception as exc:
             return _reshow(existing, str(exc))
+    registry = getattr(request.app.state, "host_registry", None)
+    if new_id != host_id and registry is not None and hasattr(registry, "rename_host"):
+        registry.rename_host(host_id, new_id)
+    await _registry_sync_host(request, new_id)
     return _redirect("/ui/hosts")
 
 
@@ -589,6 +654,9 @@ async def delete_host(
     async with get_db(db_path) as db:
         await db.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
         await db.commit()
+    registry = getattr(request.app.state, "host_registry", None)
+    if registry is not None and hasattr(registry, "drop_host"):
+        registry.drop_host(host_id)
     return HTMLResponse("")
 
 
@@ -778,6 +846,8 @@ async def create_device(
     usb_serial: Annotated[str, Form()] = "",
     bootsel_channel: Annotated[str, Form()] = "",
     bootsel_inverted: Annotated[str, Form()] = "",
+    power_control: Annotated[str, Form()] = "",
+    power_control_present: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -811,8 +881,8 @@ async def create_device(
                     pool, status, serial_port, flasher, camera_id, qr_identifier,
                     manual_focus, illuminator_brightness,
                     hub_host_id, hub_port_path, solenoid_channel, usb_serial,
-                    bootsel_channel, bootsel_inverted)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    bootsel_channel, bootsel_inverted, power_control)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     id,
                     host_id,
@@ -834,6 +904,7 @@ async def create_device(
                     usb_serial or None,
                     bootsel_val,
                     bootsel_inv,
+                    _power_control_value(power_control),
                 ),
             )
             await db.commit()
@@ -863,6 +934,15 @@ async def create_device(
     return _redirect("/ui/devices")
 
 
+#: ``devices.power_control`` choices offered by the device form ('' = solenoid / none).
+POWER_CONTROL_CHOICES = ("", "bridge-port", "bridge-port:force")
+
+
+def _power_control_value(raw: str) -> str | None:
+    value = (raw or "").strip().lower()
+    return value if value in POWER_CONTROL_CHOICES and value else None
+
+
 @router.post("/devices/{device_id}", response_class=HTMLResponse, include_in_schema=False)
 async def update_device(
     request: Request,
@@ -889,6 +969,8 @@ async def update_device(
     usb_serial: Annotated[str, Form()] = "",
     bootsel_channel: Annotated[str, Form()] = "",
     bootsel_inverted: Annotated[str, Form()] = "",
+    power_control: Annotated[str, Form()] = "",
+    power_control_present: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -910,7 +992,8 @@ async def update_device(
                camera_id=?, qr_identifier=?,
                manual_focus=?, illuminator_brightness=?,
                hub_host_id=?, hub_port_path=?, solenoid_channel=?, usb_serial=?,
-               bootsel_channel=?, bootsel_inverted=?
+               bootsel_channel=?, bootsel_inverted=?,
+               power_control=CASE WHEN ? THEN ? ELSE power_control END
                WHERE id=?""",
             (
                 host_id,
@@ -932,6 +1015,9 @@ async def update_device(
                 usb_serial or None,
                 bootsel_val,
                 bootsel_inv,
+                # Only the device form sends the marker; other callers keep the value.
+                bool(power_control_present),
+                _power_control_value(power_control),
                 device_id,
             ),
         )
@@ -4068,10 +4154,12 @@ async def usbip_host_fragment(
     solenoid_map = await _device_solenoid_map_for_host(db_path, host_id)
     channel_labels = {ch: dev for dev, ch in solenoid_map.items()}  # bank-A channel -> device
     solenoid_capable = await _host_is_solenoid_capable(db_path, host_id, solenoid_map)
+    bridge_ctx = await _bridge_fragment_context(db_path, host_id, transport)
     return _tr(
         request,
         "usbip_host_fragment.html",
         {
+            "bridge": bridge_ctx,
             "host_id": inventory.host_id,
             "daemon_listening": inventory.daemon_listening,
             "busids": inventory.busids,
@@ -4085,6 +4173,102 @@ async def usbip_host_fragment(
             "solenoid_bank_a": list(range(0, 8)),
             "solenoid_bank_b": list(range(8, 16)),
         },
+    )
+
+
+async def _bridge_fragment_context(db_path: str, host_id: str, transport) -> dict | None:
+    """Bridge details for the USB-IP page (None unless an esp-usbip-bridge host).
+
+    Shows the API URL, whether a token is configured (never the token), the
+    bridge's own ``/api/info`` and each matched device's ``power_control``.
+    """
+    from hil_controller.adapters.esp_usbip_bridge import EspBridgeError
+    from hil_controller.hosts.esp_bridge import bridge_client_of
+
+    bridge = bridge_client_of(transport)
+    if bridge is None:
+        return None
+    info: dict = {}
+    info_error = ""
+    try:
+        info = await bridge.info()
+    except EspBridgeError as exc:
+        info_error = str(exc)
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id, power_control FROM devices WHERE hub_host_id = ? "
+            "OR (hub_host_id IS NULL AND host_id = ?)",
+            (host_id, host_id),
+        ) as cur:
+            power_control = {r["id"]: r["power_control"] for r in await cur.fetchall()}
+    return {
+        "base_url": bridge.base_url,
+        "token_configured": bool(bridge.token),
+        "info": info,
+        "info_error": info_error,
+        "power_control": power_control,
+    }
+
+
+@router.post(
+    "/hosts/{host_id}/bridge/ports/{port}/{action}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def bridge_port_power(
+    request: Request,
+    host_id: str,
+    port: str,
+    action: str,
+    hil_token: str = Cookie(default=""),
+    force: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Switch one esp-usbip-bridge hub port on / off / cycle from the USB-IP page."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.adapters.esp_usbip_bridge import (
+        EspBridgeError,
+        EspBridgeNotSwitchableError,
+    )
+    from hil_controller.hosts.esp_bridge import bridge_client_of
+
+    if action not in ("on", "off", "cycle"):
+        return HTMLResponse(
+            f'<span class="badge badge-warn">unknown action {html.escape(action)}</span>'
+        )
+    registry = getattr(request.app.state, "host_registry", None)
+    try:
+        bridge = bridge_client_of(registry.transport_for(host_id)) if registry else None
+    except KeyError:
+        bridge = None
+    if bridge is None:
+        return HTMLResponse(
+            f'<span class="badge badge-warn">{html.escape(host_id)} '
+            "is not an esp-usbip-bridge host</span>"
+        )
+    forced = force.strip().lower() in ("1", "true", "on", "yes")
+    try:
+        if action == "on":
+            result = await bridge.port_on(port, force=forced)
+        elif action == "off":
+            result = await bridge.port_off(port, force=forced)
+        else:
+            result = await bridge.port_cycle(port, force=forced)
+    except EspBridgeNotSwitchableError as exc:
+        return HTMLResponse(
+            f'<span class="badge badge-warn">port {html.escape(port)}: hub cannot switch this port '
+            f"individually ({html.escape(str(exc))}). Use a per-port switched hub, or set the "
+            "device's Power control to bridge-port:force only if it really switches.</span>"
+        )
+    except EspBridgeError as exc:
+        return HTMLResponse(
+            f'<span class="badge badge-warn">port {html.escape(port)} {action} failed: '
+            f"{html.escape(str(exc))}</span>"
+        )
+    detail = html.escape(json.dumps(result)) if result else ""
+    return HTMLResponse(
+        f'<span class="badge badge-ok">port {html.escape(port)} {action} sent'
+        f'{" (forced)" if forced else ""}</span> <span class="form-hint mono">{detail}</span>'
     )
 
 

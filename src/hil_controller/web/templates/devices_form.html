@@ -103,6 +103,16 @@
         </label>
       </div>
       <div class="form-group">
+        <label for="f-dev-power-control">Power control</label>
+        <input type="hidden" name="power_control_present" value="1">
+        <select id="f-dev-power-control" name="power_control">
+          {% for pc, label in [("", "solenoid channel / none"), ("bridge-port", "bridge-port (esp-usbip-bridge hub port)"), ("bridge-port:force", "bridge-port:force (ganged hub, really switches)")] %}
+          <option value="{{ pc }}" {% if device and (device.power_control or '') == pc %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <span class="form-hint">For DUTs on an esp-usbip-bridge: power-cycle via the bridge's hub port (Hub port path = busid). Use <code>:force</code> only if the hub really switches that port.</span>
+      </div>
+      <div class="form-group">
         <label for="f-dev-usb-serial">USB iSerial</label>
         <input type="text" id="f-dev-usb-serial" name="usb_serial" value="{{ device.usb_serial or '' if device else '' }}" placeholder="optional">
         <span class="form-hint">Used to disambiguate identical boards.</span>

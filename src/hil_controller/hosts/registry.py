@@ -55,6 +55,66 @@ class HostRegistry:
 
         log.info("Loaded %d hosts, %d devices from %s", len(self._hosts), len(self._devices), path)
 
+    #: ``hosts`` columns an operator can edit in the web UI that change how the
+    #: controller reaches the host. The DB row wins over the topology seed.
+    DB_HOST_FIELDS = (
+        "role",
+        "addr",
+        "transport",
+        "ssh_user",
+        "ssh_key_path",
+        "max_concurrent_jobs",
+        "api_url",
+        "token_env",
+    )
+
+    def sync_host(self, row: dict[str, Any]) -> None:
+        """Overlay one ``hosts`` DB row onto the loaded topology (adding it if new).
+
+        Hosts created or edited in the web UI live only in the DB; without this
+        they have no transport until the topology YAML is edited and the
+        controller restarted.
+        """
+        fields = {k: row[k] for k in self.DB_HOST_FIELDS if k in row.keys()}
+        if "capabilities_json" in row.keys() and row["capabilities_json"]:
+            fields["capabilities"] = json.loads(row["capabilities_json"])
+        host = next((h for h in self._hosts if h["id"] == row["id"]), None)
+        if host is None:
+            host = {"id": row["id"]}
+            self._hosts.append(host)
+        for key, value in fields.items():
+            # A blank column drops the key so ``host.get(key, default)`` defaults apply.
+            if value is None or value == "":
+                host.pop(key, None)
+            else:
+                host[key] = value
+        if row["id"] not in self._semaphores:
+            import asyncio
+
+            max_jobs = host.get("max_concurrent_jobs")
+            self._semaphores[row["id"]] = asyncio.Semaphore(max_jobs) if max_jobs else None
+
+    def drop_host(self, host_id: str) -> None:
+        """Forget a host deleted in the web UI."""
+        self._hosts = [h for h in self._hosts if h["id"] != host_id]
+        self._semaphores.pop(host_id, None)
+
+    def rename_host(self, old_id: str, new_id: str) -> None:
+        """Follow a web-UI host rename (devices point at the new id too)."""
+        for h in self._hosts:
+            if h["id"] == old_id:
+                h["id"] = new_id
+        for d in self._devices:
+            if d.get("host_id") == old_id:
+                d["host_id"] = new_id
+            if d.get("hub_host_id") == old_id:
+                d["hub_host_id"] = new_id
+        if old_id in self._semaphores:
+            self._semaphores[new_id] = self._semaphores.pop(old_id)
+
+    def has_host(self, host_id: str) -> bool:
+        return any(h["id"] == host_id for h in self._hosts)
+
     def _index_strands(self, strands: list[dict[str, Any]]) -> None:
         """Build device_id -> routed-strand capability index from topology strands.
 
@@ -176,6 +236,15 @@ class RealHostRegistry(HostRegistry):
     def __init__(self, topology_file: str, db_path: str) -> None:
         super().__init__(topology_file)
         self.db_path = db_path
+
+    async def refresh_hosts_from_db(self) -> None:
+        """Overlay every ``hosts`` row (topology-seeded or UI-created) onto the registry."""
+        from hil_controller.db.connection import get_db
+
+        async with get_db(self.db_path) as db:
+            async with db.execute("SELECT * FROM hosts") as cur:
+                for row in await cur.fetchall():
+                    self.sync_host(row)
 
     async def get_adapter(self, job_id: str) -> Any:
         import json
