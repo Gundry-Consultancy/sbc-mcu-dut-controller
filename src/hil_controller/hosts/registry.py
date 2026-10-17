@@ -115,6 +115,33 @@ class HostRegistry:
     def has_host(self, host_id: str) -> bool:
         return any(h["id"] == host_id for h in self._hosts)
 
+    #: ``devices`` columns that decide which jobs a device can take. ``status``
+    #: is deliberately left out: availability is gated on the live DB row in
+    #: ``get_adapter`` (with the reason), not by hiding the device from matching.
+    DB_DEVICE_FIELDS = ("host_id", "kind", "model", "pool")
+
+    def sync_device(self, row: Any) -> None:
+        """Overlay one ``devices`` DB row onto the loaded topology (adding it if new)."""
+        device = next((d for d in self._devices if d["id"] == row["id"]), None)
+        if device is None:
+            device = {"id": row["id"]}
+            self._devices.append(device)  # after topology devices: they match first
+        for key in self.DB_DEVICE_FIELDS:
+            if key in row.keys() and row[key] is not None:
+                device[key] = row[key]
+        if "capabilities_json" in row.keys() and row["capabilities_json"]:
+            device["capabilities"] = json.loads(row["capabilities_json"])
+
+    def drop_device(self, device_id: str) -> None:
+        self._devices = [d for d in self._devices if d["id"] != device_id]
+
+    def rename_device(self, old_id: str, new_id: str) -> None:
+        for d in self._devices:
+            if d["id"] == old_id:
+                d["id"] = new_id
+        if old_id in self._device_strand_routes:
+            self._device_strand_routes[new_id] = self._device_strand_routes.pop(old_id)
+
     def _index_strands(self, strands: list[dict[str, Any]]) -> None:
         """Build device_id -> routed-strand capability index from topology strands.
 
@@ -245,6 +272,38 @@ class RealHostRegistry(HostRegistry):
             async with db.execute("SELECT * FROM hosts") as cur:
                 for row in await cur.fetchall():
                     self.sync_host(row)
+
+    async def refresh_from_db(self) -> None:
+        """Mirror the DB's hosts, devices and strands into the registry.
+
+        The DB decides membership (rows added in the web UI or API appear, rows
+        deleted there disappear); topology-only keys such as ``known_hosts``
+        survive on rows that still exist. Called at startup and after every
+        web-UI / API edit, so the scheduler sees UI changes without a restart.
+        Renames go through :meth:`rename_host` / :meth:`rename_device` first so
+        those keys follow the new id.
+        """
+        from hil_controller.api.strands import _load_strand
+        from hil_controller.db.connection import get_db
+
+        async with get_db(self.db_path) as db:
+            async with db.execute("SELECT * FROM hosts") as cur:
+                host_rows = await cur.fetchall()
+            async with db.execute("SELECT * FROM devices") as cur:
+                device_rows = await cur.fetchall()
+            async with db.execute("SELECT id FROM strands ORDER BY id") as cur:
+                strand_ids = [r["id"] for r in await cur.fetchall()]
+            strands = [s for s in [await _load_strand(db, sid) for sid in strand_ids] if s]
+        host_ids = {r["id"] for r in host_rows}
+        for h in [h for h in self._hosts if h["id"] not in host_ids]:
+            self.drop_host(h["id"])
+        for row in host_rows:
+            self.sync_host(row)
+        device_ids = {r["id"] for r in device_rows}
+        self._devices = [d for d in self._devices if d["id"] in device_ids]
+        for row in device_rows:
+            self.sync_device(row)
+        self._index_strands(strands)
 
     async def get_adapter(self, job_id: str) -> Any:
         import json
@@ -454,6 +513,13 @@ class RealHostRegistry(HostRegistry):
             secrets=secrets,
             secrets_format=secrets_format,
         )
+
+
+async def refresh_app_registry(app: Any) -> None:
+    """Re-mirror the DB into ``app.state.host_registry`` after a web/API edit."""
+    registry = getattr(app.state, "host_registry", None)
+    if isinstance(registry, RealHostRegistry):
+        await registry.refresh_from_db()
 
 
 class _UnmatchedAdapter:

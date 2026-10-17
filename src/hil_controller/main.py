@@ -40,8 +40,8 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
 
             host_registry = RealHostRegistry(topology_file=_topology_file, db_path=_db_path)
             host_registry.load()
-            # Hosts added or edited in the web UI live only in the DB.
-            await host_registry.refresh_hosts_from_db()
+            # Hosts/devices/strands added or edited in the web UI live only in the DB.
+            await host_registry.refresh_from_db()
 
         scheduler = Scheduler(db_path=_db_path, event_bus=event_bus, host_registry=host_registry)
         await scheduler.start()

@@ -234,3 +234,48 @@ async def test_device_form_saves_power_control_and_absent_field_keeps_it(app_db)
         async with get_db(db_file) as db:
             async with db.execute("SELECT power_control FROM devices WHERE id='mcu-qtpy'") as cur:
                 assert (await cur.fetchone())["power_control"] is None
+
+
+async def test_ui_created_device_and_api_strand_are_schedulable_without_restart(app_db):
+    app, db_file = app_db
+    registry = RealHostRegistry(topology_file="", db_path=db_file)
+    app.state.host_registry = registry
+    async with _client(app) as c:
+        await c.post(
+            "/ui/hosts",
+            data={"id": BRIDGE, "addr": "usbip-test.local", "transport": "esp-usbip-bridge"},
+        )
+        await c.post(
+            "/ui/devices",
+            data={
+                "id": "mcu-qtpy-bridge",
+                "host_id": BRIDGE,
+                "kind": "microcontroller",
+                "pool": "public",
+                "capabilities": "arduino, wifi",
+                "hub_port_path": "1-1.1",
+            },
+        )
+        job = {"target": {"pool": "public", "device": {"capabilities": ["wifi"]}}}
+        host, device = registry.find_device_for_job(job)
+        assert (host["id"], device["id"]) == (BRIDGE, "mcu-qtpy-bridge")
+
+        resp = await c.post(
+            "/v1/strands",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "id": "strand-a",
+                "components": [{"id": "c1", "model": "SCD30", "capabilities": ["co2"]}],
+                "routes": [{"device": "mcu-qtpy-bridge", "channel": 2}],
+            },
+        )
+        assert resp.status_code == 201
+        assert registry.strand_for_device("mcu-qtpy-bridge", {"scd30"})["channel"] == 2
+
+        await c.post(
+            "/ui/devices/mcu-qtpy-bridge",
+            data={"id": "mcu-qtpy-s31", "host_id": BRIDGE, "kind": "microcontroller"},
+        )
+        assert registry.strand_for_device("mcu-qtpy-s31", {"co2"}) is not None
+        await c.delete("/ui/devices/mcu-qtpy-s31")
+    assert registry.find_device_for_job(job) is None

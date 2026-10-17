@@ -405,7 +405,7 @@ async def create_host(
             await db.commit()
         except Exception as exc:
             return _tr(request, "hosts_form.html", {"host": None, "error": str(exc)})
-    await _registry_sync_host(request, id)
+    await _registry_refresh(request)
     return _redirect("/ui/hosts")
 
 
@@ -429,16 +429,20 @@ def _bridge_fields_error(transport: str, addr: str, api_url: str, token_env: str
     return ""
 
 
-async def _registry_sync_host(request: Request, host_id: str) -> None:
-    """Make a web-UI host change live in the host registry (no restart needed)."""
+async def _registry_refresh(request: Request) -> None:
+    """Make a web-UI edit live in the host registry (no YAML edit / restart needed)."""
+    from hil_controller.hosts.registry import refresh_app_registry
+
+    await refresh_app_registry(request.app)
+
+
+def _registry_rename(request: Request, kind: str, old_id: str, new_id: str) -> None:
+    """Carry topology-only keys (e.g. known_hosts) across a web-UI rename."""
+    from hil_controller.hosts.registry import RealHostRegistry
+
     registry = getattr(request.app.state, "host_registry", None)
-    if registry is None or not hasattr(registry, "sync_host"):
-        return
-    async with get_db(request.app.state.db_path) as db:
-        async with db.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)) as cur:
-            row = await cur.fetchone()
-    if row is not None:
-        registry.sync_host(row)
+    if isinstance(registry, RealHostRegistry):
+        getattr(registry, f"rename_{kind}")(old_id, new_id)
 
 
 @router.post("/hosts/{host_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -518,14 +522,13 @@ async def update_host(
                 await rename_host(db, host_id, id.strip())
                 new_id = id.strip()
         except (ValueError, KeyError) as exc:
-            await _registry_sync_host(request, host_id)
+            await _registry_refresh(request)
             return _reshow(existing, str(exc).strip("'"))
         except Exception as exc:
             return _reshow(existing, str(exc))
-    registry = getattr(request.app.state, "host_registry", None)
-    if new_id != host_id and registry is not None and hasattr(registry, "rename_host"):
-        registry.rename_host(host_id, new_id)
-    await _registry_sync_host(request, new_id)
+    if new_id != host_id:
+        _registry_rename(request, "host", host_id, new_id)
+    await _registry_refresh(request)
     return _redirect("/ui/hosts")
 
 
@@ -654,9 +657,7 @@ async def delete_host(
     async with get_db(db_path) as db:
         await db.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
         await db.commit()
-    registry = getattr(request.app.state, "host_registry", None)
-    if registry is not None and hasattr(registry, "drop_host"):
-        registry.drop_host(host_id)
+    await _registry_refresh(request)
     return HTMLResponse("")
 
 
@@ -931,6 +932,7 @@ async def create_device(
                 await recompute_for_camera(db, camera_id)
         except Exception:
             pass
+    await _registry_refresh(request)
     return _redirect("/ui/devices")
 
 
@@ -1045,6 +1047,9 @@ async def update_device(
                         "error": str(exc).strip("'"),
                     },
                 )
+    if id.strip() and id.strip() != device_id:
+        _registry_rename(request, "device", device_id, id.strip())
+    await _registry_refresh(request)
     if camera_id:
         try:
             from hil_controller.adapters.camera.orchestrator import recompute_for_camera
@@ -1066,6 +1071,7 @@ async def delete_device(
     async with get_db(db_path) as db:
         await db.execute("DELETE FROM devices WHERE id = ?", (device_id,))
         await db.commit()
+    await _registry_refresh(request)
     return HTMLResponse("")
 
 
@@ -1725,7 +1731,9 @@ async def create_strand_web(
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
-    return await _save_strand_web(request, id, locals(), is_create=True)
+    resp = await _save_strand_web(request, id, locals(), is_create=True)
+    await _registry_refresh(request)
+    return resp
 
 
 @router.post("/strands/{strand_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -1744,7 +1752,9 @@ async def update_strand_web(
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
-    return await _save_strand_web(request, strand_id, locals(), is_create=False)
+    resp = await _save_strand_web(request, strand_id, locals(), is_create=False)
+    await _registry_refresh(request)
+    return resp
 
 
 @router.delete("/strands/{strand_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -1756,6 +1766,7 @@ async def delete_strand_web(
     async with get_db(request.app.state.db_path) as db:
         await db.execute("DELETE FROM strands WHERE id = ?", (strand_id,))
         await db.commit()
+    await _registry_refresh(request)
     return HTMLResponse("")
 
 
