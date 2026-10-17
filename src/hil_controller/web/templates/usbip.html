@@ -10,7 +10,7 @@
   to re-query.
 </p>
 
-<p style="font-size:0.8rem;color:#6c757d;margin-top:-0.5rem;">
+<p style="font-size:0.8rem;color:#6c757d;margin:0.25rem 0 1rem;">
   {% if timeout %}
     Per-command timeout: <strong>{{ timeout }}s</strong> (tables may be partial).
     <a href="/ui/usbip">Wait fully instead →</a>
@@ -28,7 +28,7 @@
 {% endif %}
 
 {% for h in hosts %}
-<div class="tbl-wrap" style="margin-bottom:1.25rem;">
+<div class="tbl-wrap" id="host-{{ h.id }}" style="margin-bottom:1.25rem;">
   <div class="tbl-header">
     <h2 style="display:flex;align-items:baseline;gap:0.5rem;">
       <a href="/ui/hosts" class="mono">{{ h.id }}</a>

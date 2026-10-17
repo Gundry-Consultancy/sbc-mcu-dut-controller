@@ -40,6 +40,8 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
 
             host_registry = RealHostRegistry(topology_file=_topology_file, db_path=_db_path)
             host_registry.load()
+            # Hosts/devices/strands added or edited in the web UI live only in the DB.
+            await host_registry.refresh_from_db()
 
         scheduler = Scheduler(db_path=_db_path, event_bus=event_bus, host_registry=host_registry)
         await scheduler.start()
@@ -156,6 +158,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
             await hw_monitor.start()
 
         app.state.db_path = _db_path
+        app.state.topology_file = _topology_file
         app.state.event_bus = event_bus
         app.state.scheduler = scheduler
         app.state.host_registry = host_registry
@@ -200,7 +203,10 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     from hil_controller.api.strands import router as strands_router
     from hil_controller.api.targets import router as targets_router
     from hil_controller.api.topology import router as topology_router
+    from hil_controller.api.twins import router as twins_router
+    from hil_controller.web.ops_views import router as ops_router
     from hil_controller.web.router import router as web_router
+    from hil_controller.web.twins_views import router as twins_web_router
 
     app.include_router(health_router)
     app.include_router(jobs_router)
@@ -211,11 +217,14 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     app.include_router(aux_router)
     app.include_router(cameras_router)
     app.include_router(topology_router)
+    app.include_router(twins_router)
     app.include_router(strands_router)
     app.include_router(leases_router)
     app.include_router(targets_router)
     app.include_router(firmware_router)
+    app.include_router(ops_router)  # before web_router: its /ui/jobs/{job_id} would shadow
     app.include_router(web_router)
+    app.include_router(twins_web_router)
 
     _static = Path(__file__).parent / "web" / "static"
     app.mount("/ui/static", StaticFiles(directory=str(_static)), name="ui-static")

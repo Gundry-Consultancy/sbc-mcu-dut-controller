@@ -10,18 +10,42 @@
   be force-released from the per-row button.
 </p>
 
+<div class="form-panel" style="margin-bottom:1rem;">
+  <h2>Hold a device or hub</h2>
+  <form hx-post="/ui/leases" hx-target="#lease-result" hx-swap="innerHTML"
+        style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end;">
+    <div class="form-group"><label for="f-lease-kind">Kind</label>
+      <select id="f-lease-kind" name="kind">{% for k in kinds %}<option value="{{ k }}">{{ k }}</option>{% endfor %}</select></div>
+    <div class="form-group"><label for="f-lease-dev">Device (exclusive_device)</label>
+      <select id="f-lease-dev" name="device_id"><option value="">—</option>{% for d in devices %}<option value="{{ d.id }}">{{ d.id }}</option>{% endfor %}</select></div>
+    <div class="form-group"><label for="f-lease-hub">Hub host (exclusive_hub)</label>
+      <select id="f-lease-hub" name="hub_host_id"><option value="">—</option>{% for h in hosts %}<option value="{{ h.id }}">{{ h.id }}</option>{% endfor %}</select></div>
+    <div class="form-group"><label for="f-lease-exp">Expires in (min)</label>
+      <input type="number" id="f-lease-exp" name="expires_minutes" min="1" placeholder="blank = until released" style="width:10rem;"></div>
+    <button class="btn btn-primary" type="submit">Acquire lease</button>
+  </form>
+  <div id="lease-result" style="margin-top:0.5rem;"></div>
+  <span class="form-hint">Same as <code>POST /v1/leases</code>. Use it to keep jobs off hardware you are working on by hand.</span>
+</div>
+
 <div class="tbl-wrap"
+     id="leases-wrap"
      hx-get="/ui/leases/body"
      hx-trigger="load, every 3s"
      hx-target="#leases-body"
      hx-swap="innerHTML">
   <div class="tbl-header">
-    <h2>Active leases <span class="tbl-count">{{ leases|length }}</span></h2>
+    <h2>Leases <span class="tbl-count">{{ leases|length }} active</span></h2>
+    <label style="font-size:0.8rem;display:flex;align-items:center;gap:0.3rem;">
+      <input type="checkbox" id="lease-history"
+        onchange="const w=document.getElementById('leases-wrap');w.setAttribute('hx-get', this.checked ? '/ui/leases/body?active_only=false' : '/ui/leases/body');htmx.process(w);htmx.trigger(w,'load');">
+      Show released (history)
+    </label>
   </div>
   <table>
     <thead><tr>
       <th>ID</th><th>Kind</th><th>Device</th><th>Hub host</th>
-      <th>Held by job</th><th>Acquired</th><th>Expires</th><th></th>
+      <th>Held by job</th><th>Acquired</th><th>Expires</th><th>Released</th><th></th>
     </tr></thead>
     <tbody id="leases-body">
       {% include "leases_body.html" %}

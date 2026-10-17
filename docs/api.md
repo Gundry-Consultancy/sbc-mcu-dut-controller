@@ -9,7 +9,9 @@ or dev-LAN. Raw jobs still use the existing shape; MCP builds recipes over it.
 The controller exposes a small HTTP API (FastAPI) that a test script or CI job
 uses to run firmware on real hardware and pull back proof. This documents the
 endpoints a **test author** needs; the web UI and inventory/topology endpoints
-are covered in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+are covered in [`ARCHITECTURE.md`](ARCHITECTURE.md), and [`web-ui.md`](web-ui.md)
+maps every operator page to the endpoint that returns the same data
+(including `GET /v1/topology/drift`: what a restart would revert).
 
 Base URL (over Tailscale): `http://tachyon-16ee27b8.ostrich-escalator.ts.net:8080`
 (`192.168.1.169:8080` on the LAN). All `/v1/*` calls require a bearer token:
@@ -323,3 +325,11 @@ curl -H "Authorization: Bearer $TOK" \
 > Be gentle with `res=full` on weak hosts (e.g. a Pi Zero 2 W): the 16 MP
 > still-mode reconfigure is heavy and wedges if hammered. Capture one-shot — don't
 > poll it in a tight loop.
+
+
+## Physical digital twins
+
+The additive administrative `/v1/twins` API records physical identities, observations,
+owned ports, logical-slot replacement history, and physical connections. See
+[digital-twins.md](digital-twins.md) for contracts, conservative reconciliation, auth,
+and the offline import command. Existing job and topology APIs retain their behavior.

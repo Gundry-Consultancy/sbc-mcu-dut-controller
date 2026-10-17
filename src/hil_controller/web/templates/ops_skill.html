@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Skill <span class="mono" style="font-size:1rem;">{{ name }}</span></h1>
+{% include "ops_nav.html" %}
+{% if error %}
+<div class="alert alert-error">{{ error }} — <a href="/ui/skills">back to skills</a></div>
+{% else %}
+<div class="form-panel" style="max-width:960px;">
+  {% if meta.description %}<p style="font-size:0.9rem;">{{ meta.description }}</p>{% endif %}
+  <div class="form-hint">sha256 <span class="mono">{{ sha256 }}</span> · read-only ·
+    <a href="/ui/skills">all skills</a></div>
+</div>
+{# body_html is built by ops_views.render_markdown_safe: every source character is escaped first. #}
+<article class="md-body">{{ body_html|safe }}</article>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Topology — live DB vs YAML</h1>
+
+<p style="color:#6c757d;margin-bottom:0.75rem;line-height:1.5;">
+  The live DB is what the controller schedules from. On every restart the seeder re-applies
+  <code>{{ drift.topology_file or "(no topology file configured)" }}</code>{% if not drift.topology_exists %} <span class="badge badge-warn">file not found — DB-only bench</span>{% endif %}:
+  rows it defines are <strong>overwritten</strong> with the YAML values, rows only in the DB survive.
+  To keep a UI change, download the export below and commit it as the topology file
+  (per the bench policy, commit + push it upstream so git matches the bench).
+</p>
+
+<div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0 1.25rem;">
+  <a class="btn btn-primary" href="/ui/topology/export.yaml">Download topology.yaml (from live DB)</a>
+  <span class="form-hint">Agents/CI: <code>GET /v1/topology/drift</code> and <code>GET /v1/topology/export</code> (bearer token) return the same data.</span>
+</div>
+
+{% if drift.error %}<div class="alert alert-error">{{ drift.error }}</div>{% endif %}
+
+{% set sm = drift.summary %}
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>Differences <span class="tbl-count">{{ drift.total }}</span></h2>
+    <span class="form-hint">
+      <span class="badge badge-warn">{{ sm.reverted_on_restart }} reverted on restart</span>
+      <span class="badge badge-info">{{ sm.db_only }} DB-only</span>
+      <span class="badge badge-gray">{{ sm.recreated_on_restart }} re-created on restart</span>
+    </span>
+  </div>
+  <table>
+    <thead><tr><th>Section</th><th>ID</th><th>What a restart does</th><th>Field</th><th>Live DB (now)</th><th>topology YAML (after restart)</th></tr></thead>
+    <tbody>
+    {% for i in drift["items"] %}
+      {% set fields = i.fields.items() | list %}
+      {% if fields %}
+        {% for f, v in fields %}
+        <tr>
+          {% if loop.first %}
+          <td rowspan="{{ fields|length }}">{{ i.section }}</td>
+          <td rowspan="{{ fields|length }}" class="mono">{{ i.id }}</td>
+          <td rowspan="{{ fields|length }}"><span class="badge badge-warn">reverted on restart</span></td>
+          {% endif %}
+          <td class="mono">{{ f }}</td>
+          <td class="mono" style="word-break:break-all;">{{ v.db | tojson }}</td>
+          <td class="mono" style="word-break:break-all;">{{ v.yaml | tojson }}</td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td>{{ i.section }}</td><td class="mono">{{ i.id }}</td>
+          <td>{% if i.change == 'db_only' %}<span class="badge badge-info">kept (DB-only) — not in YAML</span>{% else %}<span class="badge badge-gray">re-created from YAML</span>{% endif %}</td>
+          <td colspan="3" class="form-hint">{% if i.change == 'db_only' %}Survives restarts, but a fresh DB / another bench would not have it until it is committed.{% else %}Deleted in the UI but still in the YAML: the next restart brings it back.{% endif %}</td>
+        </tr>
+      {% endif %}
+    {% else %}
+      <tr><td colspan="6" style="color:#6c757d;text-align:center;padding:1.5rem;">Live DB matches the topology YAML — nothing would change on restart.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<details style="margin-top:1rem;">
+  <summary style="cursor:pointer;font-weight:600;">Export preview (topology.yaml rendered from the live DB)</summary>
+  <pre class="mono" style="font-size:0.75rem;max-height:32rem;overflow:auto;background:#f8f9fa;padding:0.75rem;">{{ export_yaml }}</pre>
+</details>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% set sm = drift.summary %}
+{% if drift.error %}
+<div class="alert alert-error"><strong>Topology YAML problem:</strong> {{ drift.error }} — <a href="/ui/topology">details</a></div>
+{% elif sm.reverted_on_restart or sm.db_only or sm.recreated_on_restart %}
+<div class="alert {% if sm.reverted_on_restart %}alert-error{% else %}alert-info{% endif %}">
+  {% if sm.reverted_on_restart %}<strong>{{ sm.reverted_on_restart }} UI change(s) will be reverted by the next controller restart</strong> (the topology YAML still has the old values).{% endif %}
+  {% if sm.db_only %}{{ sm.db_only }} row(s) exist only in the live DB (not in topology YAML).{% endif %}
+  {% if sm.recreated_on_restart %}{{ sm.recreated_on_restart }} deleted row(s) will be re-created on restart.{% endif %}
+  <a href="/ui/topology">Review &amp; export topology.yaml →</a>
+</div>
+{% endif %}

@@ -25,10 +25,11 @@
       <div class="form-group">
         <label for="f-host-transport">Transport *</label>
         <select id="f-host-transport" name="transport">
-          {% for t in ['ssh','local','none'] %}
+          {% for t in ['ssh','local','none','esp-usbip-bridge'] %}
           <option value="{{ t }}" {% if host and host.transport == t %}selected{% elif not host and t == 'ssh' %}selected{% endif %}>{{ t }}</option>
           {% endfor %}
         </select>
+        <span class="form-hint"><code>esp-usbip-bridge</code> = an ESP32 (e.g. S31 CoreBoard) running esp-usbip-bridge: no shell, always-exported busids, HTTP API for inventory &amp; port power.</span>
       </div>
       <div class="form-group">
         <label for="f-host-ssh-user">SSH User</label>
@@ -56,6 +57,30 @@
         </select>
       </div>
     </div>
+
+    <fieldset class="form-fieldset" style="margin-top:1rem;">
+      <legend>esp-usbip-bridge <span class="form-hint">only used when Transport is <code>esp-usbip-bridge</code></span></legend>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="f-host-api-url">Bridge API URL</label>
+          <input type="text" id="f-host-api-url" name="api_url" value="{{ host.api_url or '' if host else '' }}" placeholder="blank = http://&lt;Address&gt; (port 80)">
+          <span class="form-hint">Address above is the usbip server (TCP 3240), e.g. <code>usbip-a1b2c3.local</code> — find it with <code>avahi-browse -rt _usbip._tcp</code>.</span>
+        </div>
+        <div class="form-group">
+          <label for="f-host-token-env">Token env var</label>
+          <input type="text" id="f-host-token-env" name="token_env" value="{{ host.token_env or '' if host else '' }}" placeholder="HIL_BRIDGE_TOKEN_S31" pattern="[A-Za-z_][A-Za-z0-9_]*">
+          <span class="form-hint">The NAME of a variable in <code>run/controller.env</code> holding the bridge's bearer token — never the token itself. Blank if the bridge has no token.
+          {%- if host and host.token_env %}
+            {% if env_is_set(host.token_env) %}<span class="badge badge-ok">set on controller</span>{% else %}<span class="badge badge-warn">NOT set on controller — add it to run/controller.env and restart</span>{% endif %}
+          {%- endif %}</span>
+        </div>
+      </div>
+      {% if host and host.transport == 'esp-usbip-bridge' %}
+      <div style="margin-top:0.5rem;">
+        <a class="btn btn-sm btn-outline" href="/ui/usbip#host-{{ host.id }}">View bridge devices, hubs &amp; port power on USB-IP page</a>
+      </div>
+      {% endif %}
+    </fieldset>
 
     {% if host %}
     {% set hw = host.hw or {} %}

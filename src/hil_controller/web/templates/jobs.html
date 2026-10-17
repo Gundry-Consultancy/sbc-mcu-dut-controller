@@ -14,12 +14,15 @@
 <div class="tbl-wrap">
   <div class="tbl-header">
     <h2>Recent Jobs <span class="tbl-count">{{ jobs|length }}</span></h2>
-    <div style="display:flex;gap:0.5rem;">
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
       <a href="/ui/jobs/new" class="btn btn-primary">+ Python</a>
       <a href="/ui/jobs/new-arduino" class="btn btn-secondary">+ Arduino Flash</a>
       <a href="/ui/jobs/new-arduino-ws" class="btn btn-secondary">+ Arduino WS Test</a>
       <a href="/ui/jobs/new-firmware-bench" class="btn btn-secondary">+ Firmware Bench</a>
       <a href="/ui/jobs/new-bisect" class="btn btn-secondary">+ Version Bisect</a>
+      <a href="/ui/jobs/raw" class="btn btn-secondary" title="Submit any POST /v1/jobs or agent job JSON (validated, credentials masked)">+ Raw JSON</a>
+      <a href="/ui/jobs/profiles" class="btn btn-outline" title="Job recipes, brokers and credential guidance (same as GET /v1/job-profiles)">Recipes</a>
+      <a href="/ui/jobs/resolve" class="btn btn-outline" title="Which device would a job get? (dry run)">Which device?</a>
     </div>
   </div>
   <table>

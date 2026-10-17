@@ -1,0 +1,27 @@
+{# HTMX partial for /ui/jobs/raw/{validate,submit}. Never echoes the submitted text. #}
+{% if errors %}
+<div class="alert alert-error" data-testid="raw-errors">
+  <strong>{% if mode == 'submit' %}Not submitted{% else %}Invalid job{% endif %}{% if format %} ({{ format }}){% endif %}:</strong>
+  <ul class="ops-list">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% elif preview %}
+<div class="alert alert-success" data-testid="raw-valid">
+  <strong>Valid {{ format }}.</strong> This is the exact request <code>POST /v1/jobs</code>
+  would store (secrets masked as <code>****last4</code>).
+</div>
+{% endif %}
+{% if warnings %}
+<div class="alert alert-info">
+  <ul class="ops-list">{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+{% if preview %}
+<details open>
+  <summary>Request preview (redacted)</summary>
+  <pre class="ops-pre" data-testid="raw-preview">{{ preview }}</pre>
+</details>
+{% endif %}
+{% if resolution %}
+<h2 style="margin-top:1rem;">Device resolution</h2>
+{% with outcome = resolution %}{% include "ops_resolve_result.html" %}{% endwith %}
+{% endif %}

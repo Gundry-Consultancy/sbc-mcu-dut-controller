@@ -161,6 +161,16 @@ async def export_topology(request: Request, _auth: Auth) -> PlainTextResponse:
     return PlainTextResponse(yaml_text, media_type="application/yaml")
 
 
+@router.get("/drift")
+async def topology_drift(request: Request, _auth: Auth) -> dict[str, Any]:
+    """What a restart would revert / re-create: live DB vs the topology YAML."""
+    from hil_controller.topology.drift import topology_drift as _drift
+
+    return await _drift(
+        request.app.state.db_path, getattr(request.app.state, "topology_file", "")
+    )
+
+
 @router.post("/resolve", response_model=ResolveResponse)
 async def resolve_topology(request: Request, body: ResolveTarget, _auth: Auth) -> ResolveResponse:
     db_path: str = request.app.state.db_path

@@ -18,7 +18,7 @@
   </td>
   <td class="mono">
     {% if l.host_id %}
-      <a href="/ui/hosts">{{ l.host_id }}</a>
+      <a href="/ui/hosts/{{ l.host_id }}">{{ l.host_id }}</a>
       {% if l.host_addr %}<span style="color:#6c757d;font-size:0.78rem;"> {{ l.host_addr }}</span>{% endif %}
     {% else %}<span style="color:#6c757d;">—</span>{% endif %}
   </td>
@@ -30,7 +30,9 @@
   </td>
   <td class="mono" style="font-size:0.78rem;">{{ l.acquired_at }}</td>
   <td class="mono" style="font-size:0.78rem;">{{ l.expires_at or '—' }}</td>
+  <td class="mono" style="font-size:0.78rem;">{% if l.released_at %}{{ l.released_at }}{% else %}<span class="badge badge-ok">active</span>{% endif %}</td>
   <td>
+    {% if not l.released_at %}
     <button class="btn btn-sm btn-danger"
       hx-delete="/ui/leases/{{ l.id }}"
       hx-target="#lease-row-{{ l.id }}"
@@ -38,8 +40,9 @@
       hx-confirm="Force-release lease {{ l.id }}? This will let other jobs claim the device — make sure nothing is mid-flash.">
       Force release
     </button>
+    {% endif %}
   </td>
 </tr>
 {% else %}
-<tr id="leases-empty"><td colspan="8" style="color:#6c757d;text-align:center;padding:1.5rem;">No active leases — everything is free.</td></tr>
+<tr id="leases-empty"><td colspan="9" style="color:#6c757d;text-align:center;padding:1.5rem;">{% if active_only is defined and not active_only %}No leases recorded yet.{% else %}No active leases — everything is free.{% endif %}</td></tr>
 {% endfor %}

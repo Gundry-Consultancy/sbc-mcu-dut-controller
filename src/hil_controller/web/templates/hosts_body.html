@@ -1,9 +1,15 @@
 {% for h in hosts %}
 {% set hw = h.hw or {} %}
 <tr id="host-row-{{ h.id }}">
-  <td class="mono">{{ h.id }}</td>
+  <td class="mono"><a href="/ui/hosts/{{ h.id }}">{{ h.id }}</a></td>
   <td><span class="badge badge-info">{{ h.role }}</span></td>
-  <td class="mono">{{ h.addr }}</td>
+  <td class="mono">{{ h.addr }}
+    <div class="form-hint" style="font-size:0.7rem;">{{ h.transport }}
+      {%- if h.transport == 'esp-usbip-bridge' %} · {{ h.api_url or 'http://' ~ h.addr }}
+        {%- if h.token_env %} · token {% if env_is_set(h.token_env) %}<span class="badge badge-ok">set</span>{% else %}<span class="badge badge-warn">NOT set</span>{% endif %}{% endif %}
+      {%- endif %}</div>
+    {% if h.last_seen_at %}<div class="form-hint" style="font-size:0.68rem;">seen {{ h.last_seen_at[:19] }}</div>{% endif %}
+  </td>
   <td>{{ hw.model or '—' }}</td>
   <td class="mono" style="font-size:0.73rem;">
     {%- if hw.cpu_cores %}{{ hw.cpu_cores }}×{% else %}—{% endif %}
