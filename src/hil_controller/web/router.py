@@ -4131,10 +4131,68 @@ async def leases_page(request: Request, hil_token: str = Cookie(default="")) -> 
         return _login_redirect()  # type: ignore[return-value]
     db_path: str = request.app.state.db_path
     leases = await _leases_with_context(db_path, active_only=True)
+    from hil_controller.queue.leases import VALID_KINDS
+
     return _tr(
         request,
         "leases.html",
-        {"token": hil_token, "active": "leases", "leases": leases},
+        {
+            "token": hil_token,
+            "active": "leases",
+            "leases": leases,
+            "devices": await _devices(db_path),
+            "hosts": await _hosts(db_path),
+            "kinds": sorted(VALID_KINDS),
+        },
+    )
+
+
+@router.post("/leases", response_class=HTMLResponse, include_in_schema=False)
+async def create_lease_ui(
+    request: Request,
+    hil_token: str = Cookie(default=""),
+    kind: Annotated[str, Form()] = "exclusive_device",
+    device_id: Annotated[str, Form()] = "",
+    hub_host_id: Annotated[str, Form()] = "",
+    expires_minutes: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Hold a device or hub by hand (same as POST /v1/leases), e.g. for bench work."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from datetime import timedelta
+
+    from hil_controller.queue.leases import VALID_KINDS, LeaseConflict, acquire
+
+    if kind not in VALID_KINDS:
+        return HTMLResponse(
+            f'<div class="alert alert-error">kind must be one of {sorted(VALID_KINDS)}</div>'
+        )
+    expires_at = None
+    if expires_minutes.strip():
+        try:
+            minutes = int(expires_minutes)
+        except ValueError:
+            return HTMLResponse('<div class="alert alert-error">Expiry must be minutes</div>')
+        expires_at = (datetime.now(UTC) + timedelta(minutes=minutes)).isoformat()
+    try:
+        row = await acquire(
+            request.app.state.db_path,
+            kind=kind,
+            device_id=device_id or None,
+            hub_host_id=hub_host_id or None,
+            job_id=None,
+            expires_at=expires_at,
+        )
+    except LeaseConflict as exc:
+        return HTMLResponse(
+            f'<div class="alert alert-error">Conflict: {html.escape(str(exc))}</div>'
+        )
+    except ValueError as exc:
+        return HTMLResponse(f'<div class="alert alert-error">{html.escape(str(exc))}</div>')
+    return HTMLResponse(
+        f'<div class="alert alert-success">Lease {row["id"]} acquired '
+        f"({html.escape(kind)}{' until ' + html.escape(expires_at) if expires_at else ''}). "
+        "Jobs needing it will wait until it is released.</div>"
     )
 
 
@@ -4149,7 +4207,7 @@ async def leases_body(
         return _login_redirect()  # type: ignore[return-value]
     db_path: str = request.app.state.db_path
     leases = await _leases_with_context(db_path, active_only=active_only)
-    return _tr(request, "leases_body.html", {"leases": leases})
+    return _tr(request, "leases_body.html", {"leases": leases, "active_only": active_only})
 
 
 @router.delete("/leases/{lease_id}", response_class=HTMLResponse, include_in_schema=False)

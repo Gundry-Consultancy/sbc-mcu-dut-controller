@@ -112,3 +112,32 @@ async def test_job_detail_shows_host_request_masked_and_all_event_kinds(app_db):
     assert "HIL_BRIDGE_TOKEN_S31" in t  # env var NAMES are not secrets
     assert 'data-stream="serial"' in t and "checkin_s" in t
     assert 'class="log-stream"' in t
+
+
+async def test_leases_create_conflict_history_and_release(app_db):
+    app, db_file = app_db
+    async with get_db(db_file) as db:
+        await db.execute("INSERT INTO hosts (id, addr, capabilities_json) VALUES ('h','x','[]')")
+        await db.execute(
+            "INSERT INTO devices (id, host_id, kind, capabilities_json) "
+            "VALUES ('mcu-l', 'h', 'microcontroller', '[]')"
+        )
+        await db.commit()
+    async with _client(app) as c:
+        page = await c.get("/ui/leases")
+        assert 'hx-post="/ui/leases"' in page.text and "mcu-l" in page.text
+        ok = await c.post(
+            "/ui/leases",
+            data={"kind": "exclusive_device", "device_id": "mcu-l", "expires_minutes": "15"},
+        )
+        clash = await c.post("/ui/leases", data={"kind": "exclusive_device", "device_id": "mcu-l"})
+        active = await c.get("/ui/leases/body")
+        lease_id = ok.text.split("Lease ")[1].split(" ")[0]
+        await c.delete(f"/ui/leases/{lease_id}")
+        after = await c.get("/ui/leases/body")
+        history = await c.get("/ui/leases/body?active_only=false")
+    assert "acquired" in ok.text and "until" in ok.text
+    assert "Conflict" in clash.text
+    assert "mcu-l" in active.text and "Force release" in active.text
+    assert "mcu-l" not in after.text
+    assert "mcu-l" in history.text and "Force release" not in history.text
