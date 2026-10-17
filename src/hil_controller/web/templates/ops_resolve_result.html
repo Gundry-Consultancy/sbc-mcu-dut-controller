@@ -1,0 +1,72 @@
+{# Resolve outcome partial; expects `outcome` from ops_views.resolve_target. #}
+<div class="resolve-result" style="max-width:1100px;margin-top:1.25rem;">
+{% if outcome.errors %}
+  <div class="alert alert-error">
+    <strong>Target is not valid:</strong>
+    <ul class="ops-list">{% for e in outcome.errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+{% else %}
+  {% set s = outcome.scheduler %}
+  {% if s.matched and not s.gate_rejected %}
+  <div class="alert alert-success" data-testid="resolve-match">
+    <strong>Scheduler pick:</strong> device <span class="mono">{{ s.device_id }}</span>
+    on host <span class="mono">{{ s.host_id }}</span>
+    {% if s.strand %} · strand <span class="mono">{{ s.strand.strand_id }}</span> (mux ch {{ s.strand.channel }}){% endif %}
+    <ul class="ops-list">{% for w in s.why %}<li>{{ w }}</li>{% endfor %}</ul>
+  </div>
+  {% elif s.matched %}
+  <div class="alert alert-error" data-testid="resolve-gated">
+    <strong>Matched <span class="mono">{{ s.device_id }}</span> but the job would be refused:</strong>
+    {{ s.gate_rejected }}
+    <ul class="ops-list">{% for w in s.why %}<li>{{ w }}</li>{% endfor %}</ul>
+  </div>
+  {% else %}
+  <div class="alert alert-error" data-testid="resolve-nomatch">
+    <strong>No device — the job would fail at assignment.</strong>
+    <div class="mono" style="margin-top:0.3rem;white-space:pre-wrap;">{{ s.reason }}</div>
+  </div>
+  {% endif %}
+
+  <div class="tbl-wrap">
+    <div class="tbl-header">
+      <h2>Topology resolve candidates <span class="tbl-count">{{ outcome.topology.candidates|length }}</span></h2>
+    </div>
+    {% if outcome.topology.candidates %}
+    <table>
+      <thead><tr><th>Device</th><th>Host</th><th>Aux bindings</th><th>Strand</th></tr></thead>
+      <tbody>
+      {% for c in outcome.topology.candidates %}
+        <tr>
+          <td class="mono">{{ c.device_id }}</td>
+          <td class="mono">{{ c.host_id }}</td>
+          <td>{% for b in c.aux_bindings %}<span class="badge badge-info">{{ b.matched.id }} ({{ b.matched.kind }})</span> {% else %}—{% endfor %}</td>
+          <td>{% if c.strand %}<span class="mono">{{ c.strand.strand_id }}</span> ch {{ c.strand.channel }}{% elif outcome.strand_caps %}—{% else %}n/a{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="form-hint" style="padding:0.5rem 1rem;">{{ outcome.topology.message or 'No candidates' }}.</p>
+    {% endif %}
+  </div>
+
+  {% if outcome.topology.rejected %}
+  <div class="form-panel">
+    <h2>Rejected / no-match reasons</h2>
+    <table>
+      <thead><tr><th>Reason</th><th>Detail</th></tr></thead>
+      <tbody>
+      {% for r in outcome.topology.rejected %}
+        <tr><td><span class="badge badge-warn">{{ r.reason }}</span></td><td>{{ r.detail }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <details>
+    <summary>Target as evaluated</summary>
+    <pre class="ops-pre">{{ outcome.target_pretty }}</pre>
+  </details>
+{% endif %}
+</div>

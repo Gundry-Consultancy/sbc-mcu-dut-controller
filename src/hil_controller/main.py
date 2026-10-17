@@ -204,6 +204,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     from hil_controller.api.targets import router as targets_router
     from hil_controller.api.topology import router as topology_router
     from hil_controller.api.twins import router as twins_router
+    from hil_controller.web.ops_views import router as ops_router
     from hil_controller.web.router import router as web_router
     from hil_controller.web.twins_views import router as twins_web_router
 
@@ -221,6 +222,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     app.include_router(leases_router)
     app.include_router(targets_router)
     app.include_router(firmware_router)
+    app.include_router(ops_router)  # before web_router: its /ui/jobs/{job_id} would shadow
     app.include_router(web_router)
     app.include_router(twins_web_router)
 
