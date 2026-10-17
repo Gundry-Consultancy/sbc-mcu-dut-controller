@@ -187,3 +187,23 @@ async def test_usb_lookup_and_hardware_detail(app_db):
     h = hardware.text
     assert "SCD30" in h and "@0x61" in h and "direct" in h and "TCA ch 3" in h and "co2" in h
     assert '<a href="/ui/hosts/usbip-bridge-s31">' in h
+
+
+async def test_form_links_open_full_page_but_htmx_gets_fragment(app_db):
+    app, db_file = app_db
+    async with get_db(db_file) as db:
+        await db.execute("INSERT INTO hosts (id, addr, capabilities_json) VALUES ('h','x','[]')")
+        await db.execute(
+            "INSERT INTO devices (id, host_id, kind, capabilities_json) "
+            "VALUES ('mcu-f', 'h', 'microcontroller', '[]')"
+        )
+        await db.commit()
+    async with _client(app) as c:
+        page = await c.get("/ui/devices/mcu-f/form")
+        frag = await c.get("/ui/devices/mcu-f/form", headers={"HX-Request": "true"})
+        host_page = await c.get("/ui/hosts/h/form")
+        host_frag = await c.get("/ui/hosts/h/form", headers={"HX-Request": "true"})
+    assert "<nav>" in page.text and 'id="f-dev-status"' in page.text
+    assert "<nav>" not in frag.text and 'id="f-dev-status"' in frag.text
+    assert "<nav>" in host_page.text and "Edit Host" in host_page.text
+    assert "<nav>" not in host_frag.text

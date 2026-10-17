@@ -3,7 +3,7 @@
 <h1>Devices</h1>
 <div hx-get="/ui/topology/banner" hx-trigger="load" hx-swap="innerHTML"></div>
 
-<div id="form-panel"></div>
+<div id="form-panel">{% if form_html %}{{ form_html | safe }}{% endif %}</div>
 
 <details class="form-panel" style="margin-bottom:1rem;">
   <summary style="cursor:pointer;font-weight:600;">Who owns this USB device?</summary>

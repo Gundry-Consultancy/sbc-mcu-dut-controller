@@ -50,6 +50,19 @@ def _tr(request: Request, name: str, ctx: dict | None = None, **kwargs):
     return templates.TemplateResponse(request, name, ctx or {}, **kwargs)
 
 
+def _in_page(request: Request, fragment: Response, page: str, ctx: dict) -> Response:
+    """Serve a form fragment inside its full page when opened from a plain link.
+
+    HTMX requests (``HX-Request``) keep getting the bare fragment; a browser
+    following a link such as ``/ui/devices/<id>/form`` gets the page with the
+    form already open in ``#form-panel``.
+    """
+    if request.headers.get("HX-Request") or getattr(fragment, "status_code", 200) != 200:
+        return fragment
+    body = bytes(fragment.body).decode()  # type: ignore[attr-defined]
+    return _tr(request, page, {**ctx, "form_html": body})
+
+
 def _redirect(path: str) -> Response:
     """HX-Redirect triggers a full client navigation in HTMX, avoiding tbody nesting bugs."""
     return Response(status_code=200, headers={"HX-Redirect": path})
@@ -405,7 +418,12 @@ async def edit_host_form(
     h["hw"] = host_hardware.host_hw_view(dict(row))
     h["hw_detected"] = host_hardware._loads(row["hw_detected_json"])
     h["hw_override"] = host_hardware._loads(row["hw_override_json"])
-    return _tr(request, "hosts_form.html", {"host": h})
+    return _in_page(
+        request,
+        _tr(request, "hosts_form.html", {"host": h}),
+        "hosts.html",
+        {"token": hil_token, "active": "hosts", "hosts": await _hosts(db_path)},
+    )
 
 
 @router.get("/hosts/{host_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -832,10 +850,16 @@ async def edit_device_form(
     hosts = await _hosts(db_path)
     cameras = await _cameras(db_path)
     roi = dict(roi_row) if roi_row else None
-    return _tr(
+    fragment = _tr(
         request,
         "devices_form.html",
         {"device": d, "hosts": hosts, "cameras": cameras, "token": hil_token, "roi": roi},
+    )
+    return _in_page(
+        request,
+        fragment,
+        "devices.html",
+        {"token": hil_token, "active": "devices", "devices": await _devices(db_path)},
     )
 
 

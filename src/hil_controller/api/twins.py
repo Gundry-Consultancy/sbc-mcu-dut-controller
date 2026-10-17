@@ -143,28 +143,33 @@ async def close_connection(
     authorize(principal, write=True)
     async with get_db(request.app.state.db_path) as db:
         await db.execute("BEGIN IMMEDIATE")
-        existing = await twins.rows(
-            db, "SELECT * FROM twin_connections WHERE id=?", (connection_id,)
-        )
-        if not existing:
-            raise HTTPException(404, "Connection not found")
-        connection = existing[0]
-        at = twins.iso(item.ended_at)
-        if at < connection["started_at"]:
-            raise HTTPException(422, "Connection cannot end before it starts")
-        if connection["ended_at"] is not None and (
-            connection["ended_at"] != at
-            or connection["close_source"] != item.source
-            or connection["close_reason"] != item.reason
-        ):
-            raise HTTPException(409, "Connection is already closed with different evidence")
-        await db.execute(
-            "UPDATE twin_connections SET ended_at=?,close_source=?,close_reason=?,close_actor=? "
-            "WHERE id=?",
-            (at, item.source, item.reason, principal.subject, connection_id),
-        )
-        await db.commit()
-        return {"id": connection_id, "ended_at": at}
+        try:
+            existing = await twins.rows(
+                db, "SELECT * FROM twin_connections WHERE id=?", (connection_id,)
+            )
+            if not existing:
+                raise HTTPException(404, "Connection not found")
+            connection = existing[0]
+            at = twins.iso(item.ended_at)
+            if at < connection["started_at"]:
+                raise HTTPException(422, "Connection cannot end before it starts")
+            if connection["ended_at"] is not None and (
+                connection["ended_at"] != at
+                or connection["close_source"] != item.source
+                or connection["close_reason"] != item.reason
+            ):
+                raise HTTPException(409, "Connection is already closed with different evidence")
+            await db.execute(
+                "UPDATE twin_connections SET ended_at=?,close_source=?,close_reason=?,"
+                "close_actor=? WHERE id=?",
+                (at, item.source, item.reason, principal.subject, connection_id),
+            )
+            await db.commit()
+            return {"id": connection_id, "ended_at": at}
+        except BaseException:
+            # Never leave the BEGIN IMMEDIATE write lock open on an error path.
+            await db.rollback()
+            raise
 
 
 @router.get("/{twin_id}")
