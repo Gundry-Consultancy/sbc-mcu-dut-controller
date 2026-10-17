@@ -349,8 +349,10 @@ class RealHostRegistry(HostRegistry):
                 # a wedged host pending reboot) — the topology matcher only knows
                 # the seed status. Fail fast with the reason rather than flashing
                 # a device that isn't there.
-                if d.get("status") == "unavailable":
-                    reason = d.get("unavailable_reason") or "device unavailable"
+                # Any non-available status (e.g. a legacy 'maintenance' set in the UI)
+                # is an operator "don't use this", not just the reconciler's flag.
+                if d.get("status") not in (None, "available"):
+                    reason = d.get("unavailable_reason") or f"device status {d.get('status')!r}"
                     log.warning(
                         "job %s rejected: device %s unavailable (%s)", job_id, device["id"], reason
                     )

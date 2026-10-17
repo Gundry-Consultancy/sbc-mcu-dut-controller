@@ -901,6 +901,8 @@ async def create_device(
     bootsel_inverted: Annotated[str, Form()] = "",
     power_control: Annotated[str, Form()] = "",
     power_control_present: Annotated[str, Form()] = "",
+    unavailable_kind: Annotated[str, Form()] = "",
+    unavailable_reason: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -960,6 +962,7 @@ async def create_device(
                     _power_control_value(power_control),
                 ),
             )
+            await _apply_availability(db, id, status, unavailable_kind, unavailable_reason)
             await db.commit()
         except Exception as exc:
             hosts = await _hosts(db_path)
@@ -986,6 +989,29 @@ async def create_device(
             pass
     await _registry_refresh(request)
     return _redirect("/ui/devices")
+
+
+async def _apply_availability(db, device_id: str, status: str, kind: str, reason: str) -> None:
+    """Keep the availability columns consistent with an operator-set status.
+
+    ``available`` clears the outage (and its retry budget); anything else is an
+    outage of ``kind`` (temporary = the reconciler may self-heal it, permanent =
+    only a human clears it) with the operator's reason, keeping the original
+    ``unavailable_since`` when the device was already out.
+    """
+    if status == "available":
+        await db.execute(
+            "UPDATE devices SET unavailable_kind=NULL, unavailable_reason=NULL, "
+            "unavailable_since=NULL, retry_attempts=0, retry_after=NULL WHERE id=?",
+            (device_id,),
+        )
+        return
+    kind = kind if kind in ("temporary", "permanent") else "permanent"
+    await db.execute(
+        "UPDATE devices SET unavailable_kind=?, unavailable_reason=?, "
+        "unavailable_since=COALESCE(unavailable_since, ?) WHERE id=?",
+        (kind, reason.strip() or None, datetime.now(UTC).isoformat(), device_id),
+    )
 
 
 #: ``devices.power_control`` choices offered by the device form ('' = solenoid / none).
@@ -1025,6 +1051,8 @@ async def update_device(
     bootsel_inverted: Annotated[str, Form()] = "",
     power_control: Annotated[str, Form()] = "",
     power_control_present: Annotated[str, Form()] = "",
+    unavailable_kind: Annotated[str, Form()] = "",
+    unavailable_reason: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -1075,6 +1103,8 @@ async def update_device(
                 device_id,
             ),
         )
+        if power_control_present:  # the device form: it also sends the availability fields
+            await _apply_availability(db, device_id, status, unavailable_kind, unavailable_reason)
         await db.commit()
         # Rename last (cascades to usb-ids/leases/connections/rois/peripherals/jobs).
         if id.strip() and id.strip() != device_id:
@@ -1151,6 +1181,23 @@ async def retry_device_availability_ui(
             (device_id,),
         )
         await db.commit()
+    return HTMLResponse("", headers={"HX-Refresh": "true"})
+
+
+@router.post(
+    "/devices/availability/retry-all",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def retry_all_availability_ui(
+    request: Request, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Reset every temporary outage's retry budget (same as POST /v1/devices/availability/retry)."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.api.devices import _reset_retry_budget
+
+    await _reset_retry_budget(request.app.state.db_path, None)
     return HTMLResponse("", headers={"HX-Refresh": "true"})
 
 

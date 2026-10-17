@@ -216,3 +216,32 @@ async def test_get_adapter_rejects_job_when_device_db_unavailable(tmp_path):
     assert isinstance(adapter, _UnmatchedAdapter)
     with pytest.raises(RuntimeError, match="wedged"):
         await adapter.acquire()
+
+
+@pytest.mark.asyncio
+async def test_get_adapter_rejects_legacy_maintenance_status(tmp_path):
+    """A UI-set non-available status (legacy 'maintenance') also gates jobs off."""
+    from hil_controller.db.connection import get_db, init_db, insert_job
+    from hil_controller.hosts.registry import _UnmatchedAdapter
+
+    db_file = str(tmp_path / "reg3.db")
+    await init_db(db_file)
+    async with get_db(db_file) as db:
+        await db.execute(
+            "INSERT INTO devices (id, host_id, kind, status) "
+            "VALUES ('mcu-m','h','microcontroller','maintenance')"
+        )
+        await db.commit()
+        await insert_job(
+            db,
+            job_id="j-maint",
+            request_json={"script": "firmware-bench", "target": {"device": {"id": "mcu-m"}}},
+            secrets_profile="bench-protomq",
+            exclusive_host=False,
+        )
+    reg = RealHostRegistry(topology_file="", db_path=db_file)
+    reg._hosts = [{"id": "h", "addr": "10.0.0.1"}]
+    reg._devices = [{"id": "mcu-m", "host_id": "h", "pool": "public", "kind": "microcontroller"}]
+    adapter = await reg.get_adapter("j-maint")
+    assert isinstance(adapter, _UnmatchedAdapter)
+    assert "maintenance" in adapter.reason

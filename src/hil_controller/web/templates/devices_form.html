@@ -119,11 +119,28 @@
       </div>
       <div class="form-group">
         <label for="f-dev-status">Status</label>
+        {% set statuses = ['available','unavailable'] %}
+        {% if device and device.status not in statuses %}{% set statuses = statuses + [device.status] %}{% endif %}
         <select id="f-dev-status" name="status">
-          {% for s in ['available','offline','maintenance','busy'] %}
-          <option value="{{ s }}" {% if device and device.status == s %}selected{% elif not device and s == 'available' %}selected{% endif %}>{{ s }}</option>
+          {% for s in statuses %}
+          <option value="{{ s }}" {% if device and device.status == s %}selected{% elif not device and s == 'available' %}selected{% endif %}>{{ s }}{% if s not in ['available','unavailable'] %} (legacy — blocks jobs){% endif %}</option>
           {% endfor %}
         </select>
+        <span class="form-hint">Anything but <code>available</code> stops jobs being scheduled on it.</span>
+      </div>
+      <div class="form-group">
+        <label for="f-dev-unavail-kind">Outage kind</label>
+        <select id="f-dev-unavail-kind" name="unavailable_kind">
+          {% for k, label in [("temporary", "temporary — reconciler re-probes and self-heals"), ("permanent", "permanent — only a human clears it")] %}
+          <option value="{{ k }}" {% if device and device.unavailable_kind == k %}selected{% elif (not device or not device.unavailable_kind) and k == 'permanent' %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <span class="form-hint">Used when Status is not available.
+          {%- if device and device.unavailable_since %} Out since <span class="mono">{{ device.unavailable_since }}</span>{% if device.retry_attempts %}, {{ device.retry_attempts }} self-heal attempt(s){% endif %}{% if device.retry_after %}, next ≥ <span class="mono">{{ device.retry_after }}</span>{% endif %}.{% endif %}</span>
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="f-dev-unavail-reason">Outage reason</label>
+        <input type="text" id="f-dev-unavail-reason" name="unavailable_reason" value="{{ device.unavailable_reason or '' if device else '' }}" placeholder="e.g. removed from the bench for rework (tyeth)">
       </div>
       <div class="form-group">
         <label for="f-dev-camera">Camera</label>

@@ -14,6 +14,13 @@
         <option value="microcontroller">microcontroller (Arduino DUTs)</option>
         <option value="sbc">sbc (SBC runners)</option>
       </select>
+      {% set out = devices | selectattr('status', 'ne', 'available') | list %}
+      {% if out %}
+      <span class="badge badge-warn" title="Devices whose status is not available">{{ out|length }} unavailable</span>
+      <button class="btn btn-sm btn-outline"
+        title="Reset every temporary outage's retry budget — the reconciler re-probes them on its next tick"
+        hx-post="/ui/devices/availability/retry-all" hx-swap="none">Retry all temporary</button>
+      {% endif %}
       <button class="btn btn-primary"
         hx-get="/ui/devices/form"
         hx-target="#form-panel"
@@ -22,8 +29,8 @@
   </div>
   <table>
     <thead><tr>
-      <th>ID</th><th>Kind</th><th>Model</th><th>Host</th><th>Hub port</th><th>Pool</th>
-      <th>Capabilities</th><th>Serial Port</th><th>Flasher</th><th>Status</th><th></th>
+      <th>ID</th><th>Kind</th><th>Model</th><th>Host</th><th>Hub port · power</th><th>Pool</th>
+      <th>Capabilities</th><th>Serial Port</th><th>Flasher · build</th><th>Status</th><th></th>
     </tr></thead>
     <tbody id="devices-body">
       {% include "devices_body.html" %}
