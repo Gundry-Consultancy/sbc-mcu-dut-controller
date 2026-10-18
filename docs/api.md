@@ -11,7 +11,9 @@ uses to run firmware on real hardware and pull back proof. This documents the
 endpoints a **test author** needs; the web UI and inventory/topology endpoints
 are covered in [`ARCHITECTURE.md`](ARCHITECTURE.md), and [`web-ui.md`](web-ui.md)
 maps every operator page to the endpoint that returns the same data
-(including `GET /v1/topology/drift`: what a restart would revert).
+(including `GET /v1/topology/drift`: what a restart would revert;
+`POST /v1/topology/save`: write the live DB back into the seed file; and
+`PATCH /v1/devices/{id}`: partial device update).
 
 Base URL (over Tailscale): `http://tachyon-16ee27b8.ostrich-escalator.ts.net:8080`
 (`192.168.1.169:8080` on the LAN). All `/v1/*` calls require a bearer token:

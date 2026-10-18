@@ -120,16 +120,20 @@ Fix the scheduler's view so it matches the physical inventory:
 | Board is on a different port | USB-IP page → **Assign** the busid to the device (or edit Hub port path) | edit device / `usbip` assign |
 | Device has no/old USB IDs | Device form → USB IDs → **Learn** | `POST /v1/devices/{id}/learn-usb` |
 | Unknown USB device on a bus | Devices → **Who owns this USB device?** (searches learned IDs, iSerials, twin identities) | `POST /v1/devices/lookup-by-usb` |
-| Board removed | Device form → Status `unavailable`, Outage kind `permanent`, reason (who/when) | same fields via the form route |
+| Board removed | Device form → Status `unavailable`, Outage kind `permanent`, reason (who/when) | `PATCH /v1/devices/{id}` `{"status":"unavailable","unavailable_kind":"permanent","unavailable_reason":"…"}` |
 | New board/slot | Devices → Add Device (hub host = bridge for S31 DUTs, Power control `bridge-port`) | — (UI or topology YAML) |
 | Sensor moved strand / channel | Hardware → Edit strand | `PUT /v1/strands/{id}` |
 
-UI edits are live for scheduling immediately. **But a restart re-applies
-`topology.yaml`**: finish on the **Topology** page — every row listed as
-*reverted on restart* or *DB-only* must be exported (**Download
-topology.yaml**, or `GET /v1/topology/export`) and committed to the deploy repo's
-`run/topology.yaml` (bench policy: commit + push so git == bench). Re-check that
-the drift table is empty (`GET /v1/topology/drift` → `total: 0`).
+Agents can edit a device without the form: `PATCH /v1/devices/{id}` with just
+the fields to change (e.g. `{"model": "pi4"}`).
+
+UI/API edits are live for scheduling immediately. **But a restart re-applies
+`topology.yaml`**: finish on the **Topology** page — **Preview save**, check the
+diff, then **Save to topology file** (or `POST /v1/topology/save?dry_run=true`,
+then without `dry_run`). It updates the seed file in place (comments kept, backup
+written) and returns `drift_after` — all zeros means a restart now re-seeds
+exactly the live DB. Commit the file to the deploy repo separately (bench policy:
+commit + push so git == bench).
 
 ### 7. Report
 

@@ -371,6 +371,29 @@ async def topology_export_download(
     )
 
 
+@router.post("/topology/save", response_class=HTMLResponse, include_in_schema=False)
+async def topology_save_ui(
+    request: Request, hil_token: str = Cookie(default=""), dry_run: str = Query(default="")
+) -> HTMLResponse:
+    """Preview (``?dry_run=1``) or perform the save of the live DB into the seed file."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.topology.save import plan_save, save_topology
+
+    topology_file = getattr(request.app.state, "topology_file", "") or ""
+    try:
+        if dry_run:
+            result = await plan_save(request.app.state.db_path, topology_file)
+            result["written"] = False
+        else:
+            result = await save_topology(request.app.state.db_path, topology_file)
+    except ValueError as exc:
+        return HTMLResponse(f'<div class="alert alert-error">{html.escape(str(exc))}</div>')
+    return _tr(
+        request, "topology_save_result.html", {"r": result, "dry_run": bool(dry_run)}
+    )
+
+
 @router.get("/topology/banner", response_class=HTMLResponse, include_in_schema=False)
 async def topology_banner(request: Request, hil_token: str = Cookie(default="")) -> HTMLResponse:
     """HTMX fragment: a warning when UI edits differ from the topology YAML."""

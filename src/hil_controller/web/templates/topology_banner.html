@@ -6,6 +6,6 @@
   {% if sm.reverted_on_restart %}<strong>{{ sm.reverted_on_restart }} UI change(s) will be reverted by the next controller restart</strong> (the topology YAML still has the old values).{% endif %}
   {% if sm.db_only %}{{ sm.db_only }} row(s) exist only in the live DB (not in topology YAML).{% endif %}
   {% if sm.recreated_on_restart %}{{ sm.recreated_on_restart }} deleted row(s) will be re-created on restart.{% endif %}
-  <a href="/ui/topology">Review &amp; export topology.yaml →</a>
+  <a href="/ui/topology">Review &amp; save to the topology file →</a>
 </div>
 {% endif %}

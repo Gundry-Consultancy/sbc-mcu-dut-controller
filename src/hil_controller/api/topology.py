@@ -171,6 +171,29 @@ async def topology_drift(request: Request, _auth: Auth) -> dict[str, Any]:
     )
 
 
+@router.post("/save")
+async def save_topology_file(
+    request: Request, _auth: Auth, dry_run: bool = False
+) -> dict[str, Any]:
+    """Write the live DB into the topology seed file (comments and order preserved).
+
+    ``dry_run=true`` returns the change log and unified diff without writing.
+    A real save keeps ``<file>.bak-<timestamp>`` and replaces the file atomically;
+    committing it to git is a separate step. ``drift_after`` should be all zero.
+    """
+    from hil_controller.topology.save import plan_save, save_topology
+
+    topology_file = getattr(request.app.state, "topology_file", "") or ""
+    try:
+        if dry_run:
+            plan = await plan_save(request.app.state.db_path, topology_file)
+            plan.pop("new_text", None)
+            return {**plan, "written": False, "dry_run": True}
+        return {**await save_topology(request.app.state.db_path, topology_file), "dry_run": False}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/resolve", response_model=ResolveResponse)
 async def resolve_topology(request: Request, body: ResolveTarget, _auth: Auth) -> ResolveResponse:
     db_path: str = request.app.state.db_path

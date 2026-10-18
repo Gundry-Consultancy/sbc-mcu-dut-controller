@@ -1,0 +1,22 @@
+{% if r.written %}
+<div class="alert alert-success">Saved <span class="mono">{{ r.topology_file }}</span>{% if r.backup %} — previous file kept as <span class="mono">{{ r.backup }}</span>{% endif %}.
+  A restart now re-seeds exactly the live DB. Commit the file to git when ready.</div>
+{% elif not r.changes %}
+<div class="alert alert-info"><span class="mono">{{ r.topology_file }}</span> already matches the live DB — nothing to save.</div>
+{% else %}
+<div class="alert alert-info">Preview: {{ r.changes|length }} change(s) would be written to <span class="mono">{{ r.topology_file }}</span>. Nothing has been written yet.</div>
+{% endif %}
+{% if r.changes %}
+<table style="font-size:0.82rem;margin:0.5rem 0;">
+  <thead><tr><th>Section</th><th>ID</th><th>Change</th><th>Fields</th></tr></thead>
+  <tbody>{% for c in r.changes %}<tr><td>{{ c.section }}</td><td class="mono">{{ c.id }}</td><td>{{ c.change }}</td><td class="mono">{{ (c.fields or []) | join(", ") }}</td></tr>{% endfor %}</tbody>
+</table>
+<div class="form-hint">After saving, a restart would revert {{ r.drift_after.reverted_on_restart }}, keep {{ r.drift_after.db_only }} DB-only and re-create {{ r.drift_after.recreated_on_restart }} row(s).</div>
+{% if r.diff %}
+<details {% if dry_run %}open{% endif %} style="margin-top:0.5rem;">
+  <summary style="cursor:pointer;font-weight:600;">Diff of the topology file</summary>
+  <pre class="mono" style="font-size:0.74rem;max-height:28rem;overflow:auto;background:#f8f9fa;padding:0.75rem;">{% for line in r.diff.splitlines() %}<span style="color:{% if line.startswith('+') and not line.startswith('+++') %}#1a7f37{% elif line.startswith('-') and not line.startswith('---') %}#cf222e{% else %}#57606a{% endif %};">{{ line }}</span>
+{% endfor %}</pre>
+</details>
+{% endif %}
+{% endif %}
