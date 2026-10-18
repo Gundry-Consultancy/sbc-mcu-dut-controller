@@ -95,6 +95,10 @@ async def test_save_edits_in_place_keeps_comments_and_reseeds_exactly(tmp_path):
     assert (await topology_drift(fresh_db, str(topo)))["items"] == []
     # no defaults sprayed into untouched rows
     assert "hub_host_id" not in text and "status: available" not in text
+    # unchanged sections are byte-for-byte; new rows use inline lists
+    hosts_block = COMMENTED.split("devices:", 1)[0]
+    assert text.startswith(hosts_block)
+    assert "capabilities: [i2c]" in text
 
 
 async def test_save_without_a_topology_file_configured_is_refused(tmp_path):
@@ -188,3 +192,18 @@ async def test_topology_page_preview_and_save_buttons(app_topo):
     assert "Saved" in saved.text and ".bak-" in saved.text
     assert "already matches the live DB" in again.text
     assert yaml.safe_load(topo.read_text())["devices"][0]["model"] == "pi4"
+
+
+async def test_identical_duplicate_keys_are_collapsed_conflicting_ones_refused(tmp_path):
+    dup = COMMENTED.replace("    pool: wippersnapper-python\n",
+                            "    pool: wippersnapper-python\n    pool: wippersnapper-python\n")
+    db_file, topo = await _seeded(tmp_path, dup)
+    plan = await plan_save(db_file, str(topo))
+    assert plan["changes"][0]["change"] == "collapsed duplicate key(s)"
+    assert plan["new_text"].count("pool: wippersnapper-python") == 1
+    assert "# LAN address" in plan["new_text"]
+    clash = COMMENTED.replace("    pool: wippersnapper-python\n",
+                              "    pool: wippersnapper-python\n    pool: public\n")
+    topo.write_text(clash)
+    with pytest.raises(ValueError, match="different values"):
+        await plan_save(db_file, str(topo))
