@@ -151,7 +151,7 @@ the linked `firmware`. CI pulls these as proof instead of scraping the UI.
 | `capture_display` | photograph the DUT panel via the camera server (+ ROI crop), registered as a job asset; logs `DISPLAY_CAPTURE_VERDICT` | `camera_url`, `roi`, exposure/focus opts |
 | `bootloader_touch` | 1200-baud touch to flip a running app into ROM download (lighter than `enter_bootloader`) | — |
 | `diagnose` | classify a stuck boot state | — |
-| `io_api_component` | **staging / dev-lan only.** Create / update / delete a WipperSnapper v2 component feed through the real IO REST API (`POST\|PUT\|DELETE /api/v2/{IO_USERNAME}/groups/{device_key}/feeds[/{feed_key}]`, `X-AIO-Key` from job secrets); logs `IO_API_VERDICT status=<http> key=<feed key> action=<a> ok=…` | `action`, `feed`, `device_key`, `feed_key`, `expect_status`, `soft`, `label` |
+| `io_api_component` | **staging / dev-lan only.** Create / update / delete a WipperSnapper v2 component feed through the real IO REST API (`POST\|PUT\|DELETE /api/v2/{IO_USERNAME}/groups/{device_key}/feeds[/{feed_key}]`, `X-AIO-Key` from job secrets); logs `IO_API_VERDICT status=<http> key=<feed key> action=<a> ok=…` | `action` (create/update/delete/batch), `feed`, `batch`, `device_key`, `feed_key`, `expect_status`, `soft`, `label` |
 | `io_ws_publish` | **staging / dev-lan only.** Publish a JSON frame (`i2cScanAll` / `i2cProbe`) to `{IO_USERNAME}/ws-w2b/{device_key}` over IO MQTT (TLS on 8883); logs `IO_WS_PUBLISH published=true` | `payload`, `device_key`, `qos`, `label` |
 | `io_ws_expect` | **staging / dev-lan only.** Subscribe to `ws-b2w` / `ws-r2b`, run the guarded `step`, wait for a matching JSON frame; logs `IO_WS_VERDICT matched=true\|false action=<a> topic=<t> elapsed_s=<s>`. A matched `checkin` captures the device key | `action`, `step`, `match`, `match_contains`, `topics`, `timeout_s` (5), `soft`, `label` |
 
@@ -202,6 +202,12 @@ on `{user}/ws-b2w` for `{deviceId, action: checkin|i2cScanResults|error, args}`.
   (or in the topic), because `ws-b2w` is shared by every device on the
   account; set `match_device: false` to opt out. Default topics:
   `ws-r2b/<key|#>` for the component actions, else `ws-b2w` + `ws-b2w/#`.
+- **Batch (multi-component) route.** `io_api_component action: batch` posts
+  `{"batch": {"create": [...], "update": [...], "destroy": [...]}}` to
+  `/api/v2/{IO_USERNAME}/feeds/batch`, the IO wizard's I2C path; bare feed keys
+  are prefixed with `{device_key}.`. Rails emits `addMultiComponent` (create
+  only), `removeComponent` (destroy only) or `modifyMultiComponent`, and
+  `io_ws_expect` listens on `ws-r2b` for those actions by default.
 - **Labels.** An optional `label` (`[A-Za-z0-9][A-Za-z0-9_.-]*`) is echoed as
   `label=<l>` in that stage's `IO_API_VERDICT` / `IO_WS_PUBLISH` / `IO_WS_VERDICT` /
   `IO_INFRA_ERROR` line, so a suite can tie each verdict to its probe

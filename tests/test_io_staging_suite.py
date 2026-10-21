@@ -131,9 +131,46 @@ def _simulate(
 
     feeds: dict[str, dict[str, Any]] = {}
 
+    def batch(body: dict[str, Any]) -> httpx.Response:
+        # Mirrors Rails' feeds#batch: create-only -> addMultiComponent,
+        # destroy-only -> removeComponent, anything else -> modifyMultiComponent.
+        b = body["batch"]
+        bare = lambda k: k.split(".", 1)[1]  # noqa: E731
+        create, update, destroy = b.get("create", []), b.get("update", []), b.get("destroy", [])
+        if any(bare(k) not in feeds for k in destroy) or any(
+            bare(f["key"]) not in feeds for f in update
+        ):
+            return httpx.Response(400, json={"error": "feeds not found"})
+        gone = [feeds.pop(bare(k)) for k in destroy]
+        old = gone[0]["wipper_pin_info"] if gone else None
+        for f in update:
+            old = old or feeds[bare(f["key"])]["wipper_pin_info"]
+            feeds[bare(f["key"])] = {**f, "key": bare(f["key"])}
+        for f in create:
+            feeds[bare(f["key"])] = {**f, "key": bare(f["key"])}
+        if not update and not destroy:
+            frame = {
+                "action": "addMultiComponent",
+                "components": [f["wipper_pin_info"] for f in create],
+            }
+        elif not update and not create:
+            frame = {"action": "removeComponent", "component": old}
+        else:
+            frame = {
+                "action": "modifyMultiComponent",
+                "oldComponent": old,
+                "newComponents": [f["wipper_pin_info"] for f in update + create],
+            }
+        broker.deliver(r2b, frame)
+        return httpx.Response(
+            200, json={"created": len(create), "updated": len(update), "destroyed": len(destroy)}
+        )
+
     def handler(req: httpx.Request) -> httpx.Response:
         key = req.url.path.rsplit("/", 1)[-1]
         body = json.loads(req.content) if req.content else {}
+        if req.url.path.endswith("/feeds/batch"):
+            return batch(body)
         if req.method == "POST":
             feed = body["feed"]
             feeds[feed["key"]] = feed
@@ -194,6 +231,9 @@ async def test_suite_flags_the_known_defects(monkeypatch: pytest.MonkeyPatch) ->
         "rename-only": "bug",
         "rename-same-pin-info": "bug",
         "remove": "pass",
+        "batch-add": "pass",
+        "batch-modify": "pass",
+        "batch-remove": "pass",
         "device-key": "info",
     }
     assert "HTTP 500" in rows["rename-only"]["summary"]
@@ -311,3 +351,30 @@ def test_missing_checkin_for_a_registered_device_is_info() -> None:
         device_key=DEVICE,
     )
     assert rows["checkin"]["status"] == "info"
+
+
+def test_batch_probes_cover_the_ui_multi_component_route() -> None:
+    sj = suite.build_v2_job(
+        _opts(
+            sensor="light",
+            sensor2="proximity",
+            pin_info={"isI2C": True, "type": "vcnl4200:light", "period": 30, "sensorType": "light"},
+        )
+    )
+    batch = {
+        s["label"]: s for s in walk_stages(sj.job["params"]["stages"]) if s.get("action") == "batch"
+    }
+    assert set(batch) == {"batch-add.api", "batch-modify.api", "batch-remove.api"}
+    created = batch["batch-add.api"]["batch"]["create"]
+    assert [f["wipper_pin_info"]["type"] for f in created] == [
+        "vcnl4200:light",
+        "vcnl4200:proximity",
+    ]
+    assert batch["batch-remove.api"]["batch"]["destroy"] == [
+        "i2c-41-40-0x76-light",
+        "i2c-41-40-0x76-proximity",
+    ]
+    expects = {s["label"]: s for s in sj.job["params"]["stages"] if s["type"] == "io_ws_expect"}
+    assert expects["batch-add"]["action"] == "addMultiComponent"
+    assert expects["batch-modify"]["action"] == "modifyMultiComponent"
+    suite.validate(sj.job)
