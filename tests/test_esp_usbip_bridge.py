@@ -209,3 +209,102 @@ async def test_await_presence_times_out():
     power = BridgePortPower(fake.client(), "1-1.2")
     assert await power.await_presence(True, timeout_s=0.0) is False
     assert await power.await_presence(False, timeout_s=0.0) is True
+
+
+async def test_bridge_outage_cannot_prove_disappearance():
+    fake = FakeBridge()
+    fake.fail_status = 503
+    power = BridgePortPower(fake.client(), "1-1.1")
+    assert await power.await_presence(False, timeout_s=0.0) is False
+    with pytest.raises(EspBridgeBusyError):
+        await power.power_cycle(disappear_timeout_s=0, reappear_timeout_s=0)
+    assert fake.posts() == []
+
+
+async def test_accepted_off_without_switching_cannot_pass_cycle():
+    fake = FakeBridge()
+    fake._set_power = lambda *_: None
+    lines = []
+    power = BridgePortPower(fake.client(), "1-1.1")
+    assert not await power.power_cycle(
+        off_s=0,
+        settle_s=0,
+        disappear_timeout_s=0,
+        reappear_timeout_s=0,
+        on_line=lines.append,
+    )
+    assert [p for p, _ in fake.posts()] == ["/api/ports/1-1.1/off", "/api/ports/1-1.1/on"]
+    assert any("cycle cannot pass" in line for line in lines)
+    assert fake.power["1-1.1"]  # recovery still requests on
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("power", "off"),
+        ("desired", "off"),
+        ("pending", "on"),
+        ("mismatch", True),
+        ("user_off", True),
+        ("enabled", False),
+    ],
+)
+async def test_enumerated_device_with_conflicting_power_state_cannot_pass(field, value):
+    fake = FakeBridge()
+    original = fake._hub
+
+    def stale_hub():
+        hub = original()
+        if fake.power["1-1.1"]:
+            hub["ports"][0][field] = value
+        return hub
+
+    fake._hub = stale_hub
+    power = BridgePortPower(fake.client(), "1-1.1")
+    assert not await power.power_cycle(
+        off_s=0,
+        settle_s=0,
+        disappear_timeout_s=0,
+        reappear_timeout_s=0,
+    )
+    assert "1-1.1" in fake.devices
+
+
+async def test_bridge_outage_after_off_still_requests_on_and_fails():
+    fake = FakeBridge()
+    original = fake.handle
+
+    def lose_observation(request):
+        if request.method == "GET" and fake.posts():
+            return httpx.Response(503, json={"error": "host busy"})
+        return original(request)
+
+    client = EspUsbipBridgeClient(
+        BASE_URL, client=httpx.AsyncClient(transport=httpx.MockTransport(lose_observation))
+    )
+    assert not await BridgePortPower(client, "1-1.1").power_cycle(
+        off_s=0,
+        settle_s=0,
+        disappear_timeout_s=0,
+        reappear_timeout_s=0,
+    )
+    assert [p for p, _ in fake.posts()] == ["/api/ports/1-1.1/off", "/api/ports/1-1.1/on"]
+    assert fake.power["1-1.1"]
+
+
+async def test_async_power_state_is_polled_until_observed():
+    fake = FakeBridge()
+    original = fake._hub
+    observed = []
+
+    def delayed_hub():
+        hub = original()
+        state = fake.power["1-1.1"]
+        if state not in observed:
+            observed.append(state)
+            hub["ports"][0]["pending"] = "on" if state else "off"
+        return hub
+
+    fake._hub = delayed_hub
+    assert await BridgePortPower(fake.client(), "1-1.1").power_cycle(off_s=0, settle_s=0)
+    assert observed == [False, True]

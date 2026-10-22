@@ -296,11 +296,44 @@ class BridgePortPower:
             return False
 
     async def await_presence(self, present: bool, *, timeout_s: float) -> bool:
-        """Poll until the DUT's presence equals ``present`` or ``timeout_s`` elapses."""
+        """Poll for an observed presence state; transport errors are not absence."""
         deadline = time.monotonic() + timeout_s
         while True:
-            if await self.present() == present:
-                return True
+            try:
+                if await self.client.device_present(self.port) == present:
+                    return True
+            except EspBridgeError as exc:
+                log.debug("bridge presence observation for %s failed: %s", self.port, exc)
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(self.poll_s)
+
+    async def _await_cycle_state(self, on: bool, *, timeout_s: float) -> bool:
+        """Require actual hub power and device presence to agree with the request.
+
+        Desired/pending/mismatch are optional on older bridge firmware. Actual
+        power is required: an accepted POST or a missing device alone cannot
+        establish a successful power transition.
+        """
+        deadline = time.monotonic() + timeout_s
+        expected = "on" if on else "off"
+        while True:
+            try:
+                found = find_hub_port(await self.client.hubs(), self.port)
+                if found is not None:
+                    _, port = found
+                    matches = (
+                        port.get("power") == expected
+                        and port.get("desired", expected) == expected
+                        and not port.get("pending")
+                        and not port.get("mismatch", False)
+                        and port.get("user_off", not on) == (not on)
+                        and (not on or port.get("enabled") is True)
+                    )
+                    if matches and await self.client.device_present(self.port) == on:
+                        return True
+            except EspBridgeError as exc:
+                log.debug("bridge power observation for %s failed: %s", self.port, exc)
             if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(self.poll_s)
@@ -317,34 +350,38 @@ class BridgePortPower:
         """Detection-driven cold boot: off → await gone → (off_s) → on → await back.
 
         Mirrors the solenoid ``power_cycle`` stage's defaults (off 1 s, disappear
-        ≤10 s, reappear ≤30 s, settle 2 s). Returns True when the DUT
-        re-enumerated; False (with a warning line) when it did not.
+        ≤10 s, reappear ≤30 s, settle 2 s). Returns True only after verified
+        off/absent and on/present states. Always requests power-on after an
+        off-state observation timeout, but does not report that as a cold boot.
         """
 
         def _say(msg: str) -> None:
             if on_line is not None:
                 on_line(msg)
 
-        was_present = await self.present()
+        was_present = await self.client.device_present(self.port)
         _say(f"power-cycle {self.label}: device {'present' if was_present else 'absent'} pre-cycle")
         started = time.monotonic()
         await self.off()
-        if was_present:
-            if await self.await_presence(False, timeout_s=disappear_timeout_s):
-                _say(f"device disappeared after power-off (within {disappear_timeout_s:.0f}s)")
-            else:
-                _say(
-                    f"WARNING: device still enumerated {disappear_timeout_s:.0f}s after "
-                    "power-off — the port may not really be switched"
-                )
+        off_verified = await self._await_cycle_state(False, timeout_s=disappear_timeout_s)
+        if off_verified:
+            _say(f"device disappeared and port power is off (within {disappear_timeout_s:.0f}s)")
+        else:
+            _say(
+                f"WARNING: power-off/absence not verified within {disappear_timeout_s:.0f}s; "
+                "restoring power-on, but this cycle cannot pass"
+            )
         remaining_off = off_s - (time.monotonic() - started)
         if remaining_off > 0:
             await asyncio.sleep(remaining_off)
         await self.on()
-        if await self.await_presence(True, timeout_s=reappear_timeout_s):
+        if await self._await_cycle_state(True, timeout_s=reappear_timeout_s):
             _say(f"device re-enumerated after power-on (within {reappear_timeout_s:.0f}s)")
             if settle_s > 0:
                 await asyncio.sleep(settle_s)
-            return True
-        _say(f"WARNING: device did not re-enumerate within {reappear_timeout_s:.0f}s of power-on")
+            return off_verified
+        _say(
+            f"WARNING: device did not re-enumerate with verified port power "
+            f"within {reappear_timeout_s:.0f}s of power-on"
+        )
         return False
