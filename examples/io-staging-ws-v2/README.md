@@ -26,6 +26,7 @@ verdict-producing stage carries a `label`, which the stages echo in
 | | `rename-only` | Does a name-only update succeed and emit `modifyComponent`? | 5xx, or 2xx with no frame (*fixed* when both work) |
 | | `rename-same-pin-info` | Same, sending the unchanged `wipper_pin_info` | as above; a success is only *inconclusive*, because the stored pin info may carry fields the request lacks. `rename-only` is the authoritative probe |
 | | `remove` | Does a REST delete emit `removeComponent`? | 5xx, or no frame |
+| | `batch-add` / `batch-modify` / `batch-remove` | The UI's multi-sensor (I2C) route: does a `feeds/batch` create, update or destroy emit `addMultiComponent`, `modifyMultiComponent` or `removeComponent`? Pass `--sensor2` for a second sub-sensor of the same part (e.g. `--sensor light --sensor2 proximity`). | 5xx, or no frame |
 | `v1-ui-assisted-staging` | `v1-registered` | Does a 1.x DUT register on this deployment? | (*prereq* if not) |
 | | `v1-ui-add` | Does a component **added in the IO web UI by a person** reach a 1.x device? | the add marker never appears in 600 s |
 | `v1-ui-assisted-production` | same | Baseline for comparison (only with `--v1-production-baseline`) | |
@@ -44,6 +45,10 @@ The feed key is fixed (`i2c-{sda}-{scl}-0x{addr}-{sensor}`, the UI's own shape).
 - **prereq**: a precondition is missing (see below). Not a verdict.
 - **not_run**: an earlier stage stopped the job.
 - **inconclusive**: the result can't settle the question (an unconfirmed reply shape, or a probe that can't tell apart the cases).
+
+Frames on `ws-r2b` prove Rails and the topic, not the device. Check the job's
+serial log too: an add, modify or remove that the bridge can't build (or the
+firmware rejects) still produces a passing frame here.
 
 ## What this can't prove
 

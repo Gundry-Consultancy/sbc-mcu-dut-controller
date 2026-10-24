@@ -305,6 +305,8 @@ class Options:
     scl: int
     address: int
     sensor: str = "pressure"
+    #: A second sub-sensor of the same part for the batch (multi-component) probes.
+    sensor2: str | None = None
     pin_info: dict[str, Any] | None = None
     flash_stages: list[dict[str, Any]] | None = None
     skip_flash: bool = False
@@ -334,12 +336,12 @@ def _preamble(opts: Options) -> list[dict[str, Any]]:
     return stages
 
 
-def feed_key(opts: Options) -> str:
+def feed_key(opts: Options, sensor: str | None = None) -> str:
     # The IO UI's v2 key shape: i2c-{sda}-{scl}(-{mux}-{ch})-0x{addr}-{sensor}.
-    return f"i2c-{opts.sda}-{opts.scl}-0x{opts.address:x}-{opts.sensor}"
+    return f"i2c-{opts.sda}-{opts.scl}-0x{opts.address:x}-{sensor or opts.sensor}"
 
 
-def pin_info(opts: Options, **overrides: Any) -> dict[str, Any]:
+def pin_info(opts: Options, sensor: str | None = None, **overrides: Any) -> dict[str, Any]:
     info = (
         deepcopy(opts.pin_info)
         if opts.pin_info
@@ -351,6 +353,10 @@ def pin_info(opts: Options, **overrides: Any) -> dict[str, Any]:
         }
     )
     info["i2cDescriptor"] = {"sda": opts.sda, "scl": opts.scl, "i2cAddress": opts.address}
+    if sensor and sensor != opts.sensor:
+        # Another sub-sensor of the same part, e.g. vcnl4200:light -> vcnl4200:proximity.
+        info["sensorType"] = sensor
+        info["type"] = f"{str(info.get('type', '')).split(':')[0]}:{sensor}"
     info.update(overrides)
     return info
 
@@ -555,6 +561,48 @@ def build_v2_job(opts: Options) -> SuiteJob:
             )
         )
 
+    # The UI's multi-sensor (I2C) route: one batch per create / update / destroy,
+    # which Rails turns into addMultiComponent / modifyMultiComponent / removeComponent.
+    sensors = [opts.sensor] + ([opts.sensor2] if opts.sensor2 else [])
+
+    def batch_feeds(period: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": f"{name} {s}",
+                "key": feed_key(opts, s),
+                "wipper_pin_info": pin_info(opts, sensor=s, period=period),
+            }
+            for s in sensors
+        ]
+
+    batch_steps = [
+        (
+            "batch-add",
+            "addMultiComponent",
+            {"create": batch_feeds(30)},
+            "Does a batch create emit addMultiComponent on ws-r2b?",
+        ),
+        (
+            "batch-modify",
+            "modifyMultiComponent",
+            {"update": batch_feeds(60)},
+            "Does a batch update emit modifyMultiComponent on ws-r2b?",
+        ),
+        (
+            "batch-remove",
+            "removeComponent",
+            {"destroy": [feed_key(opts, s) for s in sensors]},
+            "Does a batch destroy emit removeComponent on ws-r2b?",
+        ),
+    ]
+    for label, frame, batch, question in batch_steps:
+        stages.append(
+            _expect(
+                label, frame, _t(opts, 10), _api(f"{label}.api", "batch", batch=batch), soft=True
+            )
+        )
+        probes.append(Probe(label, question, judge_lifecycle(label, frame)))
+
     if opts.device_key:
         for st in walk_io_stages(stages):
             st["device_key"] = opts.device_key
@@ -722,6 +770,7 @@ def _options(args: argparse.Namespace) -> Options:
         scl=args.scl,
         address=int(str(args.address), 0),
         sensor=args.sensor,
+        sensor2=getattr(args, "sensor2", None),
         pin_info=_load_json_arg(args.pin_info_json),
         flash_stages=_load_json_arg(args.flash_stages_json),
         skip_flash=args.skip_flash,
@@ -755,6 +804,7 @@ def _add_render_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--scl", type=int, required=True)
     p.add_argument("--address", default="0x76", help="I2C address on the bus (e.g. 0x76)")
     p.add_argument("--sensor", default="pressure")
+    p.add_argument("--sensor2", help="second sub-sensor of the same part for the batch probes")
     p.add_argument("--pin-info-json", help="wipper_pin_info copied from a UI-created feed")
     p.add_argument("--probes", type=int, default=3)
     p.add_argument("--machine-name", help="match the checkin's args.machineName (shared account)")

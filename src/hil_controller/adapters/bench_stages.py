@@ -1985,7 +1985,10 @@ _IO_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 #: io_ws_expect may only subscribe below these per-user prefixes.
 _IO_WS_TOPIC_RE = re.compile(r"^ws-(b2w|r2b)(/#|/[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$")
 #: ws-r2b carries the Rails-emitted component lifecycle; everything else is b2w.
-_IO_R2B_ACTIONS = frozenset({"addComponent", "modifyComponent", "removeComponent", "value"})
+_IO_R2B_ACTIONS = frozenset({
+    "addComponent", "addMultiComponent", "modifyComponent", "modifyMultiComponent",
+    "removeComponent", "value",
+})
 _IO_HTTP_INFRA_STATUSES = frozenset({401, 403, 429})
 
 
@@ -2199,6 +2202,36 @@ def _io_short(obj: Any, limit: int = 600) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def _io_batch_body(batch: Any, device_key: str, stype: str) -> dict[str, Any]:
+    """Validate an io_api_component ``batch`` and prefix bare keys with the device key."""
+    sections = ("create", "update", "destroy")
+    if not isinstance(batch, dict) or not any(batch.get(k) for k in sections):
+        raise StageError(f"{stype}: batch needs a non-empty create, update or destroy list")
+    unknown = set(batch) - {"create", "update", "destroy"}
+    if unknown:
+        raise StageError(f"{stype}: batch has unknown sections {sorted(unknown)}")
+
+    def full(key: Any) -> str:
+        key = str(key or "")
+        if not key or not all(_IO_KEY_RE.match(p) for p in key.split(".")):
+            raise StageError(f"{stype}: invalid batch feed key {key!r}")
+        return key if "." in key else f"{device_key}.{key}"
+
+    out: dict[str, Any] = {}
+    for section in ("create", "update"):
+        feeds = batch.get(section) or []
+        if not isinstance(feeds, list) or not all(isinstance(f, dict) for f in feeds):
+            raise StageError(f"{stype}: batch.{section} must be a list of feed objects")
+        if feeds:
+            out[section] = [{**f, "key": full(f.get("key"))} for f in feeds]
+    destroy = batch.get("destroy") or []
+    if not isinstance(destroy, list):
+        raise StageError(f"{stype}: batch.destroy must be a list of feed keys")
+    if destroy:
+        out["destroy"] = [full(k) for k in destroy]
+    return out
+
+
 async def _stage_io_api_component(stage: dict[str, Any], ctx: BenchContext) -> None:
     """Create / update / delete a WipperSnapper v2 component feed via the IO REST API.
 
@@ -2208,11 +2241,19 @@ async def _stage_io_api_component(stage: dict[str, Any], ctx: BenchContext) -> N
     ``ws-r2b`` add/modify/remove frame (assert it by wrapping this stage as the
     ``step`` of an ``io_ws_expect``).
 
+    ``action: batch`` is the wizard's multi-sensor (I2C) path instead:
+    ``POST {api}/api/v2/{IO_USERNAME}/feeds/batch`` with
+    ``{"batch": {"create": [feed...], "update": [feed...], "destroy": [key...]}}``.
+    Rails emits ``addMultiComponent`` (create only), ``removeComponent`` (destroy
+    only) or ``modifyMultiComponent`` (anything else). Bare feed keys are prefixed
+    with ``{device_key}.``, which the endpoint requires.
+
     Params:
-      action        create (default) | update | delete
+      action        create (default) | update | delete | batch
       device_key    group key; else the key captured by io_ws_expect checkin
       feed_key      update/delete target; else the key the last create returned
       feed          the ``{"name":..., "wipper_pin_info": {...}}`` body (create/update)
+      batch         the create/update/destroy lists (batch)
       expect_status int or list; default any 2xx
       soft          log the verdict but don't fail on an unexpected status
 
@@ -2223,23 +2264,33 @@ async def _stage_io_api_component(stage: dict[str, Any], ctx: BenchContext) -> N
     stype = "io_api_component" + lbl
     target = _io_target(stage, ctx)
     action = str(stage.get("action", "create")).lower()
-    if action not in ("create", "update", "delete"):
-        raise StageError(f"{stype}: action must be create, update or delete (got {action!r})")
+    if action not in ("create", "update", "delete", "batch"):
+        raise StageError(
+            f"{stype}: action must be create, update, delete or batch (got {action!r})"
+        )
     device_key = _io_device_key(stage, ctx, required=True)
     path = f"/api/v2/{target.username}/groups/{device_key}/feeds"
     feed_key = ""
-    if action != "create":
+    if action == "batch":
+        path = f"/api/v2/{target.username}/feeds/batch"
+        body_batch = _io_batch_body(stage.get("batch"), device_key, stype)
+        feed_key = ",".join(
+            f["key"] for f in body_batch.get("create", []) + body_batch.get("update", [])
+        ) or ",".join(body_batch.get("destroy", []))
+    elif action != "create":
         feed_key = str(stage.get("feed_key") or ctx.io_feed_key or "")
         if not feed_key or not _IO_KEY_RE.match(feed_key):
             raise StageError(f"{stype}: {action} needs a valid feed_key (or an earlier create)")
         path += f"/{feed_key}"
     body: dict[str, Any] | None = None
-    if action != "delete":
+    if action == "batch":
+        body = {"batch": body_batch}
+    elif action != "delete":
         feed = stage.get("feed")
         if not isinstance(feed, dict) or not feed:
             raise StageError(f"{stype}: {action} needs a 'feed' object (name, wipper_pin_info)")
         body = {"feed": feed}
-    method = {"create": "POST", "update": "PUT", "delete": "DELETE"}[action]
+    method = {"create": "POST", "update": "PUT", "delete": "DELETE", "batch": "POST"}[action]
     ctx.log_line(f"{stype}: {method} {target.api_base}{path}")
     try:
         async with _io_http_client(target.api_base, target.key) as client:

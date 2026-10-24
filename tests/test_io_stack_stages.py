@@ -626,3 +626,34 @@ def test_auto_insert_sees_power_cycle_nested_in_expect() -> None:
     # reboot (index 2) must count, or the dump would precede write_secrets_msc.
     assert FirmwareBenchAdapter._last_index(IO_STAGES, "power_cycle") == 2
     assert FirmwareBenchAdapter._first_index(IO_STAGES, "io_ws_publish") == 3
+
+
+async def test_api_batch_posts_prefixed_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _http(monkeypatch, lambda r: httpx.Response(200, json={"created": 2}))
+    ctx, lines = _ctx(io_device_key=DEVICE)
+    light = {"name": "light", "key": "ws-0x51-light", "wipper_pin_info": {"isI2C": True}}
+    prox = {"name": "prox", "key": f"{DEVICE}.ws-0x51-proximity", "wipper_pin_info": {}}
+    await run_stages(
+        [_stage("io_api_component", label="i2c-add", action="batch",
+                batch={"create": [light, prox], "destroy": ["old-feed"]})],
+        ctx,
+    )
+    (req,) = seen
+    assert req.method == "POST" and req.url.path == f"/api/v2/{USER}/feeds/batch"
+    body = json.loads(req.content)["batch"]
+    assert [f["key"] for f in body["create"]] == [
+        f"{DEVICE}.ws-0x51-light", f"{DEVICE}.ws-0x51-proximity"
+    ]
+    assert body["destroy"] == [f"{DEVICE}.old-feed"]
+    assert any(ln.startswith("IO_API_VERDICT label=i2c-add status=200 key=") and
+               "action=batch ok=true" in ln for ln in lines)
+
+
+@pytest.mark.parametrize(
+    "batch",
+    [{}, {"create": []}, {"wipe": ["x"]}, {"create": ["notadict"]}, {"destroy": ["bad key"]}],
+)
+async def test_api_batch_rejects_bad_shapes(batch: dict[str, Any]) -> None:
+    ctx, _ = _ctx(io_device_key=DEVICE)
+    with pytest.raises(StageError, match="batch"):
+        await run_stages([_stage("io_api_component", action="batch", batch=batch)], ctx)
