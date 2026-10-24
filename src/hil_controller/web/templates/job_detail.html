@@ -53,7 +53,19 @@
 <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-bottom:1.25rem;">
   <div class="card">
     <div class="lbl">Device</div>
-    <div class="num" style="font-size:1rem;font-family:monospace;">{{ job.assigned_device or '—' }}</div>
+    <div class="num" style="font-size:1rem;font-family:monospace;">
+      {% if job.assigned_device %}<a href="/ui/devices/{{ job.assigned_device }}/form">{{ job.assigned_device }}</a>{% else %}—{% endif %}</div>
+  </div>
+  <div class="card">
+    <div class="lbl">Host</div>
+    <div class="num" style="font-size:1rem;font-family:monospace;">
+      {% if job.assigned_host %}<a href="/ui/hosts/{{ job.assigned_host }}">{{ job.assigned_host }}</a>{% else %}—{% endif %}</div>
+    {% if job.exclusive_host %}<div class="badge badge-warn" style="margin-top:0.35rem;">exclusive host</div>{% endif %}
+  </div>
+  <div class="card">
+    <div class="lbl">Script · pool</div>
+    <div style="font-size:0.85rem;font-family:monospace;">{{ job.script or '—' }}{% if job.pool %} · {{ job.pool }}{% endif %}</div>
+    <div class="form-hint" style="margin-top:0.25rem;">secrets profile <span class="mono">{{ job.secrets_profile }}</span>{% if job.submitted_by %} · by <span class="mono">{{ job.submitted_by }}</span>{% endif %}</div>
   </div>
   <div class="card">
     <div class="lbl">Repository</div>
@@ -67,8 +79,16 @@
   <div class="card">
     <div class="lbl">Duration</div>
     <div style="font-size:0.9rem;">{{ job.duration or '—' }}</div>
+    <div class="form-hint" style="margin-top:0.25rem;">{% if job.started_at %}started {{ job.started_at[11:19] }}{% endif %}{% if job.finished_at %} · finished {{ job.finished_at[11:19] }}{% endif %}</div>
   </div>
 </div>
+
+<details style="margin-bottom:1.25rem;">
+  <summary style="cursor:pointer;font-weight:600;">Request (as submitted — credentials masked)</summary>
+  <div class="form-hint" style="margin:0.4rem 0;">Target: <span class="mono">{{ job.target_summary }}</span>
+    · API: <span class="mono">GET /v1/jobs/{{ job.id }}</span>, <span class="mono">/wait</span>, <span class="mono">/assets</span></div>
+  <pre class="mono" style="font-size:0.75rem;max-height:28rem;overflow:auto;background:#f8f9fa;padding:0.75rem;">{{ job.request_redacted }}</pre>
+</details>
 
 {% if job.summary %}
 <div class="alert {% if job.result == 'pass' %}alert-success{% elif job.result %}alert-error{% else %}alert-info{% endif %}" style="margin-bottom:1rem;">
@@ -105,6 +125,13 @@
       {% if job.state not in ('finished','error','timeout','cancelled') %}
       <span class="badge badge-info" id="live-indicator">● live</span>
       {% endif %}
+      <span id="log-filters" style="font-size:0.78rem;display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
+        {% for st in ['stdout','stderr','serial','protomq','state','metric','artifact'] %}
+        <label style="display:flex;align-items:center;gap:0.15rem;"><input type="checkbox" class="log-stream" value="{{ st }}" checked onchange="applyLogFilter()">{{ st }}</label>
+        {% endfor %}
+        <input type="search" id="log-text-filter" placeholder="filter text…" oninput="applyLogFilter()" style="font-size:0.78rem;width:9rem;">
+        <span id="log-filter-count" class="form-hint"></span>
+      </span>
       <label style="font-size:0.8rem;display:flex;align-items:center;gap:0.3rem;">
         <input type="checkbox" id="auto-scroll" checked> Auto-scroll
       </label>
@@ -115,9 +142,24 @@
          hx-get="/ui/jobs/{{ job.id }}/log"
          hx-trigger="{% if job.state not in ('finished','error','timeout','cancelled') %}every 3s{% else %}load{% endif %}"
          hx-swap="innerHTML"
-         hx-on::after-settle="if(document.getElementById('auto-scroll')?.checked){document.getElementById('log-wrap').scrollTop=99999}">
+         hx-on::after-settle="applyLogFilter();if(document.getElementById('auto-scroll')?.checked){document.getElementById('log-wrap').scrollTop=99999}">
       {% if log_html %}{{ log_html | safe }}{% else %}<em style="color:#6c757d;">Loading…</em>{% endif %}
     </div>
   </div>
 </div>
+<script>
+function applyLogFilter() {
+  const on = new Set([...document.querySelectorAll('.log-stream:checked')].map(c => c.value));
+  const q = (document.getElementById('log-text-filter')?.value || '').toLowerCase();
+  let shown = 0, total = 0;
+  document.querySelectorAll('#job-log .ev').forEach(el => {
+    total++;
+    const ok = on.has(el.dataset.stream) && (!q || el.textContent.toLowerCase().includes(q));
+    el.style.display = ok ? '' : 'none';
+    if (ok) shown++;
+  });
+  const c = document.getElementById('log-filter-count');
+  if (c) c.textContent = shown === total ? '' : `${shown}/${total} lines`;
+}
+</script>
 {% endblock %}

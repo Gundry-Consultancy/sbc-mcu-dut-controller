@@ -3,14 +3,16 @@
   <td class="mono">{{ a.id }}</td>
   <td><span class="badge badge-info">{{ a.kind }}</span></td>
   <td>{{ a.model }}</td>
-  <td class="mono">{{ a.interface }}</td>
-  <td><span class="badge badge-gray">{{ a.observability }}</span></td>
+  <td class="mono" style="word-break:break-all;">{{ a.interface }}
+    {%- if a.interface and a.interface.startswith('bridge:') %}<div class="form-hint">via esp-usbip-bridge host <a href="/ui/hosts/{{ a.interface[7:] }}">{{ a.interface[7:] }}</a></div>{% endif %}</td>
+  <td><span class="badge badge-gray">{{ a.observability }}</span>
+    {%- for st in a.streams %}<div class="form-hint mono" style="font-size:0.7rem;word-break:break-all;">{{ st.type }}: {{ st.url }}</div>{% endfor %}</td>
   <td><div class="caps">{% for c in a.capabilities %}<span class="badge badge-gray">{{ c }}</span>{% endfor %}</div></td>
   <td>{{ a.pool }}</td>
   <td>
     <div class="caps">
     {% for conn in a.connections %}
-      {% if conn.device_id %}<span class="badge badge-sbc" title="Connection #{{ conn.id }}">{{ conn.device_id }}</span>{% endif %}
+      {% if conn.device_id %}<span class="badge badge-sbc" title="Connection #{{ conn.id }}">{{ conn.device_id }}{% if conn.mux_id %} via {{ conn.mux_id }}{% if conn.mux_channel %}:{{ conn.mux_channel }}{% endif %}{% endif %}</span>{% endif %}
     {% endfor %}
     </div>
   </td>

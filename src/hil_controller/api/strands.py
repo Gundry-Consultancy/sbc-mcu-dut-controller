@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from hil_controller.auth.principal import Principal
 from hil_controller.auth.tokens import require_auth
 from hil_controller.db.connection import get_db
+from hil_controller.hosts.registry import refresh_app_registry
 
 router = APIRouter(prefix="/v1/strands", tags=["strands"])
 Auth = Annotated[Principal, Depends(require_auth)]
@@ -162,7 +163,9 @@ async def create_strand(request: Request, body: Strand, _auth: Auth) -> dict[str
         if await _load_strand(db, body.id) is not None:
             raise HTTPException(status_code=409, detail=f"strand {body.id!r} already exists")
         await _write_strand(db, body)
-        return await _load_strand(db, body.id)
+        out = await _load_strand(db, body.id)
+    await refresh_app_registry(request.app)
+    return out
 
 
 @router.put("/{strand_id}")
@@ -174,7 +177,9 @@ async def upsert_strand(
     db_path: str = request.app.state.db_path
     async with get_db(db_path) as db:
         await _write_strand(db, body)
-        return await _load_strand(db, strand_id)
+        out = await _load_strand(db, strand_id)
+    await refresh_app_registry(request.app)
+    return out
 
 
 @router.delete("/{strand_id}", status_code=204)
@@ -185,3 +190,4 @@ async def delete_strand(request: Request, strand_id: str, _auth: Auth) -> None:
         await db.commit()
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"unknown strand {strand_id!r}")
+    await refresh_app_registry(request.app)

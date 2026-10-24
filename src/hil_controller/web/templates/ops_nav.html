@@ -1,0 +1,30 @@
+{# Sub-navigation + shared styles for the operator (ops_*) pages. Included, not extended. #}
+<style>
+  .ops-nav { display:flex; gap:0.4rem; flex-wrap:wrap; margin:0 0 1rem; }
+  .ops-nav a { padding:0.3rem 0.7rem; border-radius:999px; border:1px solid #d0d7de;
+               text-decoration:none; color:inherit; font-size:0.85rem; }
+  .ops-nav a.on { background:#1a1a2e; color:#fff; border-color:#1a1a2e; }
+  .ops-pre { background:#1a1a2e; color:#c9d1d9; padding:0.8rem 1rem; border-radius:6px;
+             overflow:auto; font-size:0.75rem; max-height:520px; white-space:pre; }
+  .ops-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:1rem;
+               margin-bottom:1rem; }
+  .ops-card { border:1px solid #d0d7de; border-radius:8px; padding:1rem; background:#fff; }
+  .ops-card h3 { margin:0 0 0.4rem; font-size:1rem; }
+  .ops-kv { display:grid; grid-template-columns:max-content 1fr; gap:0.2rem 0.8rem; font-size:0.85rem; }
+  .ops-kv dt { font-weight:600; }
+  .ops-kv dd { margin:0; }
+  .ops-list { margin:0.3rem 0 0; padding-left:1.2rem; font-size:0.85rem; }
+  details > summary { cursor:pointer; }
+  .md-body { max-width:960px; }
+  .md-body .md-text { white-space:pre-wrap; font-family:inherit; font-size:0.9rem;
+                      background:none; color:inherit; margin:0.3rem 0 0.8rem; }
+  .md-body .md-code { background:#1a1a2e; color:#c9d1d9; padding:0.7rem 1rem;
+                      border-radius:6px; overflow:auto; font-size:0.75rem; }
+  .md-body code { font-size:0.82em; }
+  .md-body .md-h { margin:1.1rem 0 0.4rem; }
+</style>
+<nav class="ops-nav" aria-label="Operator tools">
+  {% for key, href, label in ops_nav %}
+  <a href="{{ href }}" {% if ops_page == key %}class="on"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>

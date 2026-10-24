@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Raw JSON job</h1>
+{% include "ops_nav.html" %}
+<p class="form-hint" style="max-width:960px;margin-bottom:1rem;">
+  Paste a <code>POST /v1/jobs</code> body (<code>JobRequest</code>) or an MCP
+  <code>AgentJob</code> (has <code>runtime</code>; built with the same recipe logic as
+  <code>prepare_job</code>). <strong>Validate</strong> shows the exact request that would be
+  stored, with secrets masked. <strong>Submit</strong> runs the <code>POST /v1/jobs</code>
+  handler in-process with your session token and opens the job. Recipes:
+  {% for key, r in recipes.items() %}<a href="/ui/jobs/raw?recipe={{ key|urlencode }}">{{ key }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+  (<a href="/ui/jobs/profiles">details</a>).
+</p>
+
+<form id="raw-job-form" hx-post="/ui/jobs/raw/validate" hx-target="#raw-result" hx-swap="innerHTML"
+      method="post" action="/ui/jobs/raw/validate" style="max-width:960px;">
+  <div class="form-panel">
+    <h2>Job JSON {% if recipe %}<span class="badge badge-info">recipe: {{ recipe }}</span>{% endif %}</h2>
+    <textarea id="job_json" name="job_json" rows="18" spellcheck="false"
+              style="width:100%;font-family:monospace;font-size:0.8rem;"
+              placeholder='{"runtime": "wippersnapper-arduino", "device_id": "..."}'>{{ initial }}</textarea>
+  </div>
+  <div class="form-panel">
+    <h2>Options</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="fmt">Format</label>
+        <select id="fmt" name="fmt">
+          <option value="auto">auto-detect</option>
+          <option value="agent-job">AgentJob (MCP recipe)</option>
+          <option value="job-request">JobRequest (raw /v1/jobs)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="device_id">Device override <span class="form-hint">(replaces the JSON's device)</span></label>
+        <select id="device_id" name="device_id">
+          <option value="">— as in JSON —</option>
+          {% for d in devices %}
+          <option value="{{ d.id }}">{{ d.id }} — {{ d.kind }} {{ d.model }} ({{ d.pool }}, {{ d.status }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="broker">Broker <span class="form-hint">(io_* stages need staging / dev-lan)</span></label>
+        <select id="broker" name="broker">
+          {% for b in brokers %}
+          <option value="{{ b }}" {% if recipe_broker == b %}selected{% endif %}>{{ b }}{% if b == 'default' %} (as in JSON / protoMQ){% elif b == 'staging' %} (io.adafruit.us){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="broker_host">dev-lan host</label>
+        <input type="text" id="broker_host" name="broker_host" placeholder="192.168.1.50">
+      </div>
+      <div class="form-group">
+        <label for="broker_port">dev-lan port</label>
+        <input type="number" id="broker_port" name="broker_port" min="1" max="65535" placeholder="8883">
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" name="resolve" value="1" checked> Also dry-run device resolution</label>
+      </div>
+    </div>
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-secondary" type="submit">Validate</button>
+    <button class="btn btn-primary" type="button"
+            hx-post="/ui/jobs/raw/submit" hx-include="#raw-job-form" hx-target="#raw-result"
+            hx-confirm="Submit this job? It acquires real hardware and may flash it.">Submit</button>
+    <span class="htmx-indicator">working…</span>
+  </div>
+</form>
+
+<div id="raw-result" style="max-width:1100px;margin-top:1rem;"></div>
+{% endblock %}

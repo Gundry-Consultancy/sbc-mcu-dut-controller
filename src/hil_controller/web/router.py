@@ -32,12 +32,35 @@ from hil_controller.adapters.usb_scan import split_dev_path as _split_dev_path
 
 templates.env.filters["dev_path_segments"] = _split_dev_path
 
+
+def _env_is_set(name: str | None) -> bool:
+    """Whether the named controller env var is set (never exposes its value)."""
+    import os
+
+    return bool(name) and bool(os.environ.get(str(name)))
+
+
+templates.env.globals["env_is_set"] = _env_is_set
+
 router = APIRouter(prefix="/ui", tags=["web"])
 
 
 def _tr(request: Request, name: str, ctx: dict | None = None, **kwargs):
     """Shorthand for Starlette 1.0+ TemplateResponse(request, name, context)."""
     return templates.TemplateResponse(request, name, ctx or {}, **kwargs)
+
+
+def _in_page(request: Request, fragment: Response, page: str, ctx: dict) -> Response:
+    """Serve a form fragment inside its full page when opened from a plain link.
+
+    HTMX requests (``HX-Request``) keep getting the bare fragment; a browser
+    following a link such as ``/ui/devices/<id>/form`` gets the page with the
+    form already open in ``#form-panel``.
+    """
+    if request.headers.get("HX-Request") or getattr(fragment, "status_code", 200) != 200:
+        return fragment
+    body = bytes(fragment.body).decode()  # type: ignore[attr-defined]
+    return _tr(request, page, {**ctx, "form_html": body})
 
 
 def _redirect(path: str) -> Response:
@@ -306,6 +329,81 @@ async def dashboard(request: Request, hil_token: str = Cookie(default="")) -> HT
 
 
 # ---------------------------------------------------------------------------
+# Topology: DB-vs-YAML drift + export (what a restart would revert)
+# ---------------------------------------------------------------------------
+
+
+async def _drift(request: Request) -> dict:
+    from hil_controller.topology.drift import topology_drift
+
+    return await topology_drift(
+        request.app.state.db_path, getattr(request.app.state, "topology_file", "")
+    )
+
+
+@router.get("/topology", response_class=HTMLResponse, include_in_schema=False)
+async def topology_page(request: Request, hil_token: str = Cookie(default="")) -> HTMLResponse:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.topology.export import build_export_yaml
+
+    drift = await _drift(request)
+    export_yaml = await build_export_yaml(request.app.state.db_path)
+    return _tr(
+        request,
+        "topology.html",
+        {"token": hil_token, "active": "topology", "drift": drift, "export_yaml": export_yaml},
+    )
+
+
+@router.get("/topology/export.yaml", include_in_schema=False)
+async def topology_export_download(
+    request: Request, hil_token: str = Cookie(default="")
+) -> Response:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.topology.export import build_export_yaml
+
+    return Response(
+        await build_export_yaml(request.app.state.db_path),
+        media_type="application/yaml",
+        headers={"Content-Disposition": 'attachment; filename="topology.yaml"'},
+    )
+
+
+@router.post("/topology/save", response_class=HTMLResponse, include_in_schema=False)
+async def topology_save_ui(
+    request: Request, hil_token: str = Cookie(default=""), dry_run: str = Query(default="")
+) -> HTMLResponse:
+    """Preview (``?dry_run=1``) or perform the save of the live DB into the seed file."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.topology.save import plan_save, save_topology
+
+    topology_file = getattr(request.app.state, "topology_file", "") or ""
+    try:
+        if dry_run:
+            result = await plan_save(request.app.state.db_path, topology_file)
+            result["written"] = False
+        else:
+            result = await save_topology(request.app.state.db_path, topology_file)
+    except ValueError as exc:
+        return HTMLResponse(f'<div class="alert alert-error">{html.escape(str(exc))}</div>')
+    return _tr(
+        request, "topology_save_result.html", {"r": result, "dry_run": bool(dry_run)}
+    )
+
+
+@router.get("/topology/banner", response_class=HTMLResponse, include_in_schema=False)
+async def topology_banner(request: Request, hil_token: str = Cookie(default="")) -> HTMLResponse:
+    """HTMX fragment: a warning when UI edits differ from the topology YAML."""
+    if not (await _check_web_token(request, hil_token)):
+        return HTMLResponse("")
+    drift = await _drift(request)
+    return _tr(request, "topology_banner.html", {"drift": drift})
+
+
+# ---------------------------------------------------------------------------
 # Hosts CRUD
 # ---------------------------------------------------------------------------
 
@@ -343,7 +441,77 @@ async def edit_host_form(
     h["hw"] = host_hardware.host_hw_view(dict(row))
     h["hw_detected"] = host_hardware._loads(row["hw_detected_json"])
     h["hw_override"] = host_hardware._loads(row["hw_override_json"])
-    return _tr(request, "hosts_form.html", {"host": h})
+    return _in_page(
+        request,
+        _tr(request, "hosts_form.html", {"host": h}),
+        "hosts.html",
+        {"token": hil_token, "active": "hosts", "hosts": await _hosts(db_path)},
+    )
+
+
+@router.get("/hosts/{host_id}", response_class=HTMLResponse, include_in_schema=False)
+async def host_detail(
+    request: Request, host_id: str, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Everything about one host on one page: config, hardware, devices, jobs, leases."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return HTMLResponse("Host not found", status_code=404)
+        async with db.execute(
+            "SELECT * FROM devices WHERE host_id = ? OR hub_host_id = ? ORDER BY id",
+            (host_id, host_id),
+        ) as cur:
+            devices = [dict(r) for r in await cur.fetchall()]
+        async with db.execute(
+            "SELECT id, model, source, kind, status FROM cameras WHERE host_id = ? ORDER BY id",
+            (host_id,),
+        ) as cur:
+            cameras = [dict(r) for r in await cur.fetchall()]
+        async with db.execute(
+            "SELECT id, state, result, assigned_device, created_at, finished_at, summary "
+            "FROM jobs WHERE assigned_host = ? ORDER BY created_at DESC LIMIT 25",
+            (host_id,),
+        ) as cur:
+            jobs = [dict(r) for r in await cur.fetchall()]
+        async with db.execute(
+            "SELECT * FROM device_leases WHERE released_at IS NULL AND (hub_host_id = ? "
+            "OR device_id IN (SELECT id FROM devices WHERE host_id = ? OR hub_host_id = ?)) "
+            "ORDER BY acquired_at",
+            (host_id, host_id, host_id),
+        ) as cur:
+            leases = [dict(r) for r in await cur.fetchall()]
+    h = dict(row)
+    h["capabilities"] = json.loads(h.pop("capabilities_json") or "[]")
+    h["hw"] = host_hardware.host_hw_view(dict(row))
+    for d in devices:
+        d["capabilities"] = json.loads(d.pop("capabilities_json") or "[]")
+    registry = getattr(request.app.state, "host_registry", None)
+    has_transport = False
+    if registry is not None:
+        try:
+            registry.transport_for(host_id)
+            has_transport = True
+        except (KeyError, ValueError):
+            has_transport = False
+    return _tr(
+        request,
+        "host_detail.html",
+        {
+            "token": hil_token,
+            "active": "hosts",
+            "host": h,
+            "devices": devices,
+            "cameras": cameras,
+            "jobs": jobs,
+            "leases": leases,
+            "has_transport": has_transport,
+        },
+    )
 
 
 @router.post("/hosts", response_class=HTMLResponse, include_in_schema=False)
@@ -359,11 +527,16 @@ async def create_host(
     max_concurrent_jobs: Annotated[str, Form()] = "",
     capabilities: Annotated[str, Form()] = "",
     status: Annotated[str, Form()] = "available",
+    api_url: Annotated[str, Form()] = "",
+    token_env: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
     if not id:
         return _tr(request, "hosts_form.html", {"host": None, "error": "ID is required"})
+    bridge_error = _bridge_fields_error(transport, addr, api_url, token_env)
+    if bridge_error:
+        return _tr(request, "hosts_form.html", {"host": None, "error": bridge_error})
     db_path: str = request.app.state.db_path
     max_jobs = int(max_concurrent_jobs) if max_concurrent_jobs.strip() else None
     async with get_db(db_path) as db:
@@ -371,8 +544,8 @@ async def create_host(
             await db.execute(
                 """INSERT INTO hosts
                    (id, role, addr, transport, ssh_user, ssh_key_path,
-                    max_concurrent_jobs, capabilities_json, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    max_concurrent_jobs, capabilities_json, status, api_url, token_env)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     id,
                     role,
@@ -383,12 +556,51 @@ async def create_host(
                     max_jobs,
                     json.dumps(_parse_caps(capabilities)),
                     status,
+                    api_url.strip() or None,
+                    token_env.strip() or None,
                 ),
             )
             await db.commit()
         except Exception as exc:
             return _tr(request, "hosts_form.html", {"host": None, "error": str(exc)})
+    await _registry_refresh(request)
     return _redirect("/ui/hosts")
+
+
+def _bridge_fields_error(transport: str, addr: str, api_url: str, token_env: str) -> str:
+    """Validate the esp-usbip-bridge host fields; '' when they are fine.
+
+    ``token_env`` names the controller environment variable that holds the
+    bridge's bearer token; the token itself never goes in the DB.
+    """
+    import re
+
+    if transport == "esp-usbip-bridge" and not (addr.strip() or api_url.strip()):
+        return "An esp-usbip-bridge host needs an Address (its usbip/mDNS host) or an API URL"
+    if api_url.strip() and not re.match(r"^https?://", api_url.strip()):
+        return "API URL must start with http:// or https://"
+    if token_env.strip() and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env.strip()):
+        return (
+            "Token env var must be an environment variable NAME (e.g. HIL_BRIDGE_TOKEN_S31), "
+            "not the token itself — put the value in run/controller.env"
+        )
+    return ""
+
+
+async def _registry_refresh(request: Request) -> None:
+    """Make a web-UI edit live in the host registry (no YAML edit / restart needed)."""
+    from hil_controller.hosts.registry import refresh_app_registry
+
+    await refresh_app_registry(request.app)
+
+
+def _registry_rename(request: Request, kind: str, old_id: str, new_id: str) -> None:
+    """Carry topology-only keys (e.g. known_hosts) across a web-UI rename."""
+    from hil_controller.hosts.registry import RealHostRegistry
+
+    registry = getattr(request.app.state, "host_registry", None)
+    if isinstance(registry, RealHostRegistry):
+        getattr(registry, f"rename_{kind}")(old_id, new_id)
 
 
 @router.post("/hosts/{host_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -412,6 +624,8 @@ async def update_host(
     ov_cpu_mhz: Annotated[str, Form()] = "",
     ov_mem_total_kb: Annotated[str, Form()] = "",
     ov_storage_total_kb: Annotated[str, Form()] = "",
+    api_url: Annotated[str, Form()] = "",
+    token_env: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -434,10 +648,15 @@ async def update_host(
             existing = await cur.fetchone()
         if existing is None:
             return HTMLResponse("Host not found", status_code=404)
+        bridge_error = _bridge_fields_error(transport, addr, api_url, token_env)
+        if bridge_error:
+            return _reshow(existing, bridge_error)
+        new_id = host_id
         try:
             await db.execute(
                 """UPDATE hosts SET role=?, addr=?, transport=?, ssh_user=?, ssh_key_path=?,
-                   max_concurrent_jobs=?, capabilities_json=?, status=?, hw_override_json=?
+                   max_concurrent_jobs=?, capabilities_json=?, status=?, hw_override_json=?,
+                   api_url=?, token_env=?
                    WHERE id=?""",
                 (
                     role,
@@ -449,6 +668,8 @@ async def update_host(
                     json.dumps(_parse_caps(capabilities)),
                     status,
                     json.dumps(override) if override else None,
+                    api_url.strip() or None,
+                    token_env.strip() or None,
                     host_id,
                 ),
             )
@@ -457,10 +678,15 @@ async def update_host(
             # leaves the field edits intact and surfaces a clear error.
             if id.strip() and id.strip() != host_id:
                 await rename_host(db, host_id, id.strip())
+                new_id = id.strip()
         except (ValueError, KeyError) as exc:
+            await _registry_refresh(request)
             return _reshow(existing, str(exc).strip("'"))
         except Exception as exc:
             return _reshow(existing, str(exc))
+    if new_id != host_id:
+        _registry_rename(request, "host", host_id, new_id)
+    await _registry_refresh(request)
     return _redirect("/ui/hosts")
 
 
@@ -589,6 +815,7 @@ async def delete_host(
     async with get_db(db_path) as db:
         await db.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
         await db.commit()
+    await _registry_refresh(request)
     return HTMLResponse("")
 
 
@@ -646,10 +873,16 @@ async def edit_device_form(
     hosts = await _hosts(db_path)
     cameras = await _cameras(db_path)
     roi = dict(roi_row) if roi_row else None
-    return _tr(
+    fragment = _tr(
         request,
         "devices_form.html",
         {"device": d, "hosts": hosts, "cameras": cameras, "token": hil_token, "roi": roi},
+    )
+    return _in_page(
+        request,
+        fragment,
+        "devices.html",
+        {"token": hil_token, "active": "devices", "devices": await _devices(db_path)},
     )
 
 
@@ -778,6 +1011,10 @@ async def create_device(
     usb_serial: Annotated[str, Form()] = "",
     bootsel_channel: Annotated[str, Form()] = "",
     bootsel_inverted: Annotated[str, Form()] = "",
+    power_control: Annotated[str, Form()] = "",
+    power_control_present: Annotated[str, Form()] = "",
+    unavailable_kind: Annotated[str, Form()] = "",
+    unavailable_reason: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -811,8 +1048,8 @@ async def create_device(
                     pool, status, serial_port, flasher, camera_id, qr_identifier,
                     manual_focus, illuminator_brightness,
                     hub_host_id, hub_port_path, solenoid_channel, usb_serial,
-                    bootsel_channel, bootsel_inverted)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    bootsel_channel, bootsel_inverted, power_control)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     id,
                     host_id,
@@ -834,8 +1071,10 @@ async def create_device(
                     usb_serial or None,
                     bootsel_val,
                     bootsel_inv,
+                    _power_control_value(power_control),
                 ),
             )
+            await _apply_availability(db, id, status, unavailable_kind, unavailable_reason)
             await db.commit()
         except Exception as exc:
             hosts = await _hosts(db_path)
@@ -860,7 +1099,40 @@ async def create_device(
                 await recompute_for_camera(db, camera_id)
         except Exception:
             pass
+    await _registry_refresh(request)
     return _redirect("/ui/devices")
+
+
+async def _apply_availability(db, device_id: str, status: str, kind: str, reason: str) -> None:
+    """Keep the availability columns consistent with an operator-set status.
+
+    ``available`` clears the outage (and its retry budget); anything else is an
+    outage of ``kind`` (temporary = the reconciler may self-heal it, permanent =
+    only a human clears it) with the operator's reason, keeping the original
+    ``unavailable_since`` when the device was already out.
+    """
+    if status == "available":
+        await db.execute(
+            "UPDATE devices SET unavailable_kind=NULL, unavailable_reason=NULL, "
+            "unavailable_since=NULL, retry_attempts=0, retry_after=NULL WHERE id=?",
+            (device_id,),
+        )
+        return
+    kind = kind if kind in ("temporary", "permanent") else "permanent"
+    await db.execute(
+        "UPDATE devices SET unavailable_kind=?, unavailable_reason=?, "
+        "unavailable_since=COALESCE(unavailable_since, ?) WHERE id=?",
+        (kind, reason.strip() or None, datetime.now(UTC).isoformat(), device_id),
+    )
+
+
+#: ``devices.power_control`` choices offered by the device form ('' = solenoid / none).
+POWER_CONTROL_CHOICES = ("", "bridge-port", "bridge-port:force")
+
+
+def _power_control_value(raw: str) -> str | None:
+    value = (raw or "").strip().lower()
+    return value if value in POWER_CONTROL_CHOICES and value else None
 
 
 @router.post("/devices/{device_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -889,6 +1161,10 @@ async def update_device(
     usb_serial: Annotated[str, Form()] = "",
     bootsel_channel: Annotated[str, Form()] = "",
     bootsel_inverted: Annotated[str, Form()] = "",
+    power_control: Annotated[str, Form()] = "",
+    power_control_present: Annotated[str, Form()] = "",
+    unavailable_kind: Annotated[str, Form()] = "",
+    unavailable_reason: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
@@ -910,7 +1186,8 @@ async def update_device(
                camera_id=?, qr_identifier=?,
                manual_focus=?, illuminator_brightness=?,
                hub_host_id=?, hub_port_path=?, solenoid_channel=?, usb_serial=?,
-               bootsel_channel=?, bootsel_inverted=?
+               bootsel_channel=?, bootsel_inverted=?,
+               power_control=CASE WHEN ? THEN ? ELSE power_control END
                WHERE id=?""",
             (
                 host_id,
@@ -932,9 +1209,14 @@ async def update_device(
                 usb_serial or None,
                 bootsel_val,
                 bootsel_inv,
+                # Only the device form sends the marker; other callers keep the value.
+                bool(power_control_present),
+                _power_control_value(power_control),
                 device_id,
             ),
         )
+        if power_control_present:  # the device form: it also sends the availability fields
+            await _apply_availability(db, device_id, status, unavailable_kind, unavailable_reason)
         await db.commit()
         # Rename last (cascades to usb-ids/leases/connections/rois/peripherals/jobs).
         if id.strip() and id.strip() != device_id:
@@ -959,6 +1241,9 @@ async def update_device(
                         "error": str(exc).strip("'"),
                     },
                 )
+    if id.strip() and id.strip() != device_id:
+        _registry_rename(request, "device", device_id, id.strip())
+    await _registry_refresh(request)
     if camera_id:
         try:
             from hil_controller.adapters.camera.orchestrator import recompute_for_camera
@@ -980,6 +1265,7 @@ async def delete_device(
     async with get_db(db_path) as db:
         await db.execute("DELETE FROM devices WHERE id = ?", (device_id,))
         await db.commit()
+    await _registry_refresh(request)
     return HTMLResponse("")
 
 
@@ -1007,6 +1293,82 @@ async def retry_device_availability_ui(
             (device_id,),
         )
         await db.commit()
+    return HTMLResponse("", headers={"HX-Refresh": "true"})
+
+
+@router.get("/devices/lookup-usb", response_class=HTMLResponse, include_in_schema=False)
+async def lookup_usb_ui(
+    request: Request,
+    hil_token: str = Cookie(default=""),
+    vid: str = "",
+    pid: str = "",
+    iserial: str = "",
+) -> HTMLResponse:
+    """Who owns this USB device? Learned USB IDs, device iSerials and twin identities."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+
+    def _hex(v: str) -> str:
+        v = v.strip().lower()
+        return v[2:] if v.startswith("0x") else v
+
+    vid, pid, iserial = _hex(vid), _hex(pid), iserial.strip()
+    if not ((vid and pid) or iserial):
+        return HTMLResponse(
+            '<div class="form-hint">Give a VID and PID (e.g. 239a / 8143), an iSerial, or both.'
+            "</div>"
+        )
+    async with get_db(request.app.state.db_path) as db:
+        sql = "SELECT * FROM device_usb_ids WHERE 1=1"
+        params: list = []
+        if vid and pid:
+            sql += " AND lower(vid) = ? AND lower(pid) = ?"
+            params += [vid, pid]
+        if iserial:
+            sql += " AND COALESCE(iserial,'') = ?"
+            params.append(iserial)
+        async with db.execute(sql + " ORDER BY last_seen_at DESC, id", params) as cur:
+            learned = [dict(r) for r in await cur.fetchall()]
+        by_serial: list[dict] = []
+        twins: list[dict] = []
+        if iserial:
+            async with db.execute(
+                "SELECT id, host_id, hub_host_id, hub_port_path, status FROM devices "
+                "WHERE usb_serial = ?",
+                (iserial,),
+            ) as cur:
+                by_serial = [dict(r) for r in await cur.fetchall()]
+            try:
+                async with db.execute(
+                    "SELECT twin_id, namespace, kind, owner, component FROM twin_identities "
+                    "WHERE value = ? ORDER BY twin_id",
+                    (iserial,),
+                ) as cur:
+                    twins = [dict(r) for r in await cur.fetchall()]
+            except Exception:
+                twins = []  # older DB without the physical-twins tables
+    return _tr(
+        request,
+        "usb_lookup_result.html",
+        {"learned": learned, "by_serial": by_serial, "twins": twins,
+         "vid": vid, "pid": pid, "iserial": iserial},
+    )
+
+
+@router.post(
+    "/devices/availability/retry-all",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def retry_all_availability_ui(
+    request: Request, hil_token: str = Cookie(default="")
+) -> HTMLResponse:
+    """Reset every temporary outage's retry budget (same as POST /v1/devices/availability/retry)."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.api.devices import _reset_retry_budget
+
+    await _reset_retry_budget(request.app.state.db_path, None)
     return HTMLResponse("", headers={"HX-Refresh": "true"})
 
 
@@ -1639,7 +2001,9 @@ async def create_strand_web(
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
-    return await _save_strand_web(request, id, locals(), is_create=True)
+    resp = await _save_strand_web(request, id, locals(), is_create=True)
+    await _registry_refresh(request)
+    return resp
 
 
 @router.post("/strands/{strand_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -1658,7 +2022,9 @@ async def update_strand_web(
 ) -> HTMLResponse:
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
-    return await _save_strand_web(request, strand_id, locals(), is_create=False)
+    resp = await _save_strand_web(request, strand_id, locals(), is_create=False)
+    await _registry_refresh(request)
+    return resp
 
 
 @router.delete("/strands/{strand_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -1670,6 +2036,7 @@ async def delete_strand_web(
     async with get_db(request.app.state.db_path) as db:
         await db.execute("DELETE FROM strands WHERE id = ?", (strand_id,))
         await db.commit()
+    await _registry_refresh(request)
     return HTMLResponse("")
 
 
@@ -1988,6 +2355,42 @@ async def _job_rows(db_path: str, limit: int = 100) -> list[dict]:
     return result
 
 
+#: Request keys whose string values are credentials (masked to their last 4 chars).
+_SECRET_KEY_HINTS = ("secret", "password", "passwd", "token", "authkey", "api_key", "apikey",
+                     "io_key", "credential", "private_key")
+
+
+def _redact_request(value, *, under_secrets: bool = False):  # noqa: ANN001, ANN202
+    """A copy of a job request safe to render: credential values masked (redact.py policy).
+
+    Every string under a ``secrets`` mapping is masked, as is any string whose key
+    names a credential (``*token*``, ``*password*``, ``*_key``…). Everything else —
+    script, stages, target, params — is kept so the run stays reproducible.
+    """
+    from hil_controller.redact import mask_secret
+
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            key = str(k).lower()
+            secretish = (
+                under_secrets
+                or any(h in key for h in _SECRET_KEY_HINTS)
+                or key.endswith("_key")
+                or key == "key"
+            )
+            if isinstance(v, str) and secretish and not key.endswith(("_env", "_profile")):
+                out[k] = mask_secret(v)
+            else:
+                out[k] = _redact_request(v, under_secrets=under_secrets or key == "secrets")
+        return out
+    if isinstance(value, list):
+        return [_redact_request(v, under_secrets=under_secrets) for v in value]
+    if isinstance(value, str) and under_secrets:
+        return mask_secret(value)
+    return value
+
+
 def _render_events(events: list[dict]) -> str:
     lines = []
     colours = {
@@ -2006,16 +2409,26 @@ def _render_events(events: list[dict]) -> str:
             msg = html.escape(payload.get("msg", ""))
             colour = colours.get(stream, "#c9d1d9")
             lines.append(
-                f'<div style="color:{colour};font-family:monospace;font-size:0.75rem;white-space:pre-wrap;">'  # noqa: E501
+                f'<div class="ev" data-kind="log" data-stream="{html.escape(stream)}" '
+                f'style="color:{colour};font-family:monospace;font-size:0.75rem;white-space:pre-wrap;">'  # noqa: E501
                 f'<span style="color:#6c757d;user-select:none;">[{at}] </span>{msg}</div>'
             )
         elif kind == "state":
             st = payload.get("state", "")
             colour = colours["state"]
             lines.append(
-                f'<div style="color:{colour};font-family:monospace;font-size:0.75rem;">'
+                f'<div class="ev" data-kind="state" data-stream="state" '
+                f'style="color:{colour};font-family:monospace;font-size:0.75rem;">'
                 f'<span style="color:#6c757d;user-select:none;">[{at}] </span>'
                 f"<b>── state: {html.escape(st)} ──</b></div>"
+            )
+        elif kind in ("metric", "artifact"):
+            # Previously dropped: show them so the UI log matches /v1/jobs/{id}/wait.
+            body = html.escape(json.dumps(payload, sort_keys=True))
+            lines.append(
+                f'<div class="ev" data-kind="{kind}" data-stream="{kind}" '
+                'style="color:#e3b341;font-family:monospace;font-size:0.75rem;white-space:pre-wrap;">'  # noqa: E501
+                f'<span style="color:#6c757d;user-select:none;">[{at}] </span>{kind}: {body}</div>'
             )
     return (
         "\n".join(lines)
@@ -2879,6 +3292,11 @@ async def job_detail(
     j["duration"] = _duration(j.get("started_at"), j.get("finished_at"))
     meta = req.get("metadata") or {}
     j["rerun_of"] = meta.get("rerun_of")
+    j["script"] = req.get("script", "")
+    target = req.get("target") or {}
+    j["pool"] = target.get("pool", "")
+    j["target_summary"] = json.dumps(_redact_request(target), sort_keys=True)
+    j["request_redacted"] = json.dumps(_redact_request(req), indent=2, sort_keys=True)
 
     # Other instances spawned from this job (reruns link back via metadata).
     async with get_db(db_path) as db:
@@ -3819,10 +4237,68 @@ async def leases_page(request: Request, hil_token: str = Cookie(default="")) -> 
         return _login_redirect()  # type: ignore[return-value]
     db_path: str = request.app.state.db_path
     leases = await _leases_with_context(db_path, active_only=True)
+    from hil_controller.queue.leases import VALID_KINDS
+
     return _tr(
         request,
         "leases.html",
-        {"token": hil_token, "active": "leases", "leases": leases},
+        {
+            "token": hil_token,
+            "active": "leases",
+            "leases": leases,
+            "devices": await _devices(db_path),
+            "hosts": await _hosts(db_path),
+            "kinds": sorted(VALID_KINDS),
+        },
+    )
+
+
+@router.post("/leases", response_class=HTMLResponse, include_in_schema=False)
+async def create_lease_ui(
+    request: Request,
+    hil_token: str = Cookie(default=""),
+    kind: Annotated[str, Form()] = "exclusive_device",
+    device_id: Annotated[str, Form()] = "",
+    hub_host_id: Annotated[str, Form()] = "",
+    expires_minutes: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Hold a device or hub by hand (same as POST /v1/leases), e.g. for bench work."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from datetime import timedelta
+
+    from hil_controller.queue.leases import VALID_KINDS, LeaseConflict, acquire
+
+    if kind not in VALID_KINDS:
+        return HTMLResponse(
+            f'<div class="alert alert-error">kind must be one of {sorted(VALID_KINDS)}</div>'
+        )
+    expires_at = None
+    if expires_minutes.strip():
+        try:
+            minutes = int(expires_minutes)
+        except ValueError:
+            return HTMLResponse('<div class="alert alert-error">Expiry must be minutes</div>')
+        expires_at = (datetime.now(UTC) + timedelta(minutes=minutes)).isoformat()
+    try:
+        row = await acquire(
+            request.app.state.db_path,
+            kind=kind,
+            device_id=device_id or None,
+            hub_host_id=hub_host_id or None,
+            job_id=None,
+            expires_at=expires_at,
+        )
+    except LeaseConflict as exc:
+        return HTMLResponse(
+            f'<div class="alert alert-error">Conflict: {html.escape(str(exc))}</div>'
+        )
+    except ValueError as exc:
+        return HTMLResponse(f'<div class="alert alert-error">{html.escape(str(exc))}</div>')
+    return HTMLResponse(
+        f'<div class="alert alert-success">Lease {row["id"]} acquired '
+        f"({html.escape(kind)}{' until ' + html.escape(expires_at) if expires_at else ''}). "
+        "Jobs needing it will wait until it is released.</div>"
     )
 
 
@@ -3837,7 +4313,7 @@ async def leases_body(
         return _login_redirect()  # type: ignore[return-value]
     db_path: str = request.app.state.db_path
     leases = await _leases_with_context(db_path, active_only=active_only)
-    return _tr(request, "leases_body.html", {"leases": leases})
+    return _tr(request, "leases_body.html", {"leases": leases, "active_only": active_only})
 
 
 @router.delete("/leases/{lease_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -4068,10 +4544,12 @@ async def usbip_host_fragment(
     solenoid_map = await _device_solenoid_map_for_host(db_path, host_id)
     channel_labels = {ch: dev for dev, ch in solenoid_map.items()}  # bank-A channel -> device
     solenoid_capable = await _host_is_solenoid_capable(db_path, host_id, solenoid_map)
+    bridge_ctx = await _bridge_fragment_context(db_path, host_id, transport)
     return _tr(
         request,
         "usbip_host_fragment.html",
         {
+            "bridge": bridge_ctx,
             "host_id": inventory.host_id,
             "daemon_listening": inventory.daemon_listening,
             "busids": inventory.busids,
@@ -4085,6 +4563,105 @@ async def usbip_host_fragment(
             "solenoid_bank_a": list(range(0, 8)),
             "solenoid_bank_b": list(range(8, 16)),
         },
+    )
+
+
+async def _bridge_fragment_context(db_path: str, host_id: str, transport) -> dict | None:
+    """Bridge details for the USB-IP page (None unless an esp-usbip-bridge host).
+
+    Shows the API URL, whether a token is configured (never the token), the
+    bridge's own ``/api/info`` and each matched device's ``power_control``.
+    """
+    from hil_controller.adapters.esp_usbip_bridge import EspBridgeError
+    from hil_controller.hosts.esp_bridge import bridge_client_of
+
+    bridge = bridge_client_of(transport)
+    if bridge is None:
+        return None
+    info: dict = {}
+    info_error = ""
+    try:
+        info = await bridge.info()
+    except EspBridgeError as exc:
+        info_error = str(exc)
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id, power_control FROM devices WHERE hub_host_id = ? "
+            "OR (hub_host_id IS NULL AND host_id = ?)",
+            (host_id, host_id),
+        ) as cur:
+            power_control = {r["id"]: r["power_control"] for r in await cur.fetchall()}
+        async with db.execute("SELECT token_env FROM hosts WHERE id = ?", (host_id,)) as cur:
+            host_row = await cur.fetchone()
+    return {
+        "base_url": bridge.base_url,
+        "token_env": host_row["token_env"] if host_row else None,
+        "token_configured": bool(bridge.token),
+        "info": info,
+        "info_error": info_error,
+        "power_control": power_control,
+    }
+
+
+@router.post(
+    "/hosts/{host_id}/bridge/ports/{port}/{action}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def bridge_port_power(
+    request: Request,
+    host_id: str,
+    port: str,
+    action: str,
+    hil_token: str = Cookie(default=""),
+    force: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Switch one esp-usbip-bridge hub port on / off / cycle from the USB-IP page."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    from hil_controller.adapters.esp_usbip_bridge import (
+        EspBridgeError,
+        EspBridgeNotSwitchableError,
+    )
+    from hil_controller.hosts.esp_bridge import bridge_client_of
+
+    if action not in ("on", "off", "cycle"):
+        return HTMLResponse(
+            f'<span class="badge badge-warn">unknown action {html.escape(action)}</span>'
+        )
+    registry = getattr(request.app.state, "host_registry", None)
+    try:
+        bridge = bridge_client_of(registry.transport_for(host_id)) if registry else None
+    except KeyError:
+        bridge = None
+    if bridge is None:
+        return HTMLResponse(
+            f'<span class="badge badge-warn">{html.escape(host_id)} '
+            "is not an esp-usbip-bridge host</span>"
+        )
+    forced = force.strip().lower() in ("1", "true", "on", "yes")
+    try:
+        if action == "on":
+            result = await bridge.port_on(port, force=forced)
+        elif action == "off":
+            result = await bridge.port_off(port, force=forced)
+        else:
+            result = await bridge.port_cycle(port, force=forced)
+    except EspBridgeNotSwitchableError as exc:
+        return HTMLResponse(
+            f'<span class="badge badge-warn">port {html.escape(port)}: hub cannot switch this port '
+            f"individually ({html.escape(str(exc))}). Use a per-port switched hub, or set the "
+            "device's Power control to bridge-port:force only if it really switches.</span>"
+        )
+    except EspBridgeError as exc:
+        return HTMLResponse(
+            f'<span class="badge badge-warn">port {html.escape(port)} {action} failed: '
+            f"{html.escape(str(exc))}</span>"
+        )
+    detail = html.escape(json.dumps(result)) if result else ""
+    return HTMLResponse(
+        f'<span class="badge badge-ok">port {html.escape(port)} {action} sent'
+        f'{" (forced)" if forced else ""}</span> <span class="form-hint mono">{detail}</span>'
     )
 
 

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Which device would this job get?</h1>
+{% include "ops_nav.html" %}
+<p class="form-hint" style="max-width:900px;margin-bottom:1rem;">
+  Dry-run of a job <code>target</code>. Nothing is leased, powered or flashed. The
+  <strong>scheduler pick</strong> is what <code>POST /v1/jobs</code> would get when dequeued
+  (a device id is authoritative; <code>target.requires</code> of kind <code>i2c_strand</code>
+  must be covered by ONE strand routed to the device — capability tags or component model
+  short-names, case-insensitive). <strong>Topology resolve</strong> is
+  <code>POST /v1/topology/resolve</code> (pool-gated, aux/connection requirements).
+</p>
+
+<form method="get" action="/ui/jobs/resolve" style="max-width:900px;">
+  <input type="hidden" name="run" value="1">
+  <div class="form-panel">
+    <h2>Device selector</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="pool">Pool</label>
+        <input type="text" id="pool" name="pool" value="{{ form.pool }}">
+      </div>
+      <div class="form-group">
+        <label for="device_id">Device id <span class="form-hint">(authoritative)</span></label>
+        <input type="text" id="device_id" name="device_id" list="device-ids" value="{{ form.device_id }}">
+        <datalist id="device-ids">
+          {% for d in devices %}<option value="{{ d.id }}">{{ d.kind }} {{ d.model }} — {{ d.status }}</option>{% endfor %}
+        </datalist>
+      </div>
+      <div class="form-group">
+        <label for="kind">Kind</label>
+        <select id="kind" name="kind">
+          {% for k in ['', 'microcontroller', 'sbc'] %}
+          <option value="{{ k }}" {% if form.kind == k %}selected{% endif %}>{{ k or '— any —' }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="model">Model</label>
+        <input type="text" id="model" name="model" value="{{ form.model }}" placeholder="esp32-s3">
+      </div>
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="capabilities">Device capabilities <span class="form-hint">(comma-separated, all required)</span></label>
+        <input type="text" id="capabilities" name="capabilities" value="{{ form.capabilities }}" placeholder="i2c, spi">
+      </div>
+    </div>
+  </div>
+  <div class="form-panel">
+    <h2>target.requires</h2>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:1/-1;">
+        <label for="strand_caps">I2C strand components <span class="form-hint">(kind=i2c_strand; capability tags or model names, comma-separated)</span></label>
+        <input type="text" id="strand_caps" name="strand_caps" value="{{ form.strand_caps }}" placeholder="sensor:pm25, bme280">
+      </div>
+      <div class="form-group">
+        <label for="aux_kind">Aux kind <span class="form-hint">(connected aux, e.g. display)</span></label>
+        <input type="text" id="aux_kind" name="aux_kind" value="{{ form.aux_kind }}">
+      </div>
+      <div class="form-group">
+        <label for="aux_caps">Aux capabilities</label>
+        <input type="text" id="aux_caps" name="aux_caps" value="{{ form.aux_caps }}" placeholder="display:128x32">
+      </div>
+    </div>
+  </div>
+  <div class="form-panel">
+    <h2>…or raw target JSON <span class="form-hint">(overrides the fields above; a whole job request also works)</span></h2>
+    <textarea name="target_json" rows="5" style="width:100%;font-family:monospace;"
+              placeholder='{"device": {"kind": "microcontroller"}, "requires": [{"kind": "i2c_strand", "capabilities": ["sensor:pm25"]}], "pool": "public"}'>{{ form.target_json }}</textarea>
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Resolve</button>
+    <a class="btn btn-outline" href="/ui/jobs/resolve">Reset</a>
+  </div>
+</form>
+
+{% if outcome %}{% include "ops_resolve_result.html" %}{% endif %}
+{% endblock %}

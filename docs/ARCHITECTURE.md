@@ -919,6 +919,14 @@ hub; the controller surfaces that as a stage error naming the
 `bridge-port:force` opt-in, and the inventory's `port_status_text` shows
 each hub's `power_switching` mode.
 
+**From the web UI:** a bridge can be configured entirely in the UI — Hosts →
+Transport `esp-usbip-bridge` with Address, Bridge API URL and Token env var
+(a variable *name*; a pasted token is rejected), Devices → Power control
+`bridge-port` / `bridge-port:force` — and driven from the USB-IP page (bridge
+`/api/info`, per-port On/Off/Cycle). UI-created hosts and devices are mirrored
+into the registry immediately (`RealHostRegistry.refresh_from_db`); see
+[`web-ui.md`](web-ui.md) for the restart/topology-drift rules.
+
 **firmware-bench on a bridge DUT:** the registry hands the adapter a
 `LocalTransport` as `dut_transport` (flash/serial/MSC on the controller)
 and the bridge transport as `hub_transport` (power/presence). After

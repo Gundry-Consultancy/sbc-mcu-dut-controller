@@ -169,6 +169,93 @@ async def retry_device_availability(
     return result
 
 
+class DevicePatch(BaseModel):
+    """Partial device update; only the fields sent are changed (``null`` clears)."""
+
+    model_config = {"extra": "forbid"}
+
+    kind: str | None = None
+    model: str | None = None
+    pool: str | None = None
+    capabilities: list[str] | None = None
+    status: str | None = None
+    unavailable_kind: str | None = None
+    unavailable_reason: str | None = None
+    flasher: str | None = None
+    build_target: str | None = None
+    serial_port: str | None = None
+    hub_host_id: str | None = None
+    hub_port_path: str | None = None
+    solenoid_channel: int | None = None
+    bootsel_channel: int | None = None
+    usb_serial: str | None = None
+    power_control: str | None = None
+    camera_id: str | None = None
+    qr_identifier: str | None = None
+
+    @field_validator("unavailable_kind")
+    @classmethod
+    def _outage_kind(cls, v: str | None) -> str | None:
+        if v is not None and v not in ("temporary", "permanent"):
+            raise ValueError("unavailable_kind must be temporary or permanent")
+        return v
+
+    @field_validator("power_control")
+    @classmethod
+    def _power_control(cls, v: str | None) -> str | None:
+        if v not in (None, "", "bridge-port", "bridge-port:force"):
+            raise ValueError("power_control must be bridge-port, bridge-port:force or null")
+        return v or None
+
+
+#: Fields whose value must never be null in the devices table.
+_NOT_NULL_DEVICE_FIELDS = {"kind", "model", "pool", "status", "capabilities"}
+
+
+@router.patch("/{device_id}", response_model=DeviceDetail)
+async def patch_device(
+    request: Request, device_id: str, body: DevicePatch, _auth: Auth
+) -> DeviceDetail:
+    """Update a device in place (same effect as the web device form, field by field).
+
+    The change is live for scheduling immediately. It is a live-DB change: use
+    ``POST /v1/topology/save`` (or the Topology page) to write it into the
+    topology seed file so a restart does not revert it.
+    """
+    changes = body.model_dump(exclude_unset=True)
+    bad = sorted(k for k in _NOT_NULL_DEVICE_FIELDS if k in changes and changes[k] is None)
+    if bad:
+        raise HTTPException(status_code=422, detail=f"cannot clear required field(s): {bad}")
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT * FROM devices WHERE id = ?", (device_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+        if "capabilities" in changes:
+            changes["capabilities_json"] = json.dumps(changes.pop("capabilities"))
+        status_now = changes.get("status", row["status"])
+        if status_now == "available":
+            # Clearing an outage resets its bookkeeping (as the reconciler does).
+            changes.update(
+                unavailable_kind=None, unavailable_reason=None, unavailable_since=None,
+                retry_attempts=0, retry_after=None,
+            )
+        elif "status" in changes and row["status"] == "available":
+            changes.setdefault("unavailable_kind", "permanent")
+            changes["unavailable_since"] = _now_iso()
+        if changes:
+            cols = ", ".join(f"{k} = ?" for k in changes)
+            await db.execute(
+                f"UPDATE devices SET {cols} WHERE id = ?", (*changes.values(), device_id)
+            )
+            await db.commit()
+    from hil_controller.hosts.registry import refresh_app_registry
+
+    await refresh_app_registry(request.app)
+    return await get_device(request, device_id, _auth)
+
+
 @router.get("/{device_id}", response_model=DeviceDetail)
 async def get_device(request: Request, device_id: str, _auth: Auth) -> DeviceDetail:
     db_path: str = request.app.state.db_path

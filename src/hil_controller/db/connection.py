@@ -21,6 +21,8 @@ async def init_db(db_path: str) -> None:
         await db.executescript(sql)
         await db.commit()
         await _migrate(db)
+        await db.executescript((_SCHEMA.parent / "twins.sql").read_text(encoding="utf-8"))
+        await db.commit()
 
 
 async def _migrate(db: aiosqlite.Connection) -> None:

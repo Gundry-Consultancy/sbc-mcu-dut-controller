@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Hosts</h1>
+<div hx-get="/ui/topology/banner" hx-trigger="load" hx-swap="innerHTML"></div>
 
 <div id="form-panel">{% if form_html %}{{ form_html | safe }}{% endif %}</div>
 

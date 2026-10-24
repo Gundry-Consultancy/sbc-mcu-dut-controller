@@ -49,6 +49,7 @@ _DEVICE_REFS = [
     ("connections", "device_id"),
     ("camera_rois", "device_id"),
     ("device_peripherals", "device_id"),
+    ("device_strands", "device_id"),
     ("jobs", "assigned_device"),
 ]
 
@@ -94,6 +95,20 @@ async def _rename(
     return total
 
 
+async def _rename_twin_slots(
+    db: aiosqlite.Connection, slot_kind: str, old_id: str, new_id: str
+) -> int:
+    """Keep physical-twin slot assignments (current and history) on the renamed slot."""
+    try:
+        cur = await db.execute(
+            "UPDATE twin_slot_assignments SET slot_id = ? WHERE slot_kind = ? AND slot_id = ?",
+            (new_id, slot_kind, old_id),
+        )
+    except aiosqlite.OperationalError:
+        return 0  # older DB without the twins tables
+    return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+
 async def _audit(
     db: aiosqlite.Connection, event: str, old_id: str, new_id: str, refs_updated: int
 ) -> None:
@@ -127,6 +142,7 @@ async def rename_host(db: aiosqlite.Connection, old_id: str, new_id: str) -> int
     await db.execute("PRAGMA foreign_keys=OFF")
     try:
         n = await _rename(db, table="hosts", old_id=old_id, new_id=new_id, refs=_HOST_REFS)
+        n += await _rename_twin_slots(db, "host", old_id, new_id)
         await _audit(db, "host.rename", old_id, new_id, n)
         await db.commit()
     finally:
@@ -151,6 +167,7 @@ async def rename_device(db: aiosqlite.Connection, old_id: str, new_id: str) -> i
     await db.execute("PRAGMA foreign_keys=OFF")
     try:
         n = await _rename(db, table="devices", old_id=old_id, new_id=new_id, refs=_DEVICE_REFS)
+        n += await _rename_twin_slots(db, "device", old_id, new_id)
         await _audit(db, "device.rename", old_id, new_id, n)
         await db.commit()
     finally:

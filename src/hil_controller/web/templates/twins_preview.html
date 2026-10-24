@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{% if applied %}Observations applied{% else %}Observation preview{% endif %}</h1>
+{% set subnav = 'import' %}{% include "twins_subnav.html" %}
+
+{% if origin %}<div class="alert alert-info" id="preview-origin">{{ origin }}</div>{% endif %}
+
+{% if problem %}
+<div class="alert {% if problem.status == 200 %}alert-info{% else %}alert-error{% endif %}" id="preview-problem">
+  {% if problem.status != 200 %}<strong>HTTP {{ problem.status }}.</strong>{% endif %} {{ problem.message }}
+  {% if problem.errors %}
+  <ul style="margin:0.4rem 0 0 1.25rem;">
+    {% for e in problem.errors %}<li class="mono">{{ e }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if apply_error %}
+<div class="alert alert-error" id="apply-error">
+  <strong>Apply refused (HTTP {{ apply_error.status }}); nothing was written.</strong>
+  {{ apply_error.detail }}
+  <div class="form-hint">The preview below was re-run against the current database.</div>
+</div>
+{% endif %}
+
+{% if applied %}
+<div class="alert alert-success" id="apply-success">Committed {{ applied|length }} observation(s) in one transaction.</div>
+<table>
+  <thead><tr><th>Observation</th><th>Action</th><th>Physical twin</th></tr></thead>
+  <tbody>
+  {% for r in applied %}
+    <tr>
+      <td class="mono">{{ r.observation_id }}</td>
+      <td><span class="badge {% if r.action == 'create' %}badge-ok{% elif r.action == 'update' %}badge-info{% else %}badge-gray{% endif %}">{{ r.action }}</span></td>
+      <td class="mono"><a href="/ui/twins/{{ r.twin_id }}">{{ r.twin_id }}</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p style="margin-top:1rem;"><a href="/ui/twins">Back to physical twins</a></p>
+{% endif %}
+
+{% if entries %}
+<div class="alert {% if all_valid %}alert-success{% else %}alert-error{% endif %}" id="preview-summary">
+  {% if all_valid %}
+    All {{ entries|length }} observation(s) are valid against the current database. This preview was rolled back; nothing has been written.
+  {% else %}
+    {{ entries|rejectattr('valid')|list|length }} of {{ entries|length }} observation(s) conflict. Fix them (for a known identity choose an explicit twin below) and preview again. Nothing has been written.
+  {% endif %}
+</div>
+
+<table id="preview-table">
+  <thead><tr>
+    <th>#</th><th>Observation</th><th>Kind / label</th><th>Explicit twin</th><th>Slot (CAS)</th>
+    <th>Ids / ports</th><th>Verified candidates</th><th>Result</th>
+  </tr></thead>
+  <tbody>
+  {% for e in entries %}
+    {% set o = e.observation %}{% set idx = loop.index0 %}
+    <tr>
+      <td>{{ idx }}</td>
+      <td class="mono" style="font-size:0.72rem;">{{ o.observation_id }}<br><span class="form-hint">{{ o.source }} &middot; {{ o.observed_at.isoformat() }}</span></td>
+      <td>{{ o.kind or '—' }}<br><span class="form-hint">{{ o.label or '' }}</span></td>
+      <td class="mono" style="font-size:0.72rem;">{% if o.twin_id %}<a href="/ui/twins/{{ o.twin_id }}">{{ o.twin_id }}</a>{% else %}<span class="form-hint">new</span>{% endif %}</td>
+      <td class="mono" style="font-size:0.72rem;">
+        {% if o.slot %}{{ o.slot.kind }}:{{ o.slot.id }}<br><span class="form-hint">expects {{ o.slot.expected_twin_id or 'empty' }}</span>{% else %}—{% endif %}
+      </td>
+      <td>{{ o.identities|length }} / {{ o.ports|length }}</td>
+      <td>
+        {% for c in e.candidates %}
+          <div class="mono" style="font-size:0.72rem;">
+            <a href="/ui/twins/{{ c.twin_id }}">{{ c.twin_id }}</a>
+            {% for m in c.matched_identities %}<br><span class="form-hint">{{ m.namespace }} {{ m.kind }}={{ m.value }}</span>{% endfor %}
+          </div>
+          {% if not o.twin_id %}
+          <form method="post" action="/ui/twins/observations/preview" style="margin-top:0.25rem;">
+            <input type="hidden" name="observations_json" value="{{ normalized }}">
+            <input type="hidden" name="adopt_index" value="{{ idx }}">
+            <input type="hidden" name="adopt_twin_id" value="{{ c.twin_id }}">
+            <button class="btn btn-sm btn-outline" type="submit" title="Set twin_id to this existing unit and preview again">Use this twin</button>
+          </form>
+          {% endif %}
+        {% else %}<span class="form-hint">none</span>{% endfor %}
+      </td>
+      <td>
+        {% if e.valid %}
+          <span class="badge {% if e.action == 'create' %}badge-ok{% elif e.action == 'update' %}badge-info{% else %}badge-gray{% endif %}">{{ e.action }}</span>
+        {% else %}
+          <span class="badge badge-err">HTTP {{ e.conflict.status }}</span>
+          <div class="conflict-detail" style="font-size:0.75rem;color:#842029;">{{ e.conflict.detail }}</div>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <td></td>
+      <td colspan="7">
+        <details><summary class="form-hint">Observation JSON</summary>
+          <pre class="mono" style="white-space:pre-wrap;background:#f8f9fa;padding:0.5rem;border-radius:4px;">{{ e.pretty }}</pre>
+        </details>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if all_valid %}
+<form method="post" action="/ui/twins/observations/apply" style="margin-top:1rem;" id="apply-form">
+  <input type="hidden" name="observations_json" value="{{ normalized }}">
+  <button class="btn btn-success" type="submit">Apply {{ entries|length }} observation(s)</button>
+  <span class="form-hint">Commits exactly the previewed JSON in one BEGIN IMMEDIATE transaction (all-or-nothing). Slot compare-and-swap (<code>expected_twin_id</code>) and identity checks are re-validated at apply time.</span>
+</form>
+{% endif %}
+{% endif %}
+
+{% if not applied %}
+<div class="form-panel" style="margin-top:1.5rem;">
+  <h2>Edit and preview again</h2>
+  <form method="post" action="/ui/twins/observations/preview" enctype="multipart/form-data">
+    <div class="form-group" style="margin-bottom:0.75rem;">
+      <textarea name="observations_json" rows="14" class="mono">{{ text }}</textarea>
+    </div>
+    <div class="form-group" style="margin-bottom:0.75rem;">
+      <label for="file">…or upload a JSON file (takes precedence)</label>
+      <input type="file" id="file" name="file" accept=".json,application/json">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit">Preview</button>
+      <a class="btn btn-outline" href="/ui/twins">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

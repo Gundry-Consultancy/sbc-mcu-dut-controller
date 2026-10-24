@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Physical twins</h1>
+{% set subnav = 'list' %}{% include "twins_subnav.html" %}
+
+<form method="get" action="/ui/twins" class="form-actions" style="margin-bottom:1rem;flex-wrap:wrap;">
+  <select name="kind" style="font-size:0.8rem;">
+    <option value="">All kinds</option>
+    {% for k in kinds %}<option value="{{ k }}" {% if k == kind %}selected{% endif %}>{{ k }}</option>{% endfor %}
+  </select>
+  <select name="pool" style="font-size:0.8rem;">
+    <option value="">All pools</option>
+    {% for p in pools %}<option value="{{ p }}" {% if p == pool %}selected{% endif %}>{{ p }}</option>{% endfor %}
+  </select>
+  <input type="text" name="q" value="{{ q }}" placeholder="Search id / label / identity / slot" style="min-width:260px;">
+  <button class="btn btn-primary btn-sm" type="submit">Filter</button>
+  {% if kind or pool or q %}<a class="btn btn-outline btn-sm" href="/ui/twins">Clear</a>{% endif %}
+</form>
+
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <h2>Inventory <span class="tbl-count">{{ twins|length }}{% if kind or pool or q %} of {{ total }}{% endif %}</span></h2>
+  </div>
+  {% if truncated %}
+  <div class="alert alert-info">Showing the newest {{ list_limit }} matches; narrow the filters or use <code>GET /v1/twins?limit=&amp;offset=</code>.</div>
+  {% endif %}
+  {% if twins %}
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Kind</th><th>Label</th><th>Pool</th><th>Created</th>
+      <th>Identities</th><th>Ports</th><th>Current slot(s)</th><th>Open conn.</th><th>Last observation</th>
+    </tr></thead>
+    <tbody id="twins-body">
+    {% for t in twins %}
+      <tr id="twin-row-{{ t.id }}">
+        <td class="mono"><a href="/ui/twins/{{ t.id }}">{{ t.id }}</a></td>
+        <td><span class="badge badge-info">{{ t.kind }}</span></td>
+        <td>{{ t.current_label }}</td>
+        <td>{{ t.pool }}</td>
+        <td class="mono" style="font-size:0.72rem;">{{ t.created_at }}</td>
+        <td>{{ t.identity_count }}</td>
+        <td>{{ t.port_count }}</td>
+        <td>
+          {% for s in t.slots %}<span class="badge badge-ok" title="since {{ s.assigned_at }}">{{ s.slot_kind }}:{{ s.slot_id }}</span> {% else %}<span class="badge badge-gray">unassigned</span>{% endfor %}
+        </td>
+        <td>{{ t.open_connections }}</td>
+        <td class="mono" style="font-size:0.72rem;">
+          {% if t.last_observed_at %}{{ t.last_observed_at }}<br><span class="form-hint">{{ t.last_source }}</span>{% else %}—{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% elif kind or pool or q %}
+  <div class="alert alert-info">No physical twins match these filters.</div>
+  {% else %}
+  <div class="form-panel" id="twins-empty">
+    <h2>No physical twins recorded yet</h2>
+    <p>The inventory is populated from reviewed <em>observations</em>; nothing is created from topology YAML or USB serials automatically. To add units:</p>
+    <ol style="margin:0.5rem 0 0 1.25rem;line-height:1.7;">
+      <li><strong>esp-usbip-bridge hosts</strong>: press <em>Collect from bridge</em> below, review the preview, then Apply.</li>
+      <li><strong>Linux hosts</strong>: run the read-only sysfs collector on the host (command below), then paste or upload its <code>observations.json</code> in the import form.</li>
+      <li><strong>Offline batch</strong>: <code>hil-twins-import --db controller.db --input observations.json</code> (dry-run), then add <code>--apply --backup path/to/new-backup.db</code>.</li>
+      <li><strong>API</strong>: <code>POST /v1/twins/observations/preview</code> then <code>POST /v1/twins/observations</code>.</li>
+    </ol>
+    <p class="form-hint" style="margin-top:0.5rem;">See <code>docs/digital-twins.md</code> and <code>docs/twin-collectors.md</code>.</p>
+  </div>
+  {% endif %}
+</div>
+
+<hr class="section-sep">
+
+<h2>Collect observations</h2>
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>esp-usbip-bridge hosts <span class="tbl-count">{{ bridges|length }}</span></h2></div>
+  {% if bridges %}
+  <table>
+    <thead><tr><th>Host</th><th>Address</th><th>Bearer token</th><th></th></tr></thead>
+    <tbody>
+    {% for b in bridges %}
+      <tr>
+        <td class="mono">{{ b.id }}</td>
+        <td class="mono">{{ b.addr }}</td>
+        <td>
+          {% if b.token_env %}
+            <code>{{ b.token_env }}</code>
+            {% if b.token_set %}<span class="badge badge-ok">set</span>{% else %}<span class="badge badge-warn">not set</span>{% endif %}
+          {% else %}<span class="form-hint">none configured</span>{% endif %}
+        </td>
+        <td>
+          {% if can_write %}
+          <form method="post" action="/ui/twins/collect/bridge/{{ b.id }}" style="display:inline;">
+            <button class="btn btn-sm btn-primary" type="submit" title="One read-only GET /api/usb/devices; results go to the preview screen, never applied automatically">Collect from bridge</button>
+          </form>
+          {% else %}<span class="form-hint">needs inventory:write</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="form-hint">Collection makes one read-only <code>GET /api/usb/devices</code> request from the controller. Every USB record is an unresolved <code>usb_endpoint</code>, not a board claim; review before applying.</p>
+  {% else %}
+  <p class="form-hint">No hosts with transport <code>esp-usbip-bridge</code>.</p>
+  {% endif %}
+</div>
+
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>Linux hosts <span class="tbl-count">{{ linux|length }}</span></h2></div>
+  {% if linux %}
+  <p class="form-hint" style="margin-bottom:0.5rem;">The Linux collector reads that host's own sysfs, so it runs <em>on the host</em> (with the controller package installed). It never opens ttys, I2C or the controller DB. Paste/upload the resulting <code>observations.json</code> below.</p>
+  <table>
+    <thead><tr><th>Host</th><th>Transport</th><th>Command</th></tr></thead>
+    <tbody>
+    {% for h in linux %}
+      <tr>
+        <td class="mono">{{ h.id }}</td>
+        <td>{{ h.transport }}</td>
+        <td>
+          <div class="form-hint">On the host:</div>
+          <pre class="mono" style="white-space:pre-wrap;background:#f8f9fa;padding:0.4rem;border-radius:4px;">{{ h.commands.on_host }}</pre>
+          {% if h.commands.via_ssh %}
+          <div class="form-hint">From the controller over SSH:</div>
+          <pre class="mono" style="white-space:pre-wrap;background:#f8f9fa;padding:0.4rem;border-radius:4px;">{{ h.commands.via_ssh }}</pre>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="form-hint">Use a fresh <code>--scan-id</code> per capture. To bind a Raspberry Pi's host slot add <code>--bind-host-slot --expected-board-serial &lt;serial&gt;</code> (and <code>--expected-twin-id &lt;current-twin&gt;</code> when replacing an occupant).</p>
+  {% else %}
+  <p class="form-hint">No hosts with transport <code>ssh</code> or <code>local</code>.</p>
+  {% endif %}
+</div>
+
+<hr class="section-sep">
+
+<div class="form-panel" id="import">
+  <h2>Import observations (preview first)</h2>
+  <form method="post" action="/ui/twins/observations/preview" enctype="multipart/form-data">
+    <div class="form-group" style="margin-bottom:0.75rem;">
+      <label for="observations_json">Observation JSON — one object, a list, or <code>{"observations": [...]}</code></label>
+      <textarea id="observations_json" name="observations_json" rows="10" class="mono" placeholder='{"observation_id": "...", "source": "...", "observed_at": "2026-01-01T00:00:00Z", "kind": "...", "label": "..."}'></textarea>
+    </div>
+    <div class="form-group" style="margin-bottom:0.75rem;">
+      <label for="file">…or upload a JSON file (takes precedence)</label>
+      <input type="file" id="file" name="file" accept=".json,application/json">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit">Preview</button>
+      <span class="form-hint">Preview validates in a rolled-back transaction; nothing is written until you press Apply on the next screen.</span>
+    </div>
+  </form>
+</div>
+{% endblock %}

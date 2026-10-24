@@ -61,8 +61,16 @@
         <td>{{ s.mux_aux or "" }}</td>
         <td>{{ s.mux_group or "" }}</td>
         <td>{% if s.tca_address is not none %}0x{{ "%02x"|format(s.tca_address) }}{% endif %}</td>
-        <td>{{ s.components | map(attribute="model") | join(", ") }}</td>
-        <td>{% for r in s.routes %}{{ r.device }}→{{ r.channel }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td style="font-size:0.78rem;">
+          {% for c in s.components %}
+          <div><span class="mono">{{ c.model or c.id }}</span>
+            {%- if c.address is not none %} @0x{{ "%02x"|format(c.address) }}{% endif %}
+            {%- if c.tca_channel is not none %} · TCA ch {{ c.tca_channel }}{% else %} · direct{% endif %}
+            {%- if c.capabilities %} <span class="form-hint">{{ c.capabilities | join(", ") }}</span>{% endif %}
+            {%- if c.ws_types %} <span class="form-hint" title="WipperSnapper sensor types">ws {{ c.ws_types | join(",") }}</span>{% endif %}</div>
+          {% else %}<span class="form-hint">no components</span>{% endfor %}
+        </td>
+        <td>{% for r in s.routes %}<a href="/ui/devices/{{ r.device }}/form" class="mono">{{ r.device }}</a>→{{ r.channel }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
         <td>{{ s.pool }}</td>
         <td>{{ s.status }}</td>
         <td>
