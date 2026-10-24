@@ -877,6 +877,18 @@ async def _await_serial_node(
     return False
 
 
+def _esptool_resettable(device: dict[str, Any]) -> bool:
+    """True when the esptool soft-reset fallback can work: esptool only speaks
+    to Espressif ROMs, so an RP2040/SAMD/nRF DUT can never be reset this way
+    (it just retries ``flash_id`` into serial noise — see issue #16)."""
+    if str(device.get("flasher") or "").strip().lower() == "esptool":
+        return True
+    text = " ".join(
+        str(device.get(k) or "") for k in ("build_target", "model", "id")
+    ).lower()
+    return "esp32" in text or "esp8266" in text
+
+
 async def _stage_power_cycle(stage: dict[str, Any], ctx: BenchContext) -> None:
     """Cold-boot the DUT via its solenoid channel; fall back to esptool reset.
 
@@ -893,6 +905,15 @@ async def _stage_power_cycle(stage: dict[str, Any], ctx: BenchContext) -> None:
     bridge = _bridge_power(ctx)
     force_esptool = str(stage.get("reset_via") or "").lower() in ("esptool", "soft_reset", "reset")
     if (channel is None and bridge is None) or force_esptool:
+        if not _esptool_resettable(ctx.device):
+            raise StageError(
+                "power_cycle: no solenoid channel or bridge port is mapped for "
+                f"{ctx.device.get('id') or 'this device'} and the esptool fallback "
+                f"cannot reset a {ctx.device.get('model') or 'non-Espressif'} board "
+                "(esptool only speaks to Espressif ROMs) — map power control "
+                "(solenoid_channel or power_control: bridge-port) "
+                "(infra error, not a test verdict)"
+            )
         if force_esptool and (channel is not None or bridge is not None):
             what = f"solenoid channel {channel}" if bridge is None else bridge.label
             ctx.log_line(

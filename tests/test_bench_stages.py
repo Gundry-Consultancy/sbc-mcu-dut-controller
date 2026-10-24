@@ -282,7 +282,7 @@ async def test_flash_cycle_emits_expected_argv_in_order() -> None:
     # The erase→flash→verify→power slice (enter_bootloader covered separately).
     # No solenoid channel → power_cycle falls back to esptool soft reset.
     cycle = [s for s in DEFAULT_FLASH_STAGES if s["type"] != "enter_bootloader"]
-    await run_stages(cycle, _ctx(tp, device={}))
+    await run_stages(cycle, _ctx(tp, device={"flasher": "esptool"}))
     argvs = _argvs(tp)
     assert len(argvs) == 4
 
@@ -310,7 +310,7 @@ async def test_power_cycle_no_solenoid_pauses_serial_around_esptool_reset() -> N
     async def _resume() -> None:
         calls.append("resume")
 
-    ctx = _ctx(tp, device={}, pause_serial=_pause, resume_serial=_resume)
+    ctx = _ctx(tp, device={"flasher": "esptool"}, pause_serial=_pause, resume_serial=_resume)
     await run_stages([{"type": "power_cycle"}], ctx)
     assert calls == ["pause", "resume"]  # capture released then re-taken
     # the esptool reset (watchdog_reset flash_id) ran between them
@@ -322,11 +322,43 @@ async def test_power_cycle_reset_via_esptool_ignores_mapped_solenoid_channel() -
     """reset_via=esptool forces the esptool watchdog-reset even when a
     solenoid_channel is mapped (kept for the usb-ip UI) — reliable for native-USB."""
     tp = _transport()
-    ctx = _ctx(tp, device={"solenoid_channel": 3})
+    ctx = _ctx(tp, device={"solenoid_channel": 3, "model": "QT Py ESP32-S3"})
     await run_stages([{"type": "power_cycle", "reset_via": "esptool"}], ctx)
     # esptool reset ran; the solenoid CLI was NOT invoked despite the mapped channel
     assert any("--after" in a and "watchdog_reset" in a and a[-1] == "flash_id" for a in _argvs(tp))
     assert not any("solenoid_hub_cli" in " ".join(a) for a in _argvs(tp))
+
+
+
+
+@pytest.mark.asyncio
+async def test_power_cycle_fails_fast_on_non_esp_board_without_power_control() -> None:
+    """A DUT with no solenoid/bridge power and a non-Espressif chip must fail fast
+    with remediation, not retry esptool into serial noise (issue #16)."""
+    tp = _transport()
+    ctx = _ctx(tp, device={"id": "mcu-pico-w", "model": "Raspberry Pi Pico W"})
+    with pytest.raises(StageError, match="esptool only speaks to Espressif ROMs"):
+        await run_stages([{"type": "power_cycle"}], ctx)
+    assert not any("flash_id" in a for a in _argvs(tp))  # esptool never invoked
+
+
+@pytest.mark.asyncio
+async def test_power_cycle_reset_via_esptool_refused_on_non_esp_board() -> None:
+    tp = _transport()
+    ctx = _ctx(tp, device={"id": "mcu-pyportal", "model": "PyPortal M4 Titano",
+                           "flasher": "uf2-msc", "solenoid_channel": 3})
+    with pytest.raises(StageError, match="esptool only speaks to Espressif ROMs"):
+        await run_stages([{"type": "power_cycle", "reset_via": "esptool"}], ctx)
+
+
+@pytest.mark.asyncio
+async def test_power_cycle_fallback_allowed_by_model_hint_without_flasher() -> None:
+    """ESP devices without a flasher row (several rpi-displays boards) keep the
+    esptool fallback via the model hint."""
+    tp = _transport()
+    ctx = _ctx(tp, device={"id": "mcu-feather-oled", "model": "Feather ESP32-S3"})
+    await run_stages([{"type": "power_cycle"}], ctx)
+    assert any("--after" in a and a[-1] == "flash_id" for a in _argvs(tp))
 
 
 # --------------------------------------------------------------------------- #
