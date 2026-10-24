@@ -189,7 +189,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
 
     from fastapi.staticfiles import StaticFiles
 
-    from hil_controller.api.aux import router as aux_router
+    from hil_controller.api.auxes import router as aux_router
     from hil_controller.api.cameras import router as cameras_router
     from hil_controller.api.devices import router as devices_router
     from hil_controller.api.firmware import router as firmware_router
