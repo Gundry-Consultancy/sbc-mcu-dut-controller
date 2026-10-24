@@ -308,3 +308,72 @@ async def test_async_power_state_is_polled_until_observed():
     fake._hub = delayed_hub
     assert await BridgePortPower(fake.client(), "1-1.1").power_cycle(off_s=0, settle_s=0)
     assert observed == [False, True]
+
+
+# --------------------------------------------------------------------------- #
+# claims / channel-exhaustion accounting                                      #
+# --------------------------------------------------------------------------- #
+
+
+def _claims(events: int, *, ms_ago: int | None = None, devices: list | None = None) -> dict:
+    totals: dict = {
+        "channels_total": 16,
+        "connected_devices": 3,
+        "external_hubs": 2,
+        "claimed_interfaces": 4,
+        "claimed_endpoints": 9,
+        "estimated_channels_in_use": 14,
+        "exhaustion_events": events,
+        "last_exhaustion_busid": "1-1.3",
+    }
+    if ms_ago is not None:
+        totals["last_exhaustion_ms_ago"] = ms_ago
+    return {"devices": devices or [], "totals": totals}
+
+
+async def test_claims_is_none_on_old_firmware_404():
+    fake = FakeBridge()
+    assert await fake.client().claims() is None
+
+
+async def test_claims_returns_snapshot():
+    fake = FakeBridge()
+    fake.claims = _claims(0)
+    body = await fake.client().claims()
+    assert body is not None and body["totals"]["channels_total"] == 16
+
+
+def test_describe_exhaustion_requires_evidence():
+    from hil_controller.adapters.esp_usbip_bridge import describe_channel_exhaustion
+
+    # No snapshots, no counter, or no growth → not exhaustion (generic EIO stays generic)
+    assert describe_channel_exhaustion(None, None) is None
+    assert describe_channel_exhaustion(None, _claims(0)) is None
+    assert describe_channel_exhaustion(_claims(2), _claims(2, ms_ago=50)) is None
+    # Without a before snapshot a stale (or unaged) counter is not evidence
+    assert describe_channel_exhaustion(None, _claims(3, ms_ago=999_999)) is None
+    assert describe_channel_exhaustion(None, _claims(3)) is None
+
+
+def test_describe_exhaustion_on_counter_growth_names_holders():
+    from hil_controller.adapters.esp_usbip_bridge import describe_channel_exhaustion
+
+    devices = [
+        {"busid": "1-1.1", "claimed_endpoints": 4, "in_flight": 1},
+        {"busid": "1-1.2", "claimed_endpoints": 2, "in_flight": 0},
+        {"busid": "1-1.4", "claimed_endpoints": 0, "in_flight": 0},
+    ]
+    msg = describe_channel_exhaustion(_claims(1), _claims(2, devices=devices))
+    assert msg is not None
+    assert "channels exhausted" in msg
+    assert "1-1.3" in msg  # the busid that hit exhaustion
+    assert "~14/16" in msg
+    assert "1-1.1 (4 eps, in flight)" in msg and "1-1.2 (2 eps)" in msg
+    assert "1-1.4" not in msg  # holds nothing, not listed
+    assert "retry" in msg
+
+
+def test_describe_exhaustion_recent_event_without_before_snapshot():
+    from hil_controller.adapters.esp_usbip_bridge import describe_channel_exhaustion
+
+    assert describe_channel_exhaustion(None, _claims(1, ms_ago=5_000)) is not None

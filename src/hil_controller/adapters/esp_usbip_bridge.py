@@ -182,6 +182,18 @@ class EspUsbipBridgeClient:
         body = await self._request("GET", "/api/usb/hubs")
         return list((body or {}).get("hubs") or []) if isinstance(body, dict) else []
 
+    async def claims(self) -> dict[str, Any] | None:
+        """``GET /api/usb/claims`` — interface-claim / channel-pressure accounting.
+
+        ``None`` when the bridge firmware predates the endpoint (404), so
+        callers degrade gracefully against older deployments.
+        """
+        try:
+            body = await self._request("GET", "/api/usb/claims")
+        except EspBridgeNotFoundError:
+            return None
+        return body if isinstance(body, dict) else {}
+
     # ------------------------------------------------------------------ #
     # hub port power                                                      #
     # ------------------------------------------------------------------ #
@@ -212,6 +224,59 @@ def find_hub_port(
             if port.get("path") == port_path:
                 return hub, port
     return None
+
+
+def describe_channel_exhaustion(
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    *,
+    recent_ms: int = 120_000,
+) -> str | None:
+    """One actionable line when the bridge reports USB host-channel exhaustion.
+
+    ``before``/``after`` are ``/api/usb/claims`` snapshots taken around the
+    failed operation (either may be ``None``: old firmware, or the probe
+    itself failed). Exhaustion is reported when the bridge's exhaustion
+    counter grew during the operation, or — with no ``before`` snapshot —
+    when the last exhaustion was recent (``recent_ms``). A generic EIO with
+    no exhaustion evidence returns ``None`` so callers do not mislabel it.
+    """
+    totals = (after or {}).get("totals") or {}
+    events = int(totals.get("exhaustion_events") or 0)
+    if events <= 0:
+        return None
+    if before is not None:
+        before_events = int(((before.get("totals") or {}).get("exhaustion_events")) or 0)
+        if events <= before_events:
+            return None
+    else:
+        ms_ago = totals.get("last_exhaustion_ms_ago")
+        if ms_ago is None or int(ms_ago) > recent_ms:
+            return None
+    holders = sorted(
+        ((after or {}).get("devices") or []),
+        key=lambda d: int(d.get("claimed_endpoints") or 0),
+        reverse=True,
+    )
+    held = ", ".join(
+        f"{d.get('busid')} ({int(d.get('claimed_endpoints') or 0)} eps"
+        + (", in flight" if int(d.get("in_flight") or 0) > 0 else "")
+        + ")"
+        for d in holders
+        if int(d.get("claimed_endpoints") or 0) > 0
+    )
+    est = totals.get("estimated_channels_in_use")
+    total = totals.get("channels_total")
+    busid = str(totals.get("last_exhaustion_busid") or "").strip()
+    parts = ["bridge USB host channels exhausted"]
+    if busid:
+        parts.append(f"while claiming for {busid}")
+    if est is not None and total is not None:
+        parts.append(f"(~{est}/{total} channels held)")
+    msg = " ".join(parts)
+    if held:
+        msg += f"; holders: {held}"
+    return msg + " — end another session or power off an unused port, then retry"
 
 
 # --------------------------------------------------------------------------- #
