@@ -6,14 +6,27 @@
   </td>
   <td>{{ d.model }}</td>
   <td class="mono">{{ d.host_id }}</td>
-  <td class="mono">{{ d.hub_port_path or '-' }}</td>
+  <td class="mono" style="font-size:0.73rem;">
+    {%- if d.hub_host_id and d.hub_host_id != d.host_id %}{{ d.hub_host_id }} · {% endif -%}
+    {{ d.hub_port_path or '-' }}
+    {%- if d.solenoid_channel is not none %}<br><span class="form-hint">sol ch {{ d.solenoid_channel }}{% if d.bootsel_channel is not none %} · BOOTSEL {{ d.bootsel_channel }}{% endif %}</span>{% endif %}
+    {%- if d.power_control %}<br><span class="badge badge-info">{{ d.power_control }}</span>{% endif %}
+    {%- if d.usb_serial %}<br><span class="form-hint" title="USB iSerial">SN {{ d.usb_serial }}</span>{% endif %}
+  </td>
   <td>{{ d.pool }}</td>
   <td><div class="caps">{% for c in d.capabilities %}<span class="badge badge-gray">{{ c }}</span>{% endfor %}</div></td>
   <td class="mono" style="font-size:0.73rem;">{{ d.serial_port or '—' }}</td>
-  <td>{{ d.flasher or '—' }}</td>
+  <td>{{ d.flasher or '—' }}{% if d.build_target %}<br><span class="form-hint mono">{{ d.build_target }}</span>{% endif %}</td>
   <td>
-    <span class="badge {% if d.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}"
-      {% if d.status != 'available' and d.unavailable_reason %}title="{{ d.unavailable_reason }}"{% endif %}>{{ d.status }}</span>
+    <span class="badge {% if d.status == 'available' %}badge-ok{% else %}badge-warn{% endif %}">{{ d.status }}{% if d.status != 'available' and d.unavailable_kind %} · {{ d.unavailable_kind }}{% endif %}</span>
+    {% if d.status != 'available' %}
+    <div class="form-hint" style="font-size:0.72rem;max-width:18rem;">
+      {% if d.unavailable_reason %}{{ d.unavailable_reason }}<br>{% endif %}
+      {% if d.unavailable_since %}since <span class="mono">{{ d.unavailable_since[:19] }}</span>{% endif %}
+      {% if d.unavailable_kind == 'temporary' %} · {{ d.retry_attempts or 0 }} attempt(s){% if d.retry_after %} · next ≥ <span class="mono">{{ d.retry_after[:19] }}</span>{% endif %}{% endif %}
+    </div>
+    {% endif %}
+    {% if d.last_checked_at %}<div class="form-hint" style="font-size:0.68rem;" title="last presence / recovery probe">checked <span class="mono">{{ d.last_checked_at[:19] }}</span></div>{% endif %}
     {% if d.status != 'available' and d.unavailable_kind != 'permanent' %}
     <button class="btn btn-sm btn-outline"
       title="Reset the retry budget — the reconciler re-probes this device on its next tick"

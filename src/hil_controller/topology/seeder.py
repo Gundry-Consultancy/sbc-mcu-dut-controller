@@ -22,6 +22,8 @@ _RUNTIME_PRESERVED_DEVICE_FIELDS = (
     # Probed/assigned at runtime (e.g. a stable by-path set on the usbip page or
     # by a firmware-bench run); topology only fills it when the DB has none.
     "serial_port",
+    # arduino-cli build target: set on the bench or seeded; topology fills blanks.
+    "build_target",
 )
 
 
@@ -126,8 +128,8 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     (id, host_id, kind, model, capabilities_json, usb_json,
                      pool, status, serial_port, flasher, camera_id, qr_identifier,
                      hub_host_id, hub_port_path, solenoid_channel, usb_serial,
-                     bootsel_channel, bootsel_inverted, power_control)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     bootsel_channel, bootsel_inverted, power_control, build_target)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     host_id=excluded.host_id, kind=excluded.kind,
                     model=excluded.model,
@@ -144,7 +146,8 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     usb_serial=excluded.usb_serial,
                     bootsel_channel=excluded.bootsel_channel,
                     bootsel_inverted=excluded.bootsel_inverted,
-                    power_control=excluded.power_control
+                    power_control=excluded.power_control,
+                    build_target=excluded.build_target
                 """,
                 (
                     d["id"],
@@ -166,6 +169,7 @@ async def seed_topology(db_path: str, topology_file: str) -> None:
                     runtime_values["bootsel_channel"],
                     runtime_values["bootsel_inverted"],
                     d.get("power_control"),
+                    runtime_values["build_target"],
                 ),
             )
             if existing:
@@ -346,6 +350,7 @@ def _merge_runtime_device_fields(
         "bootsel_channel": device.get("bootsel_channel"),
         "bootsel_inverted": int(bool(device.get("bootsel_inverted", False))),
         "serial_port": device.get("serial_port"),
+        "build_target": device.get("build_target"),
     }
     if not existing:
         return seeded
@@ -369,6 +374,7 @@ def _runtime_device_field_drift(
         "bootsel_channel": device.get("bootsel_channel"),
         "bootsel_inverted": int(bool(device.get("bootsel_inverted", False))),
         "serial_port": device.get("serial_port"),
+        "build_target": device.get("build_target"),
     }
     for field in _RUNTIME_PRESERVED_DEVICE_FIELDS:
         db_value = existing.get(field)

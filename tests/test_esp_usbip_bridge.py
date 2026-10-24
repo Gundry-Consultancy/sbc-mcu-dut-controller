@@ -209,3 +209,171 @@ async def test_await_presence_times_out():
     power = BridgePortPower(fake.client(), "1-1.2")
     assert await power.await_presence(True, timeout_s=0.0) is False
     assert await power.await_presence(False, timeout_s=0.0) is True
+
+
+async def test_bridge_outage_cannot_prove_disappearance():
+    fake = FakeBridge()
+    fake.fail_status = 503
+    power = BridgePortPower(fake.client(), "1-1.1")
+    assert await power.await_presence(False, timeout_s=0.0) is False
+    with pytest.raises(EspBridgeBusyError):
+        await power.power_cycle(disappear_timeout_s=0, reappear_timeout_s=0)
+    assert fake.posts() == []
+
+
+async def test_accepted_off_without_switching_cannot_pass_cycle():
+    fake = FakeBridge()
+    fake._set_power = lambda *_: None
+    lines = []
+    power = BridgePortPower(fake.client(), "1-1.1")
+    assert not await power.power_cycle(
+        off_s=0,
+        settle_s=0,
+        disappear_timeout_s=0,
+        reappear_timeout_s=0,
+        on_line=lines.append,
+    )
+    assert [p for p, _ in fake.posts()] == ["/api/ports/1-1.1/off", "/api/ports/1-1.1/on"]
+    assert any("cycle cannot pass" in line for line in lines)
+    assert fake.power["1-1.1"]  # recovery still requests on
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("power", "off"),
+        ("desired", "off"),
+        ("pending", "on"),
+        ("mismatch", True),
+        ("user_off", True),
+        ("enabled", False),
+    ],
+)
+async def test_enumerated_device_with_conflicting_power_state_cannot_pass(field, value):
+    fake = FakeBridge()
+    original = fake._hub
+
+    def stale_hub():
+        hub = original()
+        if fake.power["1-1.1"]:
+            hub["ports"][0][field] = value
+        return hub
+
+    fake._hub = stale_hub
+    power = BridgePortPower(fake.client(), "1-1.1")
+    assert not await power.power_cycle(
+        off_s=0,
+        settle_s=0,
+        disappear_timeout_s=0,
+        reappear_timeout_s=0,
+    )
+    assert "1-1.1" in fake.devices
+
+
+async def test_bridge_outage_after_off_still_requests_on_and_fails():
+    fake = FakeBridge()
+    original = fake.handle
+
+    def lose_observation(request):
+        if request.method == "GET" and fake.posts():
+            return httpx.Response(503, json={"error": "host busy"})
+        return original(request)
+
+    client = EspUsbipBridgeClient(
+        BASE_URL, client=httpx.AsyncClient(transport=httpx.MockTransport(lose_observation))
+    )
+    assert not await BridgePortPower(client, "1-1.1").power_cycle(
+        off_s=0,
+        settle_s=0,
+        disappear_timeout_s=0,
+        reappear_timeout_s=0,
+    )
+    assert [p for p, _ in fake.posts()] == ["/api/ports/1-1.1/off", "/api/ports/1-1.1/on"]
+    assert fake.power["1-1.1"]
+
+
+async def test_async_power_state_is_polled_until_observed():
+    fake = FakeBridge()
+    original = fake._hub
+    observed = []
+
+    def delayed_hub():
+        hub = original()
+        state = fake.power["1-1.1"]
+        if state not in observed:
+            observed.append(state)
+            hub["ports"][0]["pending"] = "on" if state else "off"
+        return hub
+
+    fake._hub = delayed_hub
+    assert await BridgePortPower(fake.client(), "1-1.1").power_cycle(off_s=0, settle_s=0)
+    assert observed == [False, True]
+
+
+# --------------------------------------------------------------------------- #
+# claims / channel-exhaustion accounting                                      #
+# --------------------------------------------------------------------------- #
+
+
+def _claims(events: int, *, ms_ago: int | None = None, devices: list | None = None) -> dict:
+    totals: dict = {
+        "channels_total": 16,
+        "connected_devices": 3,
+        "external_hubs": 2,
+        "claimed_interfaces": 4,
+        "claimed_endpoints": 9,
+        "estimated_channels_in_use": 14,
+        "exhaustion_events": events,
+        "last_exhaustion_busid": "1-1.3",
+    }
+    if ms_ago is not None:
+        totals["last_exhaustion_ms_ago"] = ms_ago
+    return {"devices": devices or [], "totals": totals}
+
+
+async def test_claims_is_none_on_old_firmware_404():
+    fake = FakeBridge()
+    assert await fake.client().claims() is None
+
+
+async def test_claims_returns_snapshot():
+    fake = FakeBridge()
+    fake.claims = _claims(0)
+    body = await fake.client().claims()
+    assert body is not None and body["totals"]["channels_total"] == 16
+
+
+def test_describe_exhaustion_requires_evidence():
+    from hil_controller.adapters.esp_usbip_bridge import describe_channel_exhaustion
+
+    # No snapshots, no counter, or no growth → not exhaustion (generic EIO stays generic)
+    assert describe_channel_exhaustion(None, None) is None
+    assert describe_channel_exhaustion(None, _claims(0)) is None
+    assert describe_channel_exhaustion(_claims(2), _claims(2, ms_ago=50)) is None
+    # Without a before snapshot a stale (or unaged) counter is not evidence
+    assert describe_channel_exhaustion(None, _claims(3, ms_ago=999_999)) is None
+    assert describe_channel_exhaustion(None, _claims(3)) is None
+
+
+def test_describe_exhaustion_on_counter_growth_names_holders():
+    from hil_controller.adapters.esp_usbip_bridge import describe_channel_exhaustion
+
+    devices = [
+        {"busid": "1-1.1", "claimed_endpoints": 4, "in_flight": 1},
+        {"busid": "1-1.2", "claimed_endpoints": 2, "in_flight": 0},
+        {"busid": "1-1.4", "claimed_endpoints": 0, "in_flight": 0},
+    ]
+    msg = describe_channel_exhaustion(_claims(1), _claims(2, devices=devices))
+    assert msg is not None
+    assert "channels exhausted" in msg
+    assert "1-1.3" in msg  # the busid that hit exhaustion
+    assert "~14/16" in msg
+    assert "1-1.1 (4 eps, in flight)" in msg and "1-1.2 (2 eps)" in msg
+    assert "1-1.4" not in msg  # holds nothing, not listed
+    assert "retry" in msg
+
+
+def test_describe_exhaustion_recent_event_without_before_snapshot():
+    from hil_controller.adapters.esp_usbip_bridge import describe_channel_exhaustion
+
+    assert describe_channel_exhaustion(None, _claims(1, ms_ago=5_000)) is not None

@@ -419,6 +419,7 @@ class FirmwareBenchAdapter:
         :class:`UsbipAttachKeeper` re-attaches whenever the DUT re-enumerates
         (power-cycle, 1200-baud touch into the ROM) for the rest of the session.
         """
+        from hil_controller.adapters.esp_usbip_bridge import describe_channel_exhaustion
         from hil_controller.adapters.usbip_bridge import (
             UsbipAttachKeeper,
             UsbipBridge,
@@ -440,15 +441,32 @@ class FirmwareBenchAdapter:
         )
         client = bridge_client_of(self.hub_transport)
         present = (lambda: client.device_present(str(busid))) if client is not None else None
+
+        async def bridge_claims() -> Any:
+            """Claims snapshot, or None (old firmware / probe failure — best effort)."""
+            if client is None:
+                return None
+            try:
+                return await client.claims()
+            except Exception:  # noqa: BLE001 — accounting must never fail the job itself
+                return None
+
+        claims_before = await bridge_claims()
         before = await bridge.list_serial_ports()
         await bridge.ensure_vhci()
         keeper = UsbipAttachKeeper(
             bridge, present=present, on_line=lambda m: self._sink("bench", m)
         )
         if not await keeper.ensure_attached():
+            # Distinguish bridge host-channel exhaustion from a generic attach
+            # failure: the former is actionable (free a session / power off a
+            # port) and must not read as a flaky generic EIO. Either way this
+            # job failed admission; sessions other DUTs already hold are kept.
+            exhaustion = describe_channel_exhaustion(claims_before, await bridge_claims())
             raise RuntimeError(
-                f"firmware-bench: usbip attach of {busid} from {self.usbip_server_addr} failed "
-                "(infra error, not a test verdict)"
+                f"firmware-bench: usbip attach of {busid} from {self.usbip_server_addr} failed"
+                + (f" — {exhaustion}" if exhaustion else "")
+                + " (infra error, not a test verdict)"
             )
         self._usbip_keeper = keeper
         if bridge.settle_s:
@@ -459,6 +477,16 @@ class FirmwareBenchAdapter:
             f"usbip: {busid} from {self.usbip_server_addr} attached on the controller"
             + (f" → {self._usbip_tty}" if self._usbip_tty else " (no new tty appeared)"),
         )
+        totals = ((await bridge_claims()) or {}).get("totals") or {}
+        if totals:
+            self._sink(
+                "bench",
+                f"bridge claims: ~{totals.get('estimated_channels_in_use')}"
+                f"/{totals.get('channels_total')} host channels held "
+                f"({totals.get('connected_devices')} devices, "
+                f"{totals.get('claimed_endpoints')} claimed endpoints, "
+                f"{totals.get('exhaustion_events')} exhaustion events)",
+            )
         keeper.start()
 
     async def _detach_usbip(self) -> None:

@@ -12,6 +12,8 @@ private `usbip-hil-controller` deploy repo).
 - HTTP API: `docs/api.md` — `GET /v1/targets`, `POST /v1/jobs`,
   `GET /v1/jobs/{id}/wait`, `GET /v1/jobs/{id}/assets`; bearer-token auth.
 - Architecture: `docs/ARCHITECTURE.md`; platform tour: `docs/HIL_PLATFORM_OVERVIEW.md`.
+- Web UI page map (every page ↔ its API equivalent, restart/topology-drift rules):
+  `docs/web-ui.md`. Physical inventory: `docs/digital-twins.md` + skill `hil-inventory-twins`.
 - Job scripts: `firmware-bench` (flash+drive MCUs), `pytest-suite`
   (python-snapper SBC path); stage vocabulary in
   `src/hil_controller/adapters/bench_stages.py`.

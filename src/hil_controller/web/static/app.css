@@ -3,11 +3,11 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f0f2f5; c
 
 nav {
   background: #1a1a2e; color: #c9d1d9; padding: 0.65rem 1.5rem;
-  display: flex; align-items: center; gap: 1.5rem; position: sticky; top: 0; z-index: 100;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 1rem; position: sticky; top: 0; z-index: 100;
   box-shadow: 0 1px 4px rgba(0,0,0,.4);
 }
 nav .brand { font-weight: 700; font-size: 1rem; color: #7eb8f7; margin-right: 0.5rem; }
-nav a { color: #c9d1d9; text-decoration: none; font-size: 0.875rem; padding: 0.25rem 0.5rem; border-radius: 4px; }
+nav a { color: #c9d1d9; text-decoration: none; font-size: 0.875rem; padding: 0.25rem 0.5rem; border-radius: 4px; white-space: nowrap; }
 nav a:hover { background: rgba(255,255,255,.08); color: #fff; }
 nav a.active { background: rgba(126,184,247,.15); color: #7eb8f7; }
 nav .nav-end { margin-left: auto; }

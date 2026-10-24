@@ -25,6 +25,7 @@ Two tiers:
 | `hil-i2c-strands` | platform | Route a shared I2C component strand to one DUT (ADG729 + on-strand TCA9548), request components via `target.requires`, mux-preserving flashing (absorbs the old hil-mux-i2c-swap). |
 | `hil-camera-proof` | platform | Capture visual proof as job assets: `capture_display` tuning, ROI calibration, focus drivers, camera-server deployment. |
 | `hil-bench-recovery` | platform | Bench triage: availability semantics + frozen-flag recovery, solenoid/BOOTSEL control, host wedges, infra-error-vs-verdict discipline. |
+| `hil-inventory-twins` | platform | Inventory every physical asset into the digital-twins DB (collectors, preview → apply, slot replacement) and sync hosts/devices/USB IDs/strands + topology YAML to what is really plugged in — web UI and API paths side by side. |
 | `hil-display-pytest` | platform | Real-display tests via the pytest-suite (python-snapper) job path with camera + log proof per stage. |
 | `hil-display-arduino` | app: WS Arduino | Prove a WipperSnapper Arduino display on a real MCU: flash, v2 check-in, inject display Add/Write, camera proof to the PR. |
 

@@ -45,14 +45,48 @@
 </div>
 {% endif %}
 
+{% if bridge %}
+<div class="form-panel" style="margin:0.5rem;">
+  <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+    <strong>esp-usbip-bridge — {{ host_id }}</strong>
+    <span class="mono form-hint">{{ bridge.base_url }}</span>
+    {% if bridge.token_configured %}<span class="badge badge-ok">token configured</span>{% elif bridge.token_env %}<span class="badge badge-warn">token env {{ bridge.token_env }} NOT set on controller</span>{% else %}<span class="badge badge-gray">no token (bridge has none)</span>{% endif %}
+    {% if bridge.info_error %}<span class="badge badge-warn">API unreachable</span>{% elif bridge.info %}<span class="badge badge-ok">API answering</span>{% endif %}
+    <a class="btn btn-sm btn-outline" href="/ui/hosts" title="Edit address / API URL / token env var">Edit host</a>
+  </div>
+  {% if bridge.info_error %}<div class="form-hint" style="margin-top:0.3rem;"><code>{{ bridge.info_error }}</code></div>{% endif %}
+  {% if bridge.info %}
+  <details style="margin-top:0.4rem;">
+    <summary style="cursor:pointer;font-size:0.78rem;color:#0d6efd;">Bridge /api/info</summary>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0.5rem;margin-top:0.45rem;font-size:0.78rem;">
+      {% for k, v in bridge.info.items() %}
+      <div><strong>{{ k }}</strong><br><span class="mono">{% if v is mapping or (v is iterable and v is not string) %}{{ v | tojson }}{% else %}{{ v }}{% endif %}</span></div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+  <div id="bridge-result-{{ host_id }}" style="margin-top:0.4rem;"></div>
+</div>
+{% endif %}
+
 {% if not daemon_listening %}
 <div class="alert alert-error" style="margin:0.5rem;">
+  {% if bridge %}
+  <strong>esp-usbip-bridge API not reachable on {{ host_id }}</strong>
+  {% if error %}<br><code style="font-size:0.8rem;">{{ error }}</code>{% endif %}
+  <br><span class="form-hint">
+    Check the bridge is powered and on the network (<code>avahi-browse -rt _usbip._tcp</code>),
+    that the host's Address / API URL are right, and — if the bridge has a token —
+    that its Token env var is set in <code>run/controller.env</code>.
+  </span>
+  {% else %}
   <strong>usbipd not reachable on {{ host_id }}</strong>
   {% if error %}<br><code style="font-size:0.8rem;">{{ error }}</code>{% endif %}
   <br><span class="form-hint">
     Start it via <code>scripts/setup-hil-host.sh</code> on the bench, or
     <code>sudo systemctl start hil-usbipd</code> if already installed.
   </span>
+  {% endif %}
 </div>
 {% elif not busids %}
 <p style="color:#6c757d;padding:1rem;text-align:center;">
@@ -94,6 +128,20 @@
         {% endif %}
       </td>
       <td style="padding:0.4rem;">
+        {% if bridge %}
+          {% set pc = (bridge.power_control.get(b.matched_device_id) if b.matched_device_id else none) or "" %}
+          {% set force = "1" if pc == "bridge-port:force" else "" %}
+          <div style="display:flex;gap:0.25rem;margin-bottom:0.3rem;align-items:center;flex-wrap:wrap;">
+            <span class="form-hint" style="font-size:0.72rem;" title="device power_control">port power{% if pc %} · {{ pc }}{% endif %}</span>
+            {% for act, label in [("on","On"),("off","Off"),("cycle","Cycle")] %}
+            <button class="btn btn-sm{% if act == 'cycle' %} btn-outline{% endif %}" title="Bridge hub port {{ act }}"
+              hx-post="/ui/hosts/{{ host_id }}/bridge/ports/{{ b.busid }}/{{ act }}"
+              hx-vals='{"force": "{{ force }}"}'
+              hx-target="#bridge-result-{{ host_id }}" hx-swap="innerHTML"
+              {% if act != 'on' %}hx-confirm="Bridge port {{ b.busid }} {{ act }} on {{ host_id }}?"{% endif %}>{{ label }}</button>
+            {% endfor %}
+          </div>
+        {% endif %}
         {% if b.matched_device_id %}
           <a href="/ui/devices/{{ b.matched_device_id }}/form"
              class="btn btn-sm btn-outline">Edit device</a>
@@ -187,6 +235,19 @@
       <div style="border:1px solid #e9ecef;border-radius:6px;padding:0.45rem 0.55rem;background:#fff;">
         <div class="mono" style="font-size:0.76rem;">Port {{ port.port_number }}</div>
         <div class="form-hint" style="margin-top:0.2rem;">{{ port.status }}</div>
+        {% if bridge and port.path %}
+        <div class="mono form-hint" style="font-size:0.7rem;">{{ port.path }}</div>
+        <div style="display:flex;gap:0.2rem;margin-top:0.25rem;flex-wrap:wrap;">
+          {% set ganged = port.power_switching and port.power_switching != 'per-port' %}
+          {% for act, label in [("on","On"),("off","Off"),("cycle","Cycle")] %}
+          <button class="btn btn-sm{% if act == 'cycle' %} btn-outline{% endif %}"
+            hx-post="/ui/hosts/{{ host_id }}/bridge/ports/{{ port.path }}/{{ act }}"
+            hx-target="#bridge-result-{{ host_id }}" hx-swap="innerHTML"
+            {% if act != 'on' %}hx-confirm="Bridge port {{ port.path }} {{ act }} on {{ host_id }}?"{% endif %}
+            {% if ganged %}title="Hub reports {{ port.power_switching }} power switching: the bridge refuses per-port power unless forced"{% endif %}>{{ label }}</button>
+          {% endfor %}
+        </div>
+        {% endif %}
       </div>
       {% endfor %}
     </div>

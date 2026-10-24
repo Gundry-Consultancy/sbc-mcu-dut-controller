@@ -9,7 +9,11 @@ or dev-LAN. Raw jobs still use the existing shape; MCP builds recipes over it.
 The controller exposes a small HTTP API (FastAPI) that a test script or CI job
 uses to run firmware on real hardware and pull back proof. This documents the
 endpoints a **test author** needs; the web UI and inventory/topology endpoints
-are covered in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+are covered in [`ARCHITECTURE.md`](ARCHITECTURE.md), and [`web-ui.md`](web-ui.md)
+maps every operator page to the endpoint that returns the same data
+(including `GET /v1/topology/drift`: what a restart would revert;
+`POST /v1/topology/save`: write the live DB back into the seed file; and
+`PATCH /v1/devices/{id}`: partial device update).
 
 Base URL (over Tailscale): `http://tachyon-16ee27b8.ostrich-escalator.ts.net:8080`
 (`192.168.1.169:8080` on the LAN). All `/v1/*` calls require a bearer token:
@@ -151,7 +155,7 @@ the linked `firmware`. CI pulls these as proof instead of scraping the UI.
 | `capture_display` | photograph the DUT panel via the camera server (+ ROI crop), registered as a job asset; logs `DISPLAY_CAPTURE_VERDICT` | `camera_url`, `roi`, exposure/focus opts |
 | `bootloader_touch` | 1200-baud touch to flip a running app into ROM download (lighter than `enter_bootloader`) | — |
 | `diagnose` | classify a stuck boot state | — |
-| `io_api_component` | **staging / dev-lan only.** Create / update / delete a WipperSnapper v2 component feed through the real IO REST API (`POST\|PUT\|DELETE /api/v2/{IO_USERNAME}/groups/{device_key}/feeds[/{feed_key}]`, `X-AIO-Key` from job secrets); logs `IO_API_VERDICT status=<http> key=<feed key> action=<a> ok=…` | `action`, `feed`, `device_key`, `feed_key`, `expect_status`, `soft`, `label` |
+| `io_api_component` | **staging / dev-lan only.** Create / update / delete a WipperSnapper v2 component feed through the real IO REST API (`POST\|PUT\|DELETE /api/v2/{IO_USERNAME}/groups/{device_key}/feeds[/{feed_key}]`, `X-AIO-Key` from job secrets); logs `IO_API_VERDICT status=<http> key=<feed key> action=<a> ok=…` | `action` (create/update/delete/batch), `feed`, `batch`, `device_key`, `feed_key`, `expect_status`, `soft`, `label` |
 | `io_ws_publish` | **staging / dev-lan only.** Publish a JSON frame (`i2cScanAll` / `i2cProbe`) to `{IO_USERNAME}/ws-w2b/{device_key}` over IO MQTT (TLS on 8883); logs `IO_WS_PUBLISH published=true` | `payload`, `device_key`, `qos`, `label` |
 | `io_ws_expect` | **staging / dev-lan only.** Subscribe to `ws-b2w` / `ws-r2b`, run the guarded `step`, wait for a matching JSON frame; logs `IO_WS_VERDICT matched=true\|false action=<a> topic=<t> elapsed_s=<s>`. A matched `checkin` captures the device key | `action`, `step`, `match`, `match_contains`, `topics`, `timeout_s` (5), `soft`, `label` |
 
@@ -202,6 +206,12 @@ on `{user}/ws-b2w` for `{deviceId, action: checkin|i2cScanResults|error, args}`.
   (or in the topic), because `ws-b2w` is shared by every device on the
   account; set `match_device: false` to opt out. Default topics:
   `ws-r2b/<key|#>` for the component actions, else `ws-b2w` + `ws-b2w/#`.
+- **Batch (multi-component) route.** `io_api_component action: batch` posts
+  `{"batch": {"create": [...], "update": [...], "destroy": [...]}}` to
+  `/api/v2/{IO_USERNAME}/feeds/batch`, the IO wizard's I2C path; bare feed keys
+  are prefixed with `{device_key}.`. Rails emits `addMultiComponent` (create
+  only), `removeComponent` (destroy only) or `modifyMultiComponent`, and
+  `io_ws_expect` listens on `ws-r2b` for those actions by default.
 - **Labels.** An optional `label` (`[A-Za-z0-9][A-Za-z0-9_.-]*`) is echoed as
   `label=<l>` in that stage's `IO_API_VERDICT` / `IO_WS_PUBLISH` / `IO_WS_VERDICT` /
   `IO_INFRA_ERROR` line, so a suite can tie each verdict to its probe
@@ -323,3 +333,11 @@ curl -H "Authorization: Bearer $TOK" \
 > Be gentle with `res=full` on weak hosts (e.g. a Pi Zero 2 W): the 16 MP
 > still-mode reconfigure is heavy and wedges if hammered. Capture one-shot — don't
 > poll it in a tight loop.
+
+
+## Physical digital twins
+
+The additive administrative `/v1/twins` API records physical identities, observations,
+owned ports, logical-slot replacement history, and physical connections. See
+[digital-twins.md](digital-twins.md) for contracts, conservative reconciliation, auth,
+and the offline import command. Existing job and topology APIs retain their behavior.

@@ -182,6 +182,18 @@ class EspUsbipBridgeClient:
         body = await self._request("GET", "/api/usb/hubs")
         return list((body or {}).get("hubs") or []) if isinstance(body, dict) else []
 
+    async def claims(self) -> dict[str, Any] | None:
+        """``GET /api/usb/claims`` — interface-claim / channel-pressure accounting.
+
+        ``None`` when the bridge firmware predates the endpoint (404), so
+        callers degrade gracefully against older deployments.
+        """
+        try:
+            body = await self._request("GET", "/api/usb/claims")
+        except EspBridgeNotFoundError:
+            return None
+        return body if isinstance(body, dict) else {}
+
     # ------------------------------------------------------------------ #
     # hub port power                                                      #
     # ------------------------------------------------------------------ #
@@ -212,6 +224,59 @@ def find_hub_port(
             if port.get("path") == port_path:
                 return hub, port
     return None
+
+
+def describe_channel_exhaustion(
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    *,
+    recent_ms: int = 120_000,
+) -> str | None:
+    """One actionable line when the bridge reports USB host-channel exhaustion.
+
+    ``before``/``after`` are ``/api/usb/claims`` snapshots taken around the
+    failed operation (either may be ``None``: old firmware, or the probe
+    itself failed). Exhaustion is reported when the bridge's exhaustion
+    counter grew during the operation, or — with no ``before`` snapshot —
+    when the last exhaustion was recent (``recent_ms``). A generic EIO with
+    no exhaustion evidence returns ``None`` so callers do not mislabel it.
+    """
+    totals = (after or {}).get("totals") or {}
+    events = int(totals.get("exhaustion_events") or 0)
+    if events <= 0:
+        return None
+    if before is not None:
+        before_events = int(((before.get("totals") or {}).get("exhaustion_events")) or 0)
+        if events <= before_events:
+            return None
+    else:
+        ms_ago = totals.get("last_exhaustion_ms_ago")
+        if ms_ago is None or int(ms_ago) > recent_ms:
+            return None
+    holders = sorted(
+        ((after or {}).get("devices") or []),
+        key=lambda d: int(d.get("claimed_endpoints") or 0),
+        reverse=True,
+    )
+    held = ", ".join(
+        f"{d.get('busid')} ({int(d.get('claimed_endpoints') or 0)} eps"
+        + (", in flight" if int(d.get("in_flight") or 0) > 0 else "")
+        + ")"
+        for d in holders
+        if int(d.get("claimed_endpoints") or 0) > 0
+    )
+    est = totals.get("estimated_channels_in_use")
+    total = totals.get("channels_total")
+    busid = str(totals.get("last_exhaustion_busid") or "").strip()
+    parts = ["bridge USB host channels exhausted"]
+    if busid:
+        parts.append(f"while claiming for {busid}")
+    if est is not None and total is not None:
+        parts.append(f"(~{est}/{total} channels held)")
+    msg = " ".join(parts)
+    if held:
+        msg += f"; holders: {held}"
+    return msg + " — end another session or power off an unused port, then retry"
 
 
 # --------------------------------------------------------------------------- #
@@ -296,11 +361,44 @@ class BridgePortPower:
             return False
 
     async def await_presence(self, present: bool, *, timeout_s: float) -> bool:
-        """Poll until the DUT's presence equals ``present`` or ``timeout_s`` elapses."""
+        """Poll for an observed presence state; transport errors are not absence."""
         deadline = time.monotonic() + timeout_s
         while True:
-            if await self.present() == present:
-                return True
+            try:
+                if await self.client.device_present(self.port) == present:
+                    return True
+            except EspBridgeError as exc:
+                log.debug("bridge presence observation for %s failed: %s", self.port, exc)
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(self.poll_s)
+
+    async def _await_cycle_state(self, on: bool, *, timeout_s: float) -> bool:
+        """Require actual hub power and device presence to agree with the request.
+
+        Desired/pending/mismatch are optional on older bridge firmware. Actual
+        power is required: an accepted POST or a missing device alone cannot
+        establish a successful power transition.
+        """
+        deadline = time.monotonic() + timeout_s
+        expected = "on" if on else "off"
+        while True:
+            try:
+                found = find_hub_port(await self.client.hubs(), self.port)
+                if found is not None:
+                    _, port = found
+                    matches = (
+                        port.get("power") == expected
+                        and port.get("desired", expected) == expected
+                        and not port.get("pending")
+                        and not port.get("mismatch", False)
+                        and port.get("user_off", not on) == (not on)
+                        and (not on or port.get("enabled") is True)
+                    )
+                    if matches and await self.client.device_present(self.port) == on:
+                        return True
+            except EspBridgeError as exc:
+                log.debug("bridge power observation for %s failed: %s", self.port, exc)
             if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(self.poll_s)
@@ -317,34 +415,38 @@ class BridgePortPower:
         """Detection-driven cold boot: off → await gone → (off_s) → on → await back.
 
         Mirrors the solenoid ``power_cycle`` stage's defaults (off 1 s, disappear
-        ≤10 s, reappear ≤30 s, settle 2 s). Returns True when the DUT
-        re-enumerated; False (with a warning line) when it did not.
+        ≤10 s, reappear ≤30 s, settle 2 s). Returns True only after verified
+        off/absent and on/present states. Always requests power-on after an
+        off-state observation timeout, but does not report that as a cold boot.
         """
 
         def _say(msg: str) -> None:
             if on_line is not None:
                 on_line(msg)
 
-        was_present = await self.present()
+        was_present = await self.client.device_present(self.port)
         _say(f"power-cycle {self.label}: device {'present' if was_present else 'absent'} pre-cycle")
         started = time.monotonic()
         await self.off()
-        if was_present:
-            if await self.await_presence(False, timeout_s=disappear_timeout_s):
-                _say(f"device disappeared after power-off (within {disappear_timeout_s:.0f}s)")
-            else:
-                _say(
-                    f"WARNING: device still enumerated {disappear_timeout_s:.0f}s after "
-                    "power-off — the port may not really be switched"
-                )
+        off_verified = await self._await_cycle_state(False, timeout_s=disappear_timeout_s)
+        if off_verified:
+            _say(f"device disappeared and port power is off (within {disappear_timeout_s:.0f}s)")
+        else:
+            _say(
+                f"WARNING: power-off/absence not verified within {disappear_timeout_s:.0f}s; "
+                "restoring power-on, but this cycle cannot pass"
+            )
         remaining_off = off_s - (time.monotonic() - started)
         if remaining_off > 0:
             await asyncio.sleep(remaining_off)
         await self.on()
-        if await self.await_presence(True, timeout_s=reappear_timeout_s):
+        if await self._await_cycle_state(True, timeout_s=reappear_timeout_s):
             _say(f"device re-enumerated after power-on (within {reappear_timeout_s:.0f}s)")
             if settle_s > 0:
                 await asyncio.sleep(settle_s)
-            return True
-        _say(f"WARNING: device did not re-enumerate within {reappear_timeout_s:.0f}s of power-on")
+            return off_verified
+        _say(
+            f"WARNING: device did not re-enumerate with verified port power "
+            f"within {reappear_timeout_s:.0f}s of power-on"
+        )
         return False

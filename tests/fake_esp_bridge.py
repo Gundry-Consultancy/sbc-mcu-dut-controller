@@ -53,6 +53,7 @@ class FakeBridge:
         self.parked: dict[str, dict[str, Any]] = {}  # devices behind a powered-off port
         self.power: dict[str, bool] = {"1-1.1": True, "1-1.2": True}
         self.fail_status: int | None = None  # force every request to this status
+        self.claims: dict[str, Any] | None = None  # /api/usb/claims; None = old firmware (404)
 
     # ------------------------------------------------------------------ #
     def client(self) -> EspUsbipBridgeClient:
@@ -123,6 +124,10 @@ class FakeBridge:
             return self._json(200, self.devices[busid])
         if path == "/api/usb/hubs":
             return self._json(200, {"hubs": [self._hub()]})
+        if path == "/api/usb/claims":
+            if self.claims is None:
+                return self._json(404, {"ok": False, "error": "unknown path"})
+            return self._json(200, self.claims)
         if path.startswith("/api/ports/") and request.method == "POST":
             _, _, _, port, action = path.split("/")
             if port not in self.power:
