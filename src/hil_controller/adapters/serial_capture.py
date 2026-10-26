@@ -112,6 +112,88 @@ def socat_argv(serial_path: str, baud: int) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# One-shot serial WRITE (the capture above is strictly read-only)             #
+# --------------------------------------------------------------------------- #
+
+
+class SerialWriteError(RuntimeError):
+    """A one-shot serial write on the DUT host failed."""
+
+
+#: One-shot pyserial writer executed on the DUT host (``python3 -c``). Opens the
+#: port with DTR asserted (a native-USB CDC app only emits output when the host
+#: raises DTR), optionally forces RTS, writes the hex-decoded payload, flushes
+#: and closes. Arguments come in via ``sys.argv`` so no shell quoting of the
+#: payload is ever needed: ``<port> <baud> <payload-hex> <rts: none|0|1>``.
+#: pyserial is already present on every bench host (it's an esptool dependency).
+_PYSERIAL_WRITE_SCRIPT = (
+    "import binascii, sys\n"
+    "import serial\n"
+    "port, baud, payload_hex, rts = sys.argv[1:5]\n"
+    "s = serial.Serial()\n"
+    "s.port = port\n"
+    "s.baudrate = int(baud)\n"
+    "s.timeout = 2\n"
+    "s.write_timeout = 2\n"
+    "s.dtr = True\n"
+    "if rts != 'none':\n"
+    "    s.rts = rts == '1'\n"
+    "s.open()\n"
+    "s.write(binascii.unhexlify(payload_hex))\n"
+    "s.flush()\n"
+    "s.close()\n"
+)
+
+
+def pyserial_write_argv(
+    serial_path: str, data: bytes, *, baud: int = 115200, rts: bool | None = None
+) -> list[str]:
+    """Build the argv that writes *data* to *serial_path* on the host.
+
+    Top-level (pure) so tests can assert the exact command that reaches the
+    wire. ``rts=None`` leaves RTS at pyserial's default; ``True``/``False``
+    force it (some adapters wire RTS to reset, so only touch it on request).
+    """
+    return [
+        "python3",
+        "-c",
+        _PYSERIAL_WRITE_SCRIPT,
+        serial_path,
+        str(int(baud)),
+        data.hex(),
+        "none" if rts is None else ("1" if rts else "0"),
+    ]
+
+
+async def write_serial_bytes(
+    transport: Any,
+    serial_path: str,
+    data: bytes,
+    *,
+    baud: int = 115200,
+    rts: bool | None = None,
+) -> None:
+    """Write *data* to the DUT's serial port on the host (one-shot, over SSH).
+
+    The caller must coordinate with any running :class:`SerialCaptureAdapter`
+    on the same port — pause the capture, write, resume (the bench stages do
+    this via the context's ``pause_serial``/``resume_serial`` hooks) — so the
+    capture's ``socat`` and this writer never fight over the tty.
+
+    Raises :class:`SerialWriteError` on a non-zero exit (port missing/busy,
+    pyserial absent, write timeout).
+    """
+    argv = pyserial_write_argv(serial_path, data, baud=baud, rts=rts)
+    result = await transport.exec(argv)
+    if getattr(result, "exit_status", 1) != 0:
+        detail = ((result.stderr or "") or (result.stdout or "")).strip()[:300]
+        raise SerialWriteError(
+            f"serial write to {serial_path} failed "
+            f"(exit {getattr(result, 'exit_status', '?')}): {detail}"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Adapter                                                                     #
 # --------------------------------------------------------------------------- #
 

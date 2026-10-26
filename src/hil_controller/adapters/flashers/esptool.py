@@ -448,6 +448,21 @@ class EsptoolFlasher(CliFlasher):
             raw={"flash_id": text},
         )
 
+    async def chip_id(self, *, before: str | None = None, after: str | None = None) -> str:
+        """Run ``chip_id`` (chip family + revision + MAC); returns raw stdout.
+
+        Pass ``before="no_reset"``/``after="no_reset"`` when the chip is already
+        held in the download ROM (the rescue flow) so the probe neither needs a
+        reset to connect nor bounces the chip out of download mode on exit.
+        """
+        result = await self._run_esptool(self._base_argv(before=before, after=after) + ["chip_id"])
+        return result.stdout or ""
+
+    async def read_mac(self, *, before: str | None = None, after: str | None = None) -> str:
+        """Run ``read_mac``; returns raw stdout (see :func:`parse_mac`)."""
+        result = await self._run_esptool(self._base_argv(before=before, after=after) + ["read_mac"])
+        return result.stdout or ""
+
     async def erase(self, *, before: str | None = None, after: str | None = None) -> None:
         """Run ``erase_flash``.
 

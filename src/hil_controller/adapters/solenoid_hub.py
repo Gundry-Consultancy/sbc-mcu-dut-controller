@@ -137,6 +137,35 @@ class SolenoidHubAdapter:
             what=f"samd51_uf2({channel})",
         )
 
+    async def bootsel_entry(
+        self,
+        *,
+        power_channel: int,
+        bootsel_channel: int,
+        inverted: bool = False,
+        off_s: float = 1.0,
+        settle_s: float = 1.5,
+    ) -> None:
+        """Cold-boot an RP2040/RP2350 into its BOOTSEL ROM.
+
+        Holds the BOOTSEL press solenoid (bank B, ``bootsel_channel``),
+        power-cycles the DUT's bank-A ``power_channel`` so the chip boots with
+        BOOTSEL held, then releases the press. ``inverted`` handles attachments
+        whose press actuates on OFF (hold==off / release==on). The release runs
+        in a ``finally`` so a failed power-cycle never leaves the button held.
+
+        Shared by the web BOOTSEL route and the ``enter_bootsel`` bench stage —
+        this is the single place the hold/cycle/release choreography lives.
+        """
+        hold = self.port_off if inverted else self.port_on
+        release = self.port_on if inverted else self.port_off
+        await hold(bootsel_channel)  # hold BOOTSEL
+        try:
+            # cold boot with it held
+            await self.power_cycle(power_channel, off_s=off_s, settle_s=settle_s)
+        finally:
+            await release(bootsel_channel)  # release BOOTSEL
+
     async def power_cycle(
         self,
         channel: int,
