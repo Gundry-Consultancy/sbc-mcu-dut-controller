@@ -328,6 +328,10 @@
         Power-cycle (reset)
       </button>
     </form>
+    <a class="btn btn-sm btn-outline" href="/ui/rescue/{{ device.id }}"
+       title="Probe serial / enter BOOTSEL / picotool / esptool rescue (bare jobs)">
+      Rescue…
+    </a>
   </div>
 
   <form hx-post="/ui/devices/{{ device.id }}/install-tinyuf2"

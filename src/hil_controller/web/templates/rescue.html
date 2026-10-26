@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Rescue — {{ device.id }}</h1>
+<p class="form-hint" style="margin-bottom:1rem;max-width:900px;">
+  Recover a wedged / dead-firmware DUT. Every button submits a <strong>bare</strong>
+  firmware-bench job (no protomq, no hold window) and redirects to the job page —
+  serial, flash and probe logs land there as assets. Work non-destructively first:
+  <em>probe → BOOTSEL / download-mode entry → erase/reflash</em>.
+</p>
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<div style="max-width:900px;">
+
+  <div class="form-panel">
+    <h2>1 · Probe serial (non-destructive)</h2>
+    <p class="form-hint">
+      Pokes the console ({{ device.serial_port or 'resolved log port' }}) and classifies the
+      response: CircuitPython / MicroPython REPL, safe mode, boot banner, or silent.
+    </p>
+    <form method="post" action="/ui/rescue/{{ device.id }}">
+      <input type="hidden" name="rescue_action" value="probe">
+      <div class="form-group">
+        <label>Pokes (in order)</label>
+        <label style="display:inline-flex;gap:0.3rem;margin-right:1rem;">
+          <input type="checkbox" name="pokes" value="enter" checked> Enter (\r\n)</label>
+        <label style="display:inline-flex;gap:0.3rem;margin-right:1rem;">
+          <input type="checkbox" name="pokes" value="ctrl_c" checked> Ctrl-C (interrupt)</label>
+        <label style="display:inline-flex;gap:0.3rem;margin-right:1rem;">
+          <input type="checkbox" name="pokes" value="ctrl_d"> Ctrl-D (soft reboot)</label>
+      </div>
+      <div class="form-group">
+        <label for="poke_hex">Extra raw poke (hex, optional)</label>
+        <input type="text" id="poke_hex" name="poke_hex" placeholder="0d0a" size="16">
+      </div>
+      <div class="form-group">
+        <label for="capture_s">Capture window (s)</label>
+        <input type="text" id="capture_s" name="capture_s" value="5" size="4">
+        <label for="settle_s" style="margin-left:1rem;">Settle between pokes (s)</label>
+        <input type="text" id="settle_s" name="settle_s" value="1" size="4">
+      </div>
+      <div class="form-group">
+        <label for="expect">Expect regex (optional — fails the job when unmatched)</label>
+        <input type="text" id="expect" name="expect" placeholder=">>>" size="30">
+      </div>
+      <button type="submit" class="btn btn-primary">Probe serial</button>
+    </form>
+  </div>
+
+  <div class="form-panel">
+    <h2>2 · Enter BOOTSEL (RP2040 / RP2350)</h2>
+    <p class="form-hint">
+      Holds the BOOTSEL press solenoid (ch {{ device.bootsel_channel if device.bootsel_channel is not none else '—' }}{% if device.bootsel_inverted %}, inverted{% endif %}),
+      power-cycles ch {{ device.solenoid_channel if device.solenoid_channel is not none else '—' }},
+      releases — the chip cold-boots into its BOOTSEL ROM (RPI-RP2 drive / picotool target).
+    </p>
+    <form method="post" action="/ui/rescue/{{ device.id }}"
+          onsubmit="return confirm('Cold-boot {{ device.id }} with BOOTSEL held?');">
+      <input type="hidden" name="rescue_action" value="bootsel">
+      <button type="submit" class="btn btn-primary"
+              {% if device.bootsel_channel is none %}disabled title="Set bootsel_channel first"{% endif %}>
+        Enter BOOTSEL
+      </button>
+      {% if device.bootsel_channel is none %}
+      <span class="form-hint">No <code>bootsel_channel</code> mapped on this device.</span>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="form-panel">
+    <h2>3 · Picotool (RP2040 / RP2350)</h2>
+    <p class="form-hint">
+      Runs <code>picotool</code> on the DUT host. <code>info</code>/<code>load</code> retry once
+      via the BOOTSEL solenoid when no BOOTSEL-mode device answers. picotool (>= 2.0 for erase)
+      must be installed on the bench host.
+    </p>
+    <form method="post" action="/ui/rescue/{{ device.id }}" enctype="multipart/form-data"
+          onsubmit="return confirm('Run picotool on {{ device.id }}? load/erase overwrite flash.');">
+      <input type="hidden" name="rescue_action" value="picotool">
+      <div class="form-group">
+        <label for="picotool_action">Action</label>
+        <select id="picotool_action" name="picotool_action">
+          <option value="info" selected>info (identity report — non-destructive)</option>
+          <option value="reboot_bootsel">reboot into BOOTSEL (running app)</option>
+          <option value="load">load firmware (write + verify + execute)</option>
+          <option value="erase">erase whole flash</option>
+          <option value="reboot">reboot into application</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="pico_fw">Firmware (.uf2 / .bin — for load)</label>
+        <input type="file" id="pico_fw" name="firmware_file" accept=".uf2,.bin">
+      </div>
+      <label style="display:block;margin-bottom:0.5rem;">
+        <input type="checkbox" name="bootsel_fallback" checked>
+        BOOTSEL fallback (hold the press solenoid + power-cycle, retry once)
+      </label>
+      <button type="submit" class="btn btn-primary">Run picotool</button>
+    </form>
+  </div>
+
+  <div class="form-panel">
+    <h2>4 · Esptool (ESP32 family)</h2>
+    <p class="form-hint">
+      Enters the ROM download loader first (1200-touch → USB-JTAG reset → hub power-cycle),
+      then runs the action. A write power-cycles afterwards to boot the result.
+    </p>
+    <form method="post" action="/ui/rescue/{{ device.id }}" enctype="multipart/form-data"
+          onsubmit="return confirm('Run esptool on {{ device.id }}? erase/write overwrite flash.');">
+      <input type="hidden" name="rescue_action" value="esptool">
+      <div class="form-group">
+        <label for="esptool_action">Action</label>
+        <select id="esptool_action" name="esptool_action">
+          <option value="chip_id" selected>chip_id (identity — non-destructive)</option>
+          <option value="read_mac">read_mac</option>
+          <option value="erase_flash">erase_flash (whole chip)</option>
+          <option value="write">write firmware @ address</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="esp_fw">Firmware (.bin — for write)</label>
+        <input type="file" id="esp_fw" name="firmware_file" accept=".bin">
+      </div>
+      <div class="form-group">
+        <label for="address">Flash address</label>
+        <input type="text" id="address" name="address" value="0x0" size="10">
+        <span class="form-hint">0x0 for a combined image.</span>
+      </div>
+      <button type="submit" class="btn btn-primary">Run esptool</button>
+    </form>
+  </div>
+
+  <a href="/ui/devices" class="btn btn-secondary">Back to devices</a>
+</div>
+{% endblock %}
