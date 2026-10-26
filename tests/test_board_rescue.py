@@ -477,6 +477,50 @@ def test_make_flasher_knows_picotool() -> None:
 
 _CHIP_OUT = "Chip is ESP32-S3 (revision v0.2)\nMAC: f4:12:fa:5a:35:b4\n"
 
+# A realistic full esptool chip_id transcript from the bench ESP32-S3 —
+# including the "has no Chip ID" warning that round-2 validation showed the
+# old parser scraping (verdict read chip=not). The chip must come from the
+# "Chip is <NAME>" / "Detecting chip type..." lines, never the warning.
+_CHIP_ID_TRANSCRIPT = (
+    "esptool.py v4.8.1\n"
+    "Serial port /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit-if00\n"
+    "Connecting...\n"
+    "Detecting chip type... ESP32-S3\n"
+    "Chip is ESP32-S3 (QFN56) (revision v0.1)\n"
+    "Features: WiFi, BLE, Embedded Flash 4MB (XMC)\n"
+    "Crystal is 40MHz\n"
+    "MAC: f4:12:fa:5a:35:b4\n"
+    "Uploading stub...\n"
+    "Running stub...\n"
+    "Stub running...\n"
+    "Warning: ESP32-S3 has no Chip ID. Reading MAC instead.\n"
+    "MAC: f4:12:fa:5a:35:b4\n"
+    "Staying in bootloader.\n"
+)
+
+
+def test_parse_chip_family_ignores_no_chip_id_warning() -> None:
+    from hil_controller.adapters.flashers.esptool import parse_chip_family
+
+    assert parse_chip_family(_CHIP_ID_TRANSCRIPT) == "ESP32-S3"
+    # the warning alone (or "Chip is not ..." phrasing) must never match
+    assert parse_chip_family("Warning: ESP32-S3 has no Chip ID. Reading MAC instead.") is None
+    assert parse_chip_family("Chip is not in secure download mode") is None
+    # newer esptool phrasings still parse
+    assert parse_chip_family("Chip type: ESP32-S3 (QFN56) (revision v0.1)") == "ESP32-S3"
+    assert parse_chip_family("Detecting chip type... ESP32-C5") == "ESP32-C5"
+
+
+async def test_esptool_rescue_chip_id_verdict_from_realistic_transcript() -> None:
+    tp = AsyncMock()
+    tp.exec = AsyncMock(return_value=_result(0, stdout=_CHIP_ID_TRANSCRIPT))
+    emitted: list[str] = []
+    ctx = _ctx(tp, device={"solenoid_channel": 4}, emit=emitted.append)
+    await run_stages([{"type": "esptool_rescue", "action": "chip_id"}], ctx)
+    verdict = next(m for m in emitted if "ESPTOOL_RESCUE_VERDICT action=chip_id" in m)
+    assert "chip=ESP32-S3" in verdict  # NOT chip=not (the old warning scrape)
+    assert "mac=f4:12:fa:5a:35:b4" in verdict
+
 
 def _esp_transport() -> AsyncMock:
     """Every esptool invocation syncs (chip already in the download ROM)."""

@@ -72,8 +72,13 @@ def stty_1200_touch_argv(port: str) -> list[str]:
 # Pure parsers (top-level so they're directly unit-testable)                  #
 # --------------------------------------------------------------------------- #
 
-# "Chip is ESP32-S3 (revision v0.2)" → "ESP32-S3"
-_CHIP_RE = re.compile(r"Chip is\s+([\w\-]+)", re.IGNORECASE)
+# "Chip is ESP32-S3 (revision v0.2)" / "Chip type: ESP32-S3 (QFN56)" /
+# "Detecting chip type... ESP32-S3" → "ESP32-S3". The family must start with
+# ESP so lines like "Warning: ESP32-S3 has no Chip ID. Reading MAC instead."
+# or "Chip is not ..." phrasing can never be scraped as the chip name.
+_CHIP_RE = re.compile(
+    r"(?:Chip is|Chip type:|Detecting chip type\.*:?)\s+(ESP[\w\-]+)", re.IGNORECASE
+)
 # "MAC: 7c:df:a1:b2:c3:d4" — 6 colon-separated hex pairs
 _MAC_RE = re.compile(r"^MAC:\s+([0-9a-fA-F:]{17})\s*$", re.MULTILINE)
 # "Detected flash size: 8MB"
