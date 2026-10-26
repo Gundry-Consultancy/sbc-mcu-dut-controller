@@ -5,7 +5,7 @@
   Recover a wedged / dead-firmware DUT. Every button submits a <strong>bare</strong>
   firmware-bench job (no protomq, no hold window) and redirects to the job page —
   serial, flash and probe logs land there as assets. Work non-destructively first:
-  <em>probe → BOOTSEL / download-mode entry → erase/reflash</em>.
+  <em>serial probe → BOOTSEL / download-mode entry → flash tools (erase/reflash)</em>.
 </p>
 
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
@@ -13,7 +13,7 @@
 <div style="max-width:900px;">
 
   <div class="form-panel">
-    <h2>1 · Probe serial (non-destructive)</h2>
+    <h2>Serial probe (non-destructive)</h2>
     <p class="form-hint">
       Pokes the console ({{ device.serial_port or 'resolved log port' }}) and classifies the
       response: CircuitPython / MicroPython REPL, safe mode, boot banner, or silent.
@@ -43,12 +43,12 @@
         <label for="expect">Expect regex (optional — fails the job when unmatched)</label>
         <input type="text" id="expect" name="expect" placeholder=">>>" size="30">
       </div>
-      <button type="submit" class="btn btn-primary">Probe serial</button>
+      <button type="submit" class="btn btn-primary">Run serial probe</button>
     </form>
   </div>
 
   <div class="form-panel">
-    <h2>2 · Enter BOOTSEL (RP2040 / RP2350)</h2>
+    <h2>BOOTSEL (RP2040 / RP2350)</h2>
     <p class="form-hint">
       Holds the BOOTSEL press solenoid (ch {{ device.bootsel_channel if device.bootsel_channel is not none else '—' }}{% if device.bootsel_inverted %}, inverted{% endif %}),
       power-cycles ch {{ device.solenoid_channel if device.solenoid_channel is not none else '—' }},
@@ -68,7 +68,8 @@
   </div>
 
   <div class="form-panel">
-    <h2>3 · Picotool (RP2040 / RP2350)</h2>
+    <h2>Flash tools (picotool, esptool)</h2>
+    <h3>Picotool (RP2040 / RP2350)</h3>
     <p class="form-hint">
       Runs <code>picotool</code> on the DUT host. <code>info</code>/<code>load</code> retry once
       via the BOOTSEL solenoid when no BOOTSEL-mode device answers. picotool (>= 2.0 for erase)
@@ -97,10 +98,9 @@
       </label>
       <button type="submit" class="btn btn-primary">Run picotool</button>
     </form>
-  </div>
 
-  <div class="form-panel">
-    <h2>4 · Esptool (ESP32 family)</h2>
+    <hr class="section-sep">
+    <h3>Esptool (ESP32 family)</h3>
     <p class="form-hint">
       Enters the ROM download loader first (1200-touch → USB-JTAG reset → hub power-cycle),
       then runs the action. A write power-cycles afterwards to boot the result.

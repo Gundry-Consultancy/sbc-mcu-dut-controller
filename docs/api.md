@@ -189,7 +189,12 @@ download-mode entry → erase/reflash. A ready-made probe list ships as
 The probe transcript lands as a `serial-probe.log` job asset; picotool/esptool
 identity output is parsed into `PICOTOOL_VERDICT` / `ESPTOOL_RESCUE_VERDICT`
 lines and the flash.log transcript. `picotool` must be installed on bench hosts
-that own RP2040/RP2350 DUTs. The web UI equivalent is `/ui/rescue/{device}`
+that own RP2040/RP2350 DUTs. All three port-touching rescue stages **fail
+fast** when the DUT's serial port is unset or absent (one `test -e` on the
+host, StageError `serial port <path> not present on host <host>`) instead of
+letting esptool spin through connect retries; `require_port: false` skips the
+existence check (e.g. an RP2040 already sitting in BOOTSEL exposes no CDC
+node, and picotool reaches it over raw USB). The web UI equivalent is `/ui/rescue/{device}`
 (see `docs/web-ui.md`). Design note: `docs/notes/board-rescue.md`.
 
 ### Real IO stack stages (`broker: staging` / `dev-lan`)

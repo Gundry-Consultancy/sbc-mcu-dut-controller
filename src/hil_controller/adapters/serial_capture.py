@@ -153,8 +153,15 @@ def pyserial_write_argv(
     Top-level (pure) so tests can assert the exact command that reaches the
     wire. ``rts=None`` leaves RTS at pyserial's default; ``True``/``False``
     force it (some adapters wire RTS to reset, so only touch it on request).
+
+    Runs under ``sudo -n`` (non-interactive, like the bench's other
+    root-needing one-shots): the service user is not always in ``dialout``,
+    so a plain open of ``/dev/ttyACM*`` gets "Permission denied" on stock
+    bench hosts. Still one command over SSH.
     """
     return [
+        "sudo",
+        "-n",
         "python3",
         "-c",
         _PYSERIAL_WRITE_SCRIPT,

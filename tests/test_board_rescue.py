@@ -83,9 +83,11 @@ def _no_sleep(monkeypatch: pytest.MonkeyPatch):
 
 def test_pyserial_write_argv_shape() -> None:
     argv = pyserial_write_argv("/dev/serial/by-id/x", b"\x03", baud=115200)
-    assert argv[0] == "python3" and argv[1] == "-c"
-    assert argv[3:] == ["/dev/serial/by-id/x", "115200", "03", "none"]
-    assert "unhexlify" in argv[2] and "dtr = True" in argv[2]
+    # sudo -n: the service user isn't in dialout on stock bench hosts, so the
+    # one-shot opens the port the same way the bench's other root one-shots do.
+    assert argv[:4] == ["sudo", "-n", "python3", "-c"]
+    assert argv[5:] == ["/dev/serial/by-id/x", "115200", "03", "none"]
+    assert "unhexlify" in argv[4] and "dtr = True" in argv[4]
 
 
 def test_pyserial_write_argv_rts_flag() -> None:
@@ -97,7 +99,9 @@ async def test_write_serial_bytes_ok() -> None:
     tp = _transport()
     await write_serial_bytes(tp, "/dev/ttyACM0", b"\r\n")
     assert tp.exec.await_count == 1
-    assert tp.exec.call_args.args[0][3] == "/dev/ttyACM0"
+    argv = tp.exec.call_args.args[0]
+    assert argv[:2] == ["sudo", "-n"]
+    assert argv[5] == "/dev/ttyACM0"
 
 
 async def test_write_serial_bytes_raises_on_failure() -> None:
@@ -150,7 +154,7 @@ def _probe_ctx(tmp_path: Path, reply: str) -> tuple[AsyncMock, BenchContext, lis
     probe_log = tmp_path / "serial-probe.log"
 
     async def _exec(argv, **kw):
-        if argv and argv[0] == "python3":  # the pyserial one-shot write
+        if argv and argv[0] == "sudo" and "-c" in argv:  # the pyserial one-shot write
             with serial_log.open("a", encoding="utf-8") as fh:
                 fh.write(reply)
         return _result(0)
@@ -172,10 +176,11 @@ async def test_serial_probe_classifies_and_writes_asset(tmp_path: Path) -> None:
     await run_stages(
         [{"type": "serial_probe", "pokes": ["enter", "ctrl_c"], "expect": [">>>"]}], ctx
     )
-    # two pyserial writes reached the wire
-    writes = [a for a in _argvs(tp) if a and a[0] == "python3"]
+    # two pyserial writes reached the wire, each under sudo -n
+    writes = [a for a in _argvs(tp) if a and a[0] == "sudo" and "-c" in a]
     assert len(writes) == 2
-    assert writes[0][5] == "0d0a" and writes[1][5] == "03"  # enter then ctrl_c payloads
+    assert all(w[:3] == ["sudo", "-n", "python3"] for w in writes)
+    assert writes[0][7] == "0d0a" and writes[1][7] == "03"  # enter then ctrl_c payloads
     # verdict + transcript + asset
     assert any(
         "SERIAL_PROBE_VERDICT classification=circuitpython_repl" in m for m in emitted
@@ -212,8 +217,78 @@ async def test_serial_probe_requires_port() -> None:
     ctx = _ctx(_transport())
     ctx.flash_serial_port = ""
     ctx.log_serial_port = ""
-    with pytest.raises(StageError, match="no serial port"):
+    with pytest.raises(StageError, match="no serial port configured"):
         await run_stages([{"type": "serial_probe"}], ctx)
+
+
+# --------------------------------------------------------------------------- #
+# fail fast on an absent serial node (one test -e, no retry spin)             #
+# --------------------------------------------------------------------------- #
+
+
+def _absent_port_transport() -> AsyncMock:
+    """Transport where the DUT's serial node does not exist (`test -e` fails)."""
+
+    async def _exec(argv, **kw):
+        if argv and argv[0] == "test":
+            return _result(1)
+        return _result(0, stdout="Chip is ESP32-S3")
+
+    tp = AsyncMock()
+    tp.exec = AsyncMock(side_effect=_exec)
+    return tp
+
+
+async def test_serial_probe_fails_fast_when_port_absent() -> None:
+    tp = _absent_port_transport()
+    ctx = _ctx(tp, device={"id": "dut-1", "host_id": "rpi-hil006"})
+    with pytest.raises(StageError, match="not present on host rpi-hil006"):
+        await run_stages([{"type": "serial_probe"}], ctx)
+    # exactly one existence check, and no pyserial write was attempted
+    assert [a[0] for a in _argvs(tp)] == ["test"]
+
+
+async def test_esptool_rescue_fails_fast_when_port_absent() -> None:
+    tp = _absent_port_transport()
+    ctx = _ctx(tp, device={"id": "dut-1", "host_id": "rpi-hil006", "solenoid_channel": 4})
+    with pytest.raises(StageError, match="serial port .* not present on host rpi-hil006"):
+        await run_stages([{"type": "esptool_rescue", "action": "chip_id"}], ctx)
+    # no esptool invocation ever reached the wire (no retry spin)
+    assert all("flash_id" not in a and "chip_id" not in a for a in _argvs(tp))
+
+
+async def test_esptool_rescue_fails_fast_on_empty_port() -> None:
+    tp = _transport()
+    ctx = _ctx(tp, device={"id": "dut-1"})
+    ctx.flash_serial_port = ""
+    with pytest.raises(StageError, match="no serial port configured"):
+        await run_stages([{"type": "esptool_rescue", "action": "chip_id"}], ctx)
+    assert tp.exec.await_count == 0
+
+
+async def test_picotool_rescue_fails_fast_when_port_absent() -> None:
+    tp = _absent_port_transport()
+    ctx = _ctx(tp, device={"id": "dut-1", "host_id": "rpi-hil006"})
+    with pytest.raises(StageError, match="not present on host rpi-hil006"):
+        await run_stages([{"type": "picotool_rescue", "action": "info"}], ctx)
+    assert all(a[0] != "picotool" for a in _argvs(tp))
+
+
+async def test_picotool_rescue_require_port_false_skips_check() -> None:
+    # A board already sitting in BOOTSEL has no CDC node — require_port: false
+    # lets picotool talk to it over raw USB anyway.
+    async def _exec(argv, **kw):
+        if argv and argv[0] == "test":
+            return _result(1)  # node absent
+        return _result(0, stdout=_PICO_INFO)
+
+    tp = AsyncMock()
+    tp.exec = AsyncMock(side_effect=_exec)
+    ctx = _ctx(tp, device={"id": "dut-1"})
+    await run_stages(
+        [{"type": "picotool_rescue", "action": "info", "require_port": False}], ctx
+    )
+    assert any(a[0] == "picotool" for a in _argvs(tp))
 
 
 def test_rescue_probe_preset_validates() -> None:
@@ -355,8 +430,21 @@ async def test_picotool_rescue_load_bootsel_fallback_retries_once() -> None:
     assert any("PICOTOOL_VERDICT action=load ok=true" in m for m in emitted)
 
 
+def _no_bootsel_transport() -> AsyncMock:
+    """picotool always answers 'nothing in BOOTSEL'; everything else succeeds."""
+
+    async def _exec(argv, **kw):
+        if argv and argv[0] == "picotool":
+            return _result(1, stderr=_NO_BOOTSEL)
+        return _result(0)
+
+    tp = AsyncMock()
+    tp.exec = AsyncMock(side_effect=_exec)
+    return tp
+
+
 async def test_picotool_rescue_no_fallback_without_bootsel_channel() -> None:
-    tp = _transport(_result(1, stderr=_NO_BOOTSEL))
+    tp = _no_bootsel_transport()
     ctx = _ctx(tp, device={"solenoid_channel": 4})  # no bootsel_channel
     with pytest.raises(StageError, match="picotool_rescue load failed"):
         await run_stages([{"type": "picotool_rescue", "action": "load"}], ctx)
@@ -364,7 +452,7 @@ async def test_picotool_rescue_no_fallback_without_bootsel_channel() -> None:
 
 
 async def test_picotool_rescue_fallback_disabled_by_opt() -> None:
-    tp = _transport(_result(1, stderr=_NO_BOOTSEL))
+    tp = _no_bootsel_transport()
     ctx = _ctx(tp, device={"solenoid_channel": 4, "bootsel_channel": 12})
     with pytest.raises(StageError, match="picotool_rescue load failed"):
         await run_stages(

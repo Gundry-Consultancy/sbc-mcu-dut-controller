@@ -1270,6 +1270,33 @@ def _read_serial_since(path: str, offset: int) -> str:
         return ""
 
 
+async def _require_serial_port(
+    stage: dict[str, Any], ctx: BenchContext, stype: str, port: str
+) -> None:
+    """Fail a rescue stage fast when its serial port is unset or absent.
+
+    Mirrors the chip-aware fail-fast in ``power_cycle``: a target with an
+    empty or never-enumerated port must raise immediately instead of letting
+    esptool spin through its connect retries for minutes. ONE existence check
+    (``test -e`` over SSH) decides. ``require_port: false`` skips the
+    existence check only (e.g. an RP2040 already sitting in BOOTSEL exposes
+    no CDC node, so picotool work on it is legitimate with the node absent);
+    a stage with no port configured at all always fails.
+    """
+    host = ctx.device.get("hub_host_id") or ctx.device.get("host_id") or "the DUT host"
+    if not port:
+        raise StageError(
+            f"{stype}: no serial port configured for device "
+            f"{ctx.device.get('id') or '(unknown)'} (infra error, not a test verdict)"
+        )
+    if bool(stage.get("require_port", True)) and not await _serial_node_present(ctx, port):
+        raise StageError(
+            f"{stype}: serial port {port} not present on host {host} — failing fast "
+            "instead of retrying (set require_port: false to skip the check; "
+            "infra error, not a test verdict)"
+        )
+
+
 async def _stage_serial_probe(stage: dict[str, Any], ctx: BenchContext) -> None:
     """Poke the DUT's console and classify what (if anything) answers.
 
@@ -1287,8 +1314,7 @@ async def _stage_serial_probe(stage: dict[str, Any], ctx: BenchContext) -> None:
     ``expect`` (list of regexes), ``rts`` (true/false to force RTS).
     """
     port = ctx.log_serial_port or ctx.flash_serial_port
-    if not port:
-        raise StageError("serial_probe: no serial port resolved for this device")
+    await _require_serial_port(stage, ctx, "serial_probe", port)
     # Make sure capture is running so the responses land in serial.log (no-op
     # when the start_serial_log stage already attached it).
     if ctx.start_serial is not None:
@@ -1438,6 +1464,10 @@ async def _stage_picotool_rescue(stage: dict[str, Any], ctx: BenchContext) -> No
             f"picotool_rescue: unknown action {action!r} "
             f"(expected one of {list(_PICOTOOL_RESCUE_ACTIONS)})"
         )
+    # Fail fast on an unset/absent port (one test -e) rather than spinning.
+    # NOTE: a board already in BOOTSEL exposes no CDC node — pass
+    # require_port: false for that case (picotool finds it over raw USB).
+    await _require_serial_port(stage, ctx, "picotool_rescue", ctx.flash_serial_port)
     flasher = ctx.make_flasher("picotool")
 
     async def _do() -> str:
@@ -1525,6 +1555,9 @@ async def _stage_esptool_rescue(stage: dict[str, Any], ctx: BenchContext) -> Non
             f"esptool_rescue: unknown action {action!r} "
             f"(expected one of {list(_ESPTOOL_RESCUE_ACTIONS)})"
         )
+    # Fail fast on an unset/absent flash port (one test -e) — esptool would
+    # otherwise retry its connect for minutes against a node that isn't there.
+    await _require_serial_port(stage, ctx, "esptool_rescue", ctx.flash_serial_port)
     if stage.get("enter_download", True):
         enter = {k: v for k, v in stage.items() if k != "flasher"}
         enter["type"] = "enter_bootloader"
