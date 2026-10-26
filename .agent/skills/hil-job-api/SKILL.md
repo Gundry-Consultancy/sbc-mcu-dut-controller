@@ -116,10 +116,19 @@ DUT. See hil-i2c-strands for the strand model.
 | `io_api_component` | **staging / dev-lan only.** Create / update / delete a v2 component feed via the IO REST API with the job's `IO_KEY`; logs `IO_API_VERDICT status=<http> key=<feed key>` |
 | `io_ws_publish` | **staging / dev-lan only.** Publish an `i2cScanAll` / `i2cProbe` JSON frame to `{user}/ws-w2b/{device_key}` over IO MQTT |
 | `io_ws_expect` | **staging / dev-lan only.** Subscribe to `ws-b2w` / `ws-r2b`, run its guarded `step`, wait (`timeout_s` 5) for a matching JSON frame; logs `IO_WS_VERDICT matched=true|false`. A matched `checkin` captures the device key. Auth/ACL failures log `IO_INFRA_ERROR` (no verdict) |
+| `serial_probe` | **rescue, non-destructive.** Poke the console (`pokes`: enter / ctrl_c / ctrl_d / `{"hex": …}`), capture `capture_s`, classify (REPL / safe mode / boot banner / silent); logs `SERIAL_PROBE_VERDICT classification=…` + `serial-probe.log` asset; optional `expect` regexes assert |
+| `enter_bootsel` | **rescue.** RP2040/RP2350 BOOTSEL entry: hold the bank-B press solenoid (`bootsel_channel`, `bootsel_inverted` aware), power-cycle, release; StageError when no `bootsel_channel` is mapped |
+| `picotool_rescue` | **rescue.** `picotool` on the DUT host — `action`: info / reboot_bootsel / load (staged firmware) / erase / reboot; `load`/`info` retry once via `enter_bootsel` when nothing is in BOOTSEL (`bootsel_fallback`, default true); logs `PICOTOOL_VERDICT` |
+| `esptool_rescue` | **rescue.** Enter the ROM download loader (full `enter_bootloader` ladder), then `action`: chip_id / read_mac / erase_flash / write @ `address` (0x0); logs `ESPTOOL_RESCUE_VERDICT` |
 
 The proven ESP32 combined-bin order (and why) lives in **hil-author-test**;
 SAMD/UF2 boards use a bossac/UF2-MSC default cycle instead — both are seeded
 from `DEFAULT_FLASH_STAGES` variants in `bench_stages.py`.
+
+Rescue jobs set **`params.bare: true`** so `launch_protomq` is never
+auto-inserted (no app broker), usually with `window_minutes: 0`;
+`RESCUE_PROBE_STAGES` in `bench_stages.py` is the starter probe list and
+**hil-bench-recovery** has the probe → BOOTSEL → reflash triage order.
 
 ## Waiting well
 
