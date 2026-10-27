@@ -162,14 +162,15 @@ the linked `firmware`. CI pulls these as proof instead of scraping the UI.
 | `enter_bootsel` | **rescue.** Cold-boot an RP2040/RP2350 into BOOTSEL: hold the bank-B press solenoid (`bootsel_channel`, honouring `bootsel_inverted`), power-cycle the bank-A channel, release. StageError when the device has no `bootsel_channel` | `bootsel_channel`, `solenoid_channel`, `bootsel_inverted`, `off_s`, `settle_s` |
 | `picotool_rescue` | **rescue.** Run `picotool` on the DUT host: `info` (-a, parsed into `PICOTOOL_VERDICT`), `reboot_bootsel` (`reboot -f -u`), `load` (`load -v -x` of the staged firmware), `erase` (picotool >= 2.0), `reboot`. `load`/`info` retry once via `enter_bootsel` when no BOOTSEL device answers | `action`, `bootsel_fallback` (true), `bootsel_settle_s` (3) |
 | `esptool_rescue` | **rescue.** Enter the ROM download loader (full `enter_bootloader` ladder), then `chip_id` / `flash_id` (cheap aliveness/identity probe) / `read_mac` / `erase_flash` / `write` (staged firmware at `address`, default 0x0, with the flash stage's retry + hub recovery); logs `ESPTOOL_RESCUE_VERDICT` | `action`, `address`, `enter_download` (true), `before` (default_reset \| usb_reset \| no_reset \| no_reset_no_sync), `after` (hard_reset \| soft_reset \| no_reset \| no_reset_stub \| watchdog_reset) — omitted opts emit no flag (esptool defaults) |
+| `bossac_rescue` | **rescue.** Run `bossac` against a SAM (SAMD21/SAMD51) DUT: `info` (`bossac -i`, device parsed into `BOSSAC_VERDICT`), `erase` (`-e` above the app offset — the bootloader region is never touched), `write` (staged firmware via the combined `-e -w -v [-b -R] --offset=<app>` call; `reset: false` stays in SAM-BA for chained ops). Bootloader entry reuses the SAM 1200-baud-touch ladder | `action`, `bootloader_entry` (auto \| skip), `reset` (true), `require_port` |
 
 `launch_protomq` / `start_serial_log` / `print_boot_log` are inserted
 automatically at the right moments unless you place them explicitly.
 
 ### Board rescue (`params.bare: true`)
 
-The four `*rescue*` stages (`serial_probe`, `enter_bootsel`, `picotool_rescue`,
-`esptool_rescue`) recover a wedged / dead-firmware DUT through the normal job
+The rescue stages (`serial_probe`, `enter_bootsel`, `picotool_rescue`,
+`esptool_rescue`, `bossac_rescue`) recover a wedged / dead-firmware DUT through the normal job
 queue. Set **`params.bare: true`** on the job so the `launch_protomq`
 auto-insert is suppressed (rescue never needs the app broker; the
 `start_serial_log` / `print_boot_log` inserts are kept), and usually

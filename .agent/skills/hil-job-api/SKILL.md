@@ -119,7 +119,8 @@ DUT. See hil-i2c-strands for the strand model.
 | `serial_probe` | **rescue, non-destructive.** Poke the console (`pokes`: enter / ctrl_c / ctrl_d / `{"hex": …}`), capture `capture_s`, classify (REPL / safe mode / boot banner / silent); logs `SERIAL_PROBE_VERDICT classification=…` + `serial-probe.log` asset; optional `expect` regexes assert |
 | `enter_bootsel` | **rescue.** RP2040/RP2350 BOOTSEL entry: hold the bank-B press solenoid (`bootsel_channel`, `bootsel_inverted` aware), power-cycle, release; StageError when no `bootsel_channel` is mapped |
 | `picotool_rescue` | **rescue.** `picotool` on the DUT host — `action`: info / reboot_bootsel / load (staged firmware) / erase / reboot; `load`/`info` retry once via `enter_bootsel` when nothing is in BOOTSEL (`bootsel_fallback`, default true); logs `PICOTOOL_VERDICT` |
-| `esptool_rescue` | **rescue.** Enter the ROM download loader (full `enter_bootloader` ladder), then `action`: chip_id / read_mac / erase_flash / write @ `address` (0x0); logs `ESPTOOL_RESCUE_VERDICT` |
+| `esptool_rescue` | **rescue.** Enter the ROM download loader (full `enter_bootloader` ladder), then `action`: chip_id / flash_id / read_mac / erase_flash / write @ `address` (0x0); optional `before`/`after` pass-throughs (omitted = esptool defaults); logs `ESPTOOL_RESCUE_VERDICT` |
+| `bossac_rescue` | **rescue (SAM/SAMD).** `action`: info / erase / write via `bossac` (combined `-e -w -v [-b -R]` at the app offset; `reset: false` stays in SAM-BA); `bootloader_entry: auto` reuses the 1200-touch ladder; logs `BOSSAC_VERDICT` |
 
 The proven ESP32 combined-bin order (and why) lives in **hil-author-test**;
 SAMD/UF2 boards use a bossac/UF2-MSC default cycle instead — both are seeded

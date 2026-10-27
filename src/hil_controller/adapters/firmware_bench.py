@@ -272,6 +272,7 @@ class FirmwareBenchAdapter:
                 s.get("type") in {"flash", "verify"}
                 or (s.get("type") == "picotool_rescue" and s.get("action") == "load")
                 or (s.get("type") == "esptool_rescue" and s.get("action") == "write")
+                or (s.get("type") == "bossac_rescue" and s.get("action") == "write")
             )
             and not s.get("path")
             for s in requested

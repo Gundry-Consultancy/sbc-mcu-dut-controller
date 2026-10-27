@@ -46,7 +46,11 @@ from hil_controller.adapters.esp_usbip_bridge import (
     bridge_power_force,
 )
 from hil_controller.adapters.flashers.base import Artifact, FlasherError, FlasherToolFailed
-from hil_controller.adapters.flashers.bossac import SAMD51_APP_OFFSET, BossacFlasher
+from hil_controller.adapters.flashers.bossac import (
+    SAMD51_APP_OFFSET,
+    BossacFlasher,
+    parse_bossac_device,
+)
 from hil_controller.adapters.flashers.esptool import (
     EsptoolFlasher,
     classify_boot_state,
@@ -1682,6 +1686,75 @@ async def _stage_esptool_rescue(stage: dict[str, Any], ctx: BenchContext) -> Non
         raise StageError(f"esptool_rescue {action} failed: {exc}") from exc
 
 
+_BOSSAC_RESCUE_ACTIONS = ("info", "erase", "write")
+
+
+async def _stage_bossac_rescue(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Drive ``bossac`` against a SAM (SAMD21/SAMD51) DUT (rescue verbs).
+
+    ``action``: ``info`` (``bossac -i``, SAM device parsed into the verdict),
+    ``erase`` (``-e`` above the app offset — the bootloader region is never
+    touched), ``write`` (the staged firmware via the combined
+    ``-e -w -v [-b -R] --offset=<app>`` call; ``reset: false`` drops ``-b -R``
+    so the board stays in SAM-BA for chained operations).
+
+    ``bootloader_entry``: ``auto`` (default) reuses the existing SAM
+    1200-baud-touch entry ladder (:func:`_enter_bootloader_sam` — no-op when
+    the board already answers ``bossac -i``, hub power-cycle recovery when the
+    touch never lands); ``skip`` assumes the board is already in SAM-BA.
+    """
+    action = str(stage.get("action") or "info")
+    if action not in _BOSSAC_RESCUE_ACTIONS:
+        raise StageError(
+            f"bossac_rescue: unknown action {action!r} "
+            f"(expected one of {list(_BOSSAC_RESCUE_ACTIONS)})"
+        )
+    entry = str(stage.get("bootloader_entry", "auto"))
+    if entry not in ("auto", "skip"):
+        raise StageError(
+            f"bossac_rescue: bootloader_entry must be 'auto' or 'skip' (got {entry!r})"
+        )
+    # Fail fast on an unset/absent port (one test -e) — same discipline as the
+    # other rescue stages.
+    await _require_serial_port(stage, ctx, "bossac_rescue", ctx.flash_serial_port)
+    if entry == "auto":
+        # Reuses the SAM path: returns immediately when bossac -i already
+        # answers, else 1200-touch hammer (+ hub power-cycle recovery).
+        await _enter_bootloader_sam({**stage, "flasher": "bossac"}, ctx)
+
+    flasher = ctx.make_flasher("bossac")
+    ctx.log_line(f"bossac_rescue: {action}")
+    try:
+        if action == "info":
+            info = await flasher.probe()
+            out = (info.raw or {}).get("info", "")
+            device = parse_bossac_device(out) or info.family
+            ctx.transcript.append(
+                {
+                    "at": _now_iso(),
+                    "cmd": "[bossac_rescue info]",
+                    "exit": 0,
+                    "stdout": out,
+                    "stderr": "",
+                    "bossac": {"device": device},
+                }
+            )
+            ctx.log_line(f"BOSSAC_VERDICT action=info ok=true device={device}")
+        elif action == "erase":
+            await flasher.erase()
+            ctx.log_line("BOSSAC_VERDICT action=erase ok=true")
+        else:  # write
+            artifact = ctx.stage_artifact(stage)
+            reset = bool(stage.get("reset", True))
+            result = await flasher.flash(artifact, reset=reset)
+            ctx.log_line(
+                f"BOSSAC_VERDICT action=write ok=true bytes={result.bytes_written} "
+                f"reset={str(reset).lower()}"
+            )
+    except FlasherError as exc:
+        raise StageError(f"bossac_rescue {action} failed: {exc}") from exc
+
+
 async def _await_serial_reboot(path: str, start_offset: int, timeout_s: float) -> bool:
     """Poll the controller-local serial.log for a reset banner past *start_offset*."""
     if not path:
@@ -3105,6 +3178,7 @@ STAGE_HANDLERS: dict[str, Handler] = {
     "enter_bootsel": _stage_enter_bootsel,
     "picotool_rescue": _stage_picotool_rescue,
     "esptool_rescue": _stage_esptool_rescue,
+    "bossac_rescue": _stage_bossac_rescue,
 }
 
 

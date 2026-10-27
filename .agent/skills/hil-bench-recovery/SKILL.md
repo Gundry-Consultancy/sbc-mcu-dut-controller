@@ -97,9 +97,13 @@ use the web page `/ui/rescue/{device}`. Work **non-destructively first**:
    - ESP32 family: `esptool_rescue action: chip_id` — enters the ROM download
      loader via the full 1200-touch → USB-JTAG reset → hub power-cycle ladder
      and reads identity without touching flash.
+   - SAM/SAMD boards: `bossac_rescue action: info` — 1200-touch into SAM-BA
+     (`bootloader_entry: auto`) and read the device identity without touching
+     flash.
 3. **Reflash / erase** — only once identity reads back: `picotool_rescue
    action: load` (or `erase`), `esptool_rescue action: erase_flash` /
-   `write` @ `address` (then a `power_cycle` to boot it). Erase and write are
+   `write` @ `address` (then a `power_cycle` to boot it), or `bossac_rescue action: write` (combined
+   erase+write+verify at the SAM app offset; the bootloader survives). Erase and write are
    destructive; a rescue job failing at step 1–2 is an **infra signal**, not a
    reason to erase.
 
