@@ -337,7 +337,8 @@ class RealHostRegistry(HostRegistry):
         async with get_db(self.db_path) as db:
             cur = await db.execute(
                 "SELECT status, unavailable_reason, serial_port, hub_host_id, "
-                "hub_port_path, solenoid_channel, flasher, usb_serial, build_target, "
+                "hub_port_path, solenoid_channel, bootsel_channel, bootsel_inverted, "
+                "flasher, usb_serial, build_target, "
                 "power_control FROM devices WHERE id=?",
                 (device["id"],),
             )

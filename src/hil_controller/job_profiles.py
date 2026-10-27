@@ -20,6 +20,12 @@ Runtime = Literal["wippersnapper-arduino", "wippersnapper-python", "circuitpytho
 Broker = Literal["protomq", "production", "staging", "dev-lan"]
 #: Stages that call the real Adafruit IO REST API / MQTT with the job's IO_KEY.
 IO_STACK_STAGES = frozenset({"io_api_component", "io_ws_publish", "io_ws_expect"})
+#: Board-rescue stages: local bench hardware ops (serial poke, BOOTSEL press,
+#: picotool/esptool rescue) — broker-independent, so no broker gating applies.
+#: Pair them with ``params.bare: true`` so a rescue job never launches protoMQ.
+RESCUE_STAGES = frozenset(
+    {"serial_probe", "enter_bootsel", "picotool_rescue", "esptool_rescue", "bossac_rescue"}
+)
 IO_STACK_BROKERS = frozenset({"staging", "dev-lan"})
 _IO_STAGE_RESERVED = (
     "io_host", "io_port", "io_url", "io_username", "io_key", "username", "key",
@@ -96,6 +102,10 @@ def job_guide() -> dict[str, Any]:
             "staging/dev-lan only: io_api_component (REST feeds), io_ws_publish (ws-w2b JSON)"
             " and io_ws_expect (ws-b2w/ws-r2b assert, guarded step) drive the real IO stack.",
             "Inspect result, verdicts, and assets. Finished or skipped tests do not prove success.",
+            "Board rescue: serial_probe / enter_bootsel / picotool_rescue / esptool_rescue /"
+            " bossac_rescue (SAMD) stages recover a wedged DUT; set params.bare=true so the job"
+            " skips protoMQ entirely."
+            " Probe (non-destructive) before BOOTSEL/download entry before erase/reflash.",
         ],
     }
 

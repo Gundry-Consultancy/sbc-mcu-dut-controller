@@ -170,6 +170,7 @@ class FirmwareBenchAdapter:
         self._serial_log_path: Path | None = None
         self._protomq_log_path: Path | None = None
         self._flash_log_path: Path | None = None
+        self._probe_log_path: Path | None = None
 
         # surfaced to the worker's post-run log scrape (kept empty: we stream live)
         self._deploy_stdout = ""
@@ -267,7 +268,14 @@ class FirmwareBenchAdapter:
         # installed firmware without staging an unrelated firmware artifact.
         requested = self.params.get("stages") or DEFAULT_FLASH_STAGES
         needs_artifact = any(
-            s.get("type") in {"flash", "verify"} and not s.get("path") for s in requested
+            (
+                s.get("type") in {"flash", "verify"}
+                or (s.get("type") == "picotool_rescue" and s.get("action") == "load")
+                or (s.get("type") == "esptool_rescue" and s.get("action") == "write")
+                or (s.get("type") == "bossac_rescue" and s.get("action") == "write")
+            )
+            and not s.get("path")
+            for s in requested
         )
         remote_bin = await self._stage_firmware(work_root) if needs_artifact else None
 
@@ -279,6 +287,7 @@ class FirmwareBenchAdapter:
         self._serial_log_path = local_log_dir / "serial.log"
         self._protomq_log_path = local_log_dir / "protomq.log"
         self._flash_log_path = local_log_dir / "flash.log"
+        self._probe_log_path = local_log_dir / "serial-probe.log"
 
         flash_port = await self._resolve_serial(
             explicit=self.params.get("flash_serial_port"),
@@ -327,6 +336,7 @@ class FirmwareBenchAdapter:
             pause_serial=self._pause_serial,
             resume_serial=self._resume_serial,
             serial_log_path=str(self._serial_log_path) if self._serial_log_path else "",
+            probe_log_path=str(self._probe_log_path) if self._probe_log_path else "",
             # Live-stream verbosity: "all" (default, everything) or "filtered"
             # (NOTABLE_LIVE_LINES allow-list). flash.log asset is always full.
             stream_log_level=str(self.params.get("log_level", "all")).lower(),
@@ -604,6 +614,11 @@ class FirmwareBenchAdapter:
         never orphaned by an erase failure). ``start_serial_log`` is inserted
         before the first ``power_cycle`` so the reboot's boot log is captured.
         Both are skipped if the operator already placed them explicitly.
+
+        ``params.bare: true`` (rescue jobs) suppresses the ``launch_protomq``
+        auto-insert entirely — a probe/BOOTSEL/reflash rescue should never drag
+        the app broker in — while keeping the ``start_serial_log`` /
+        ``print_boot_log`` inserts (and the strand auto-mux) intact.
         """
         stages = [dict(s) for s in (self.params.get("stages") or DEFAULT_FLASH_STAGES)]
 
@@ -619,10 +634,14 @@ class FirmwareBenchAdapter:
         # (no explicit io_url). A write_secrets_msc pointing at an EXTERNAL broker
         # (e.g. io.adafruit.com for an AirLift board) doesn't need it — skipping
         # avoids a wasted ~60s clone/build + the strict-broker CONNECT-reject noise.
-        need_protomq = any(
-            s.get("type") == "write_secrets_msc" and not s.get("io_url")
-            for s in walk_stages(stages)
-        ) or bool(self.params.get("launch_protomq", False))
+        bare = bool(self.params.get("bare", False))
+        need_protomq = not bare and (
+            any(
+                s.get("type") == "write_secrets_msc" and not s.get("io_url")
+                for s in walk_stages(stages)
+            )
+            or bool(self.params.get("launch_protomq", False))
+        )
         # The local protomq broker (aedes) is ANONYMOUS — any username/key
         # authenticates. So for a local-broker secrets write with no real creds
         # supplied, derive a stable per-job identity from the job id (16 lowercase
@@ -638,7 +657,12 @@ class FirmwareBenchAdapter:
                 idx = self._first_index(stages, "write_secrets_msc")
             stages.insert(idx if idx is not None else len(stages), {"type": "launch_protomq"})
         elif not need_protomq:
-            self._sink("bench", "no secrets stage / launch_protomq → protomq will not be launched")
+            self._sink(
+                "bench",
+                "bare mode (rescue): protomq will not be launched"
+                if bare
+                else "no secrets stage / launch_protomq → protomq will not be launched",
+            )
 
         if log_port and not any(s.get("type") == "start_serial_log" for s in stages):
             pc = self._first_index(stages, "power_cycle")
@@ -1033,6 +1057,7 @@ class FirmwareBenchAdapter:
         await self._register_log_asset(self._flash_log_path, "flash")
         await self._register_log_asset(self._serial_log_path, "serial")
         await self._register_log_asset(self._protomq_log_path, "protomq")
+        await self._register_log_asset(self._probe_log_path, "serial-probe")
         await self._flush_logs()
         if self._drain_task is not None:
             self._drain_task.cancel()

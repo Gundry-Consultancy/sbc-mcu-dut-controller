@@ -158,9 +158,54 @@ the linked `firmware`. CI pulls these as proof instead of scraping the UI.
 | `io_api_component` | **staging / dev-lan only.** Create / update / delete a WipperSnapper v2 component feed through the real IO REST API (`POST\|PUT\|DELETE /api/v2/{IO_USERNAME}/groups/{device_key}/feeds[/{feed_key}]`, `X-AIO-Key` from job secrets); logs `IO_API_VERDICT status=<http> key=<feed key> action=<a> ok=…` | `action` (create/update/delete/batch), `feed`, `batch`, `device_key`, `feed_key`, `expect_status`, `soft`, `label` |
 | `io_ws_publish` | **staging / dev-lan only.** Publish a JSON frame (`i2cScanAll` / `i2cProbe`) to `{IO_USERNAME}/ws-w2b/{device_key}` over IO MQTT (TLS on 8883); logs `IO_WS_PUBLISH published=true` | `payload`, `device_key`, `qos`, `label` |
 | `io_ws_expect` | **staging / dev-lan only.** Subscribe to `ws-b2w` / `ws-r2b`, run the guarded `step`, wait for a matching JSON frame; logs `IO_WS_VERDICT matched=true\|false action=<a> topic=<t> elapsed_s=<s>`. A matched `checkin` captures the device key | `action`, `step`, `match`, `match_contains`, `topics`, `timeout_s` (5), `soft`, `label` |
+| `serial_probe` | **rescue.** Poke the console (enter / ctrl_c / ctrl_d / `{"hex": …}`), capture, classify the response (`circuitpython_repl` / `circuitpython_safe_mode` / `micropython_repl` / `boot_banner_detected` / `silent` / `other`); logs `SERIAL_PROBE_VERDICT classification=… bytes=…` + a `serial-probe.log` asset. Non-destructive | `pokes`, `settle_s` (1), `capture_s` (5), `expect` (regexes — StageError when none match), `serial_baud`, `rts` |
+| `enter_bootsel` | **rescue.** Cold-boot an RP2040/RP2350 into BOOTSEL: hold the bank-B press solenoid (`bootsel_channel`, honouring `bootsel_inverted`), power-cycle the bank-A channel, release. StageError when the device has no `bootsel_channel` | `bootsel_channel`, `solenoid_channel`, `bootsel_inverted`, `off_s`, `settle_s` |
+| `picotool_rescue` | **rescue.** Run `picotool` on the DUT host: `info` (-a, parsed into `PICOTOOL_VERDICT`), `reboot_bootsel` (`reboot -f -u`), `load` (`load -v -x` of the staged firmware), `erase` (picotool >= 2.0), `reboot`. `load`/`info` retry once via `enter_bootsel` when no BOOTSEL device answers | `action`, `bootsel_fallback` (true), `bootsel_settle_s` (3) |
+| `esptool_rescue` | **rescue.** Enter the ROM download loader (full `enter_bootloader` ladder), then `chip_id` / `flash_id` (cheap aliveness/identity probe) / `read_mac` / `erase_flash` / `write` (staged firmware at `address`, default 0x0, with the flash stage's retry + hub recovery); logs `ESPTOOL_RESCUE_VERDICT` | `action`, `address`, `enter_download` (true), `before` (default_reset \| usb_reset \| no_reset \| no_reset_no_sync), `after` (hard_reset \| soft_reset \| no_reset \| no_reset_stub \| watchdog_reset) — omitted opts emit no flag (esptool defaults) |
+| `bossac_rescue` | **rescue.** Run `bossac` against a SAM (SAMD21/SAMD51) DUT: `info` (`bossac -i`, device parsed into `BOSSAC_VERDICT`), `erase` (`-e` above the app offset — the bootloader region is never touched), `write` (staged firmware via the combined `-e -w -v [-b -R] --offset=<app>` call; `reset: false` stays in SAM-BA for chained ops). Bootloader entry reuses the SAM 1200-baud-touch ladder | `action`, `bootloader_entry` (auto \| skip), `reset` (true), `require_port` |
 
 `launch_protomq` / `start_serial_log` / `print_boot_log` are inserted
 automatically at the right moments unless you place them explicitly.
+
+### Board rescue (`params.bare: true`)
+
+The rescue stages (`serial_probe`, `enter_bootsel`, `picotool_rescue`,
+`esptool_rescue`, `bossac_rescue`) recover a wedged / dead-firmware DUT through the normal job
+queue. Set **`params.bare: true`** on the job so the `launch_protomq`
+auto-insert is suppressed (rescue never needs the app broker; the
+`start_serial_log` / `print_boot_log` inserts are kept), and usually
+`window_minutes: 0`. Work non-destructively first: probe → BOOTSEL /
+download-mode entry → erase/reflash. A ready-made probe list ships as
+`RESCUE_PROBE_STAGES` in `bench_stages.py`:
+
+```json
+{"script": "firmware-bench",
+ "target": {"device": {"id": "pico-hil003"}},
+ "params": {"bare": true, "window_minutes": 0, "stages": [
+   {"type": "start_serial_log"},
+   {"type": "serial_probe", "pokes": ["enter", "ctrl_c", "enter"], "capture_s": 5}
+ ]}}
+```
+
+The probe transcript lands as a `serial-probe.log` job asset; picotool/esptool
+identity output is parsed into `PICOTOOL_VERDICT` / `ESPTOOL_RESCUE_VERDICT`
+lines and the flash.log transcript. `picotool` must be installed on bench hosts
+that own RP2040/RP2350 DUTs. All three port-touching rescue stages **fail
+fast** when the DUT's serial port is unset or absent (one `test -e` on the
+host, StageError `serial port <path> not present on host <host>`) instead of
+letting esptool spin through connect retries; `require_port: false` skips the
+existence check (e.g. an RP2040 already sitting in BOOTSEL exposes no CDC
+node, and picotool reaches it over raw USB).
+
+`esptool_rescue` reset semantics: `before`/`after` are emitted only when set —
+absent means esptool's own defaults. The default `default_reset` entry
+(DTR/RTS) is right for UART-bridge wiring (external USB-UART adapter driving
+EN/IO0); use `usb_reset` for native-USB-connected chips; `no_reset` targets a
+board already sitting in the bootloader, pairing with a prior stage's
+`after: no_reset` for chained operations. `after: watchdog_reset` restarts the
+app via the RTC watchdog where an RTS-style `hard_reset` is unavailable or
+would drop a native-USB port. The web UI equivalent is `/ui/rescue/{device}`
+(see `docs/web-ui.md`). Design note: `docs/notes/board-rescue.md`.
 
 ### Real IO stack stages (`broker: staging` / `dev-lan`)
 
