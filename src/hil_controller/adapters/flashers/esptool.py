@@ -52,7 +52,8 @@ _ESPTOOL_TRANSIENT = (
 # ``hard_reset`` is a no-op there). Used as the power-cycle fallback when a DUT
 # has no solenoid channel mapped.
 ESPTOOL_AFTER_MODES = frozenset(
-    {"hard_reset", "watchdog_reset", "no_reset", "soft_reset", "no_reset_no_sync"}
+    {"hard_reset", "watchdog_reset", "no_reset", "soft_reset", "no_reset_stub",
+     "no_reset_no_sync"}
 )
 ESPTOOL_BEFORE_MODES = frozenset({"default_reset", "usb_reset", "no_reset", "no_reset_no_sync"})
 
@@ -461,6 +462,18 @@ class EsptoolFlasher(CliFlasher):
         reset to connect nor bounces the chip out of download mode on exit.
         """
         result = await self._run_esptool(self._base_argv(before=before, after=after) + ["chip_id"])
+        return result.stdout or ""
+
+    async def flash_id(self, *, before: str | None = None, after: str | None = None) -> str:
+        """Run ``flash_id`` (the canonical cheap aliveness/identity probe).
+
+        Returns raw stdout — chip family, MAC and detected flash size are all in
+        there (see :func:`parse_chip_family` / :func:`parse_mac` /
+        :func:`parse_flash_size_bytes`). Flags are only emitted when given, so
+        esptool's own ``default_reset``/``hard_reset`` behaviour applies by
+        default (right for UART-bridge wiring).
+        """
+        result = await self._run_esptool(self._base_argv(before=before, after=after) + ["flash_id"])
         return result.stdout or ""
 
     async def read_mac(self, *, before: str | None = None, after: str | None = None) -> str:

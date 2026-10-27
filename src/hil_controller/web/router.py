@@ -5150,6 +5150,8 @@ async def submit_rescue_job(
     picotool_action: Annotated[str, Form()] = "info",
     bootsel_fallback: Annotated[str, Form()] = "on",
     esptool_action: Annotated[str, Form()] = "chip_id",
+    esptool_before: Annotated[str, Form()] = "",
+    esptool_after: Annotated[str, Form()] = "",
     address: Annotated[str, Form()] = "0x0",
     firmware_file: UploadFile | None = File(default=None),
 ) -> Response:
@@ -5218,12 +5220,26 @@ async def submit_rescue_job(
             stage["bootsel_fallback"] = False
         stages = [stage]
     elif rescue_action == "esptool":
-        if esptool_action not in ("chip_id", "read_mac", "erase_flash", "write"):
+        from hil_controller.adapters.bench_stages import (
+            _ESPTOOL_RESCUE_AFTER,
+            _ESPTOOL_RESCUE_BEFORE,
+        )
+
+        if esptool_action not in ("chip_id", "flash_id", "read_mac", "erase_flash", "write"):
             return _err(f"Unknown esptool action {esptool_action!r}")
         if esptool_action == "write" and not firmware_path:
             return _err("esptool write needs a firmware file (.bin)")
-        stages = [{"type": "esptool_rescue", "action": esptool_action,
-                   "address": address or "0x0"}]
+        if esptool_before and esptool_before not in _ESPTOOL_RESCUE_BEFORE:
+            return _err(f"Unknown esptool --before {esptool_before!r}")
+        if esptool_after and esptool_after not in _ESPTOOL_RESCUE_AFTER:
+            return _err(f"Unknown esptool --after {esptool_after!r}")
+        esp_stage: dict = {"type": "esptool_rescue", "action": esptool_action,
+                           "address": address or "0x0"}
+        if esptool_before:  # "" = (default): omit so esptool's own default applies
+            esp_stage["before"] = esptool_before
+        if esptool_after:
+            esp_stage["after"] = esptool_after
+        stages = [esp_stage]
         if esptool_action == "write":
             stages.append({"type": "power_cycle"})  # boot the rescued firmware
     else:

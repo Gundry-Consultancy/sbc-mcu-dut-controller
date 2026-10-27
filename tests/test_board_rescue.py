@@ -535,12 +535,75 @@ async def test_esptool_rescue_chip_id() -> None:
     ctx = _ctx(tp, device={"solenoid_channel": 4}, emit=emitted.append)
     await run_stages([{"type": "esptool_rescue", "action": "chip_id"}], ctx)
     cmd = next(a for a in _argvs(tp) if "chip_id" in a)
-    assert "--before" in cmd and cmd[cmd.index("--before") + 1] == "no_reset"
+    # no before/after opts set → no flags emitted (esptool's own defaults apply)
+    assert "--before" not in cmd and "--after" not in cmd
     assert any(
         "ESPTOOL_RESCUE_VERDICT action=chip_id ok=true chip=ESP32-S3" in m for m in emitted
     )
     entry = next(e for e in ctx.transcript if e["cmd"] == "[esptool_rescue chip_id]")
     assert entry["esptool"]["mac"] == "f4:12:fa:5a:35:b4"
+
+
+async def test_esptool_rescue_flash_id_action() -> None:
+    tp = AsyncMock()
+    tp.exec = AsyncMock(
+        return_value=_result(
+            0, stdout=_CHIP_OUT + "Detected flash size: 4MB\nManufacturer: c8\n"
+        )
+    )
+    emitted: list[str] = []
+    ctx = _ctx(tp, device={"solenoid_channel": 4}, emit=emitted.append)
+    await run_stages(
+        [{"type": "esptool_rescue", "action": "flash_id", "enter_download": False}], ctx
+    )
+    cmd = next(a for a in _argvs(tp) if a[-1] == "flash_id")
+    assert "--before" not in cmd and "--after" not in cmd
+    verdict = next(m for m in emitted if "ESPTOOL_RESCUE_VERDICT action=flash_id" in m)
+    assert "chip=ESP32-S3" in verdict and "flash=4MB" in verdict
+    entry = next(e for e in ctx.transcript if e["cmd"] == "[esptool_rescue flash_id]")
+    assert entry["esptool"]["flash_bytes"] == 4 * 1024 * 1024
+
+
+async def test_esptool_rescue_passes_before_after_when_set() -> None:
+    tp = _esp_transport()
+    ctx = _ctx(tp, device={"solenoid_channel": 4})
+    await run_stages(
+        [
+            {
+                "type": "esptool_rescue",
+                "action": "flash_id",
+                "enter_download": False,
+                "before": "usb_reset",
+                "after": "watchdog_reset",
+            }
+        ],
+        ctx,
+    )
+    cmd = next(a for a in _argvs(tp) if a[-1] == "flash_id")
+    assert cmd[cmd.index("--before") + 1] == "usb_reset"
+    assert cmd[cmd.index("--after") + 1] == "watchdog_reset"
+
+
+async def test_esptool_rescue_rejects_invalid_before_and_after() -> None:
+    ctx = _ctx(_transport(), device={"solenoid_channel": 4})
+    with pytest.raises(StageError, match="invalid before 'bogus'"):
+        await run_stages(
+            [{"type": "esptool_rescue", "action": "flash_id", "before": "bogus"}], ctx
+        )
+    with pytest.raises(StageError, match="invalid after 'rts'"):
+        await run_stages(
+            [{"type": "esptool_rescue", "action": "flash_id", "after": "rts"}], ctx
+        )
+
+
+async def test_esptool_rescue_write_omits_flags_when_unset() -> None:
+    tp = _esp_transport()
+    ctx = _ctx(tp, device={"solenoid_channel": 4})
+    await run_stages(
+        [{"type": "esptool_rescue", "action": "write", "enter_download": False}], ctx
+    )
+    cmd = next(a for a in _argvs(tp) if "write_flash" in a)
+    assert "--before" not in cmd and "--after" not in cmd
 
 
 async def test_esptool_rescue_erase_and_read_mac() -> None:

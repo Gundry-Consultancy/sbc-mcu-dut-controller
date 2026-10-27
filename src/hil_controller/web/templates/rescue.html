@@ -112,10 +112,32 @@
         <label for="esptool_action">Action</label>
         <select id="esptool_action" name="esptool_action">
           <option value="chip_id" selected>chip_id (identity — non-destructive)</option>
+          <option value="flash_id">flash_id (aliveness / identity probe — non-destructive)</option>
           <option value="read_mac">read_mac</option>
           <option value="erase_flash">erase_flash (whole chip)</option>
           <option value="write">write firmware @ address</option>
         </select>
+      </div>
+      <div class="form-group">
+        <label for="esptool_before">--before (connect reset)</label>
+        <select id="esptool_before" name="esptool_before">
+          <option value="" selected>(default)</option>
+          <option value="default_reset">default_reset (DTR/RTS — UART-bridge wiring)</option>
+          <option value="usb_reset">usb_reset (native-USB chips)</option>
+          <option value="no_reset">no_reset (already in bootloader)</option>
+          <option value="no_reset_no_sync">no_reset_no_sync</option>
+        </select>
+        <label for="esptool_after" style="margin-left:1rem;">--after (exit reset)</label>
+        <select id="esptool_after" name="esptool_after">
+          <option value="" selected>(default)</option>
+          <option value="hard_reset">hard_reset (RTS reboot)</option>
+          <option value="soft_reset">soft_reset</option>
+          <option value="no_reset">no_reset (stay in bootloader)</option>
+          <option value="no_reset_stub">no_reset_stub</option>
+          <option value="watchdog_reset">watchdog_reset (WDT reboot — native-USB safe)</option>
+        </select>
+        <span class="form-hint">Leave at (default) for esptool's own behaviour; no_reset pairs
+          with a prior stage's --after no_reset for chained operations.</span>
       </div>
       <div class="form-group">
         <label for="esp_fw">Firmware (.bin — for write)</label>

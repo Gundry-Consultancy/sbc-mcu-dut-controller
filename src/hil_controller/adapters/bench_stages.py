@@ -51,6 +51,7 @@ from hil_controller.adapters.flashers.esptool import (
     EsptoolFlasher,
     classify_boot_state,
     parse_chip_family,
+    parse_flash_size_bytes,
     parse_mac,
 )
 from hil_controller.adapters.flashers.picotool import (
@@ -1534,7 +1535,13 @@ async def _stage_picotool_rescue(stage: dict[str, Any], ctx: BenchContext) -> No
         ctx.log_line(f"PICOTOOL_VERDICT action={action} ok=true")
 
 
-_ESPTOOL_RESCUE_ACTIONS = ("chip_id", "read_mac", "erase_flash", "write")
+_ESPTOOL_RESCUE_ACTIONS = ("chip_id", "flash_id", "read_mac", "erase_flash", "write")
+#: Stage-level allow-lists for the optional ``before``/``after`` pass-throughs.
+#: When an opt is ABSENT the flag is not emitted at all, so esptool's own
+#: defaults apply (``default_reset`` entry / ``hard_reset`` exit).
+_ESPTOOL_RESCUE_BEFORE = ("default_reset", "usb_reset", "no_reset", "no_reset_no_sync")
+_ESPTOOL_RESCUE_AFTER = ("hard_reset", "soft_reset", "no_reset", "no_reset_stub",
+                         "watchdog_reset")
 
 
 async def _stage_esptool_rescue(stage: dict[str, Any], ctx: BenchContext) -> None:
@@ -1543,17 +1550,46 @@ async def _stage_esptool_rescue(stage: dict[str, Any], ctx: BenchContext) -> Non
     First gets the chip into the ROM download loader via the full
     ``enter_bootloader`` detect→rectify ladder (1200-touch → USB-JTAG reset →
     hub power-cycle recovery; skip with ``enter_download: false``), then runs
-    ``action``: ``chip_id``, ``read_mac``, ``erase_flash``, or ``write`` (the
+    ``action``: ``chip_id``, ``flash_id`` (the canonical cheap
+    aliveness/identity probe), ``read_mac``, ``erase_flash``, or ``write`` (the
     staged firmware at ``address``, default 0x0 — reuses the flash stage's
-    retry + hub-power recovery). All steps default to ``--before/--after
-    no_reset`` so the chip stays in the ROM; add a ``power_cycle`` stage after
-    a write to boot the result.
+    retry + hub-power recovery).
+
+    ``before`` / ``after`` are optional pass-throughs; when absent the flag is
+    **not emitted**, so esptool's own defaults apply. Semantics:
+
+    * ``before`` default (absent) → esptool's DTR/RTS ``default_reset`` entry —
+      right for UART-bridge wiring (an external USB-UART adapter driving
+      EN/IO0); pair with ``enter_download: false`` when esptool should do the
+      entry itself. ``usb_reset`` for native-USB-connected chips.
+      ``no_reset`` targets a board already sitting in the bootloader — pair it
+      with a prior stage's ``after: no_reset`` to chain operations without
+      bouncing the chip.
+    * ``after: watchdog_reset`` restarts the app via the RTC watchdog where an
+      RTS-style ``hard_reset`` is unavailable (EN not wired) or would drop a
+      native-USB port; ``no_reset`` keeps the chip in the ROM for the next
+      stage; otherwise add a ``power_cycle`` stage after a write to boot the
+      result.
     """
     action = str(stage.get("action") or "chip_id")
     if action not in _ESPTOOL_RESCUE_ACTIONS:
         raise StageError(
             f"esptool_rescue: unknown action {action!r} "
             f"(expected one of {list(_ESPTOOL_RESCUE_ACTIONS)})"
+        )
+    before = stage.get("before")
+    if before is not None and before not in _ESPTOOL_RESCUE_BEFORE:
+        raise StageError(
+            f"esptool_rescue: invalid before {before!r} "
+            f"(expected one of {list(_ESPTOOL_RESCUE_BEFORE)}, or omit it for "
+            "esptool's own default)"
+        )
+    after = stage.get("after")
+    if after is not None and after not in _ESPTOOL_RESCUE_AFTER:
+        raise StageError(
+            f"esptool_rescue: invalid after {after!r} "
+            f"(expected one of {list(_ESPTOOL_RESCUE_AFTER)}, or omit it for "
+            "esptool's own default)"
         )
     # Fail fast on an unset/absent flash port (one test -e) — esptool would
     # otherwise retry its connect for minutes against a node that isn't there.
@@ -1563,8 +1599,6 @@ async def _stage_esptool_rescue(stage: dict[str, Any], ctx: BenchContext) -> Non
         enter["type"] = "enter_bootloader"
         await _stage_enter_bootloader(enter, ctx)
 
-    before = stage.get("before", "no_reset")
-    after = stage.get("after", "no_reset")
     flasher = ctx.make_flasher("esptool")
     ctx.log_line(f"esptool_rescue: {action}" + _reset_flags({"before": before, "after": after}))
     try:
@@ -1602,6 +1636,28 @@ async def _stage_esptool_rescue(stage: dict[str, Any], ctx: BenchContext) -> Non
                 }
             )
             ctx.log_line(f"ESPTOOL_RESCUE_VERDICT action=read_mac ok=true mac={mac}")
+        elif action == "flash_id":
+            out = await _retry_step(
+                ctx, stage, label="flash_id",
+                do=lambda: flasher.flash_id(before=before, after=after),
+            )
+            family, mac = parse_chip_family(out), parse_mac(out)
+            flash_bytes = parse_flash_size_bytes(out)
+            ctx.transcript.append(
+                {
+                    "at": _now_iso(),
+                    "cmd": "[esptool_rescue flash_id]",
+                    "exit": 0,
+                    "stdout": out,
+                    "stderr": "",
+                    "esptool": {"family": family, "mac": mac, "flash_bytes": flash_bytes},
+                }
+            )
+            flash_mb = f"{flash_bytes // (1024 * 1024)}MB" if flash_bytes else None
+            ctx.log_line(
+                f"ESPTOOL_RESCUE_VERDICT action=flash_id ok=true chip={family} "
+                f"mac={mac} flash={flash_mb}"
+            )
         elif action == "erase_flash":
             await _retry_step(
                 ctx, stage, label="erase_flash",
@@ -1609,8 +1665,13 @@ async def _stage_esptool_rescue(stage: dict[str, Any], ctx: BenchContext) -> Non
             )
             ctx.log_line("ESPTOOL_RESCUE_VERDICT action=erase_flash ok=true")
         else:  # write
-            sub = {**stage, "type": "flash", "flasher": "esptool",
-                   "before": before, "after": after}
+            sub = {**stage, "type": "flash", "flasher": "esptool"}
+            sub.pop("before", None)
+            sub.pop("after", None)
+            if before is not None:
+                sub["before"] = before
+            if after is not None:
+                sub["after"] = after
             if "offset" not in sub:
                 sub["offset"] = stage.get("address", "0x0")
             await _stage_flash(sub, ctx)
