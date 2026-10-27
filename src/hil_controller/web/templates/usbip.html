@@ -13,10 +13,19 @@
 <p style="font-size:0.8rem;color:#6c757d;margin:0.25rem 0 1rem;">
   {% if timeout %}
     Per-command timeout: <strong>{{ timeout }}s</strong> (tables may be partial).
-    <a href="/ui/usbip">Wait fully instead →</a>
+    <a href="/ui/usbip{% if auto %}?auto={{ auto }}{% endif %}">Wait fully instead →</a>
   {% else %}
     Waiting for the full result (<code>lsusb -v</code> can be slow on a large or
-    wedged bus). <a href="/ui/usbip?timeout=8">Cap each query at 8s →</a>
+    wedged bus). <a href="/ui/usbip?timeout=8{% if auto %}&auto={{ auto }}{% endif %}">Cap each query at 8s →</a>
+  {% endif %}
+  &nbsp;·&nbsp;
+  <a class="btn btn-sm btn-outline" href="#hubs-and-power"
+     onclick="location.reload();return false;">Refresh page</a>
+  {% if auto %}
+    <span class="badge badge-gray" style="font-size:0.7rem;">auto-refresh {{ auto }}s</span>
+    <a href="/ui/usbip{% if timeout %}?timeout={{ timeout }}{% endif %}#hubs-and-power">Stop auto →</a>
+  {% else %}
+    <a href="/ui/usbip?{% if timeout %}timeout={{ timeout }}&{% endif %}auto=30#hubs-and-power">Auto-refresh 30s →</a>
   {% endif %}
 </p>
 
@@ -27,11 +36,13 @@
 </div>
 {% endif %}
 
+{# Stable anchor for deep links to the hub/bridge-port/solenoid power state. #}
+<section id="hubs-and-power">
 {% for h in hosts %}
 <div class="tbl-wrap" id="host-{{ h.id }}" style="margin-bottom:1.25rem;">
   <div class="tbl-header">
     <h2 style="display:flex;align-items:baseline;gap:0.5rem;">
-      <a href="/ui/hosts" class="mono">{{ h.id }}</a>
+      <a href="#host-{{ h.id }}" class="mono" title="Anchor to this host">{{ h.id }}</a>
       <span style="font-size:0.78rem;color:#6c757d;">{{ h.addr }}</span>
       {% if h.role %}<span class="badge badge-gray" style="font-size:0.7rem;">{{ h.role }}</span>{% endif %}
     </h2>
@@ -42,7 +53,7 @@
   </div>
   <div id="usbip-section-{{ h.id }}"
        hx-get="/ui/usbip/host/{{ h.id }}{% if timeout %}?timeout={{ timeout }}{% endif %}"
-       hx-trigger="load"
+       hx-trigger="load{% if auto %}, every {{ auto }}s{% endif %}"
        hx-swap="innerHTML">
     <p style="color:#6c757d;padding:1rem;text-align:center;">
       Querying <code>{{ h.id }}</code>...
@@ -50,4 +61,5 @@
   </div>
 </div>
 {% endfor %}
+</section>
 {% endblock %}

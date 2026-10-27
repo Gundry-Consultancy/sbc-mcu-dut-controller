@@ -639,6 +639,157 @@ async def test_esptool_rescue_rejects_unknown_action() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# bossac_rescue stage                                                         #
+# --------------------------------------------------------------------------- #
+
+_BOSSAC_INFO = (
+    "Atmel SMART device 0x60060001 found\n"
+    "Device       : ATSAMD51J20A\n"
+    "Version      : v1.1 [Arduino:XYZ] May 21 2019\n"
+    "Flash size   : 1032192 bytes\n"
+)
+
+
+def _bossac_transport() -> AsyncMock:
+    """SAM-BA answers bossac immediately; readlink resolves the by-path port."""
+
+    async def _exec(argv, **kw):
+        if argv[:2] == ["readlink", "-f"]:
+            return _result(0, stdout="/dev/ttyACM0\n")
+        if argv and argv[0] == "bossac":
+            if "--write" in argv:
+                return _result(0, stdout="Write 196608 bytes to flash (3072 pages)")
+            return _result(0, stdout=_BOSSAC_INFO)
+        return _result(0)
+
+    tp = AsyncMock()
+    tp.exec = AsyncMock(side_effect=_exec)
+    return tp
+
+
+def _bossac_argvs(tp: AsyncMock) -> list[list[str]]:
+    return [a for a in _argvs(tp) if a and a[0] == "bossac"]
+
+
+async def test_bossac_rescue_info_records_verdict() -> None:
+    tp = _bossac_transport()
+    emitted: list[str] = []
+    ctx = _ctx(tp, device={"solenoid_channel": 4}, emit=emitted.append)
+    await run_stages([{"type": "bossac_rescue", "action": "info"}], ctx)
+    cmds = _bossac_argvs(tp)
+    # entry probe (is_in_bootloader) + the info itself — all `bossac --port ttyACM0 --info`
+    assert all(c[:3] == ["bossac", "--port", "ttyACM0"] and c[3] == "--info" for c in cmds)
+    assert any("BOSSAC_VERDICT action=info ok=true device=ATSAMD51J20A" in m for m in emitted)
+    entry = next(e for e in ctx.transcript if e["cmd"] == "[bossac_rescue info]")
+    assert entry["bossac"]["device"] == "ATSAMD51J20A"
+
+
+async def test_bossac_rescue_erase_argv_stays_above_bootloader() -> None:
+    tp = _bossac_transport()
+    ctx = _ctx(tp, device={"solenoid_channel": 4})
+    await run_stages([{"type": "bossac_rescue", "action": "erase"}], ctx)
+    cmd = next(c for c in _bossac_argvs(tp) if "--erase" in c)
+    assert "--offset=0x4000" in cmd  # never 0x0 — the bootloader region survives
+
+
+async def test_bossac_rescue_write_combined_call_with_reset() -> None:
+    tp = _bossac_transport()
+    emitted: list[str] = []
+    ctx = _ctx(tp, device={"solenoid_channel": 4}, emit=emitted.append)
+    await run_stages([{"type": "bossac_rescue", "action": "write"}], ctx)
+    cmd = next(c for c in _bossac_argvs(tp) if "--write" in c)
+    for flag in ("--erase", "--write", "--verify", "--boot", "--reset", "--offset=0x4000"):
+        assert flag in cmd
+    assert cmd[-1] == "/tmp/hil/job/firmware.bin"
+    assert any("BOSSAC_VERDICT action=write ok=true bytes=196608" in m for m in emitted)
+
+
+async def test_bossac_rescue_write_reset_false_drops_boot_reset() -> None:
+    tp = _bossac_transport()
+    ctx = _ctx(tp, device={"solenoid_channel": 4})
+    await run_stages([{"type": "bossac_rescue", "action": "write", "reset": False}], ctx)
+    cmd = next(c for c in _bossac_argvs(tp) if "--write" in c)
+    assert "--boot" not in cmd and "--reset" not in cmd
+
+
+async def test_bossac_rescue_bootloader_entry_skip() -> None:
+    tp = _bossac_transport()
+    ctx = _ctx(tp, device={"solenoid_channel": 4})
+    await run_stages(
+        [{"type": "bossac_rescue", "action": "erase", "bootloader_entry": "skip"}], ctx
+    )
+    cmds = _bossac_argvs(tp)
+    assert len(cmds) == 1 and "--erase" in cmds[0]  # no is_in_bootloader probe ran
+
+
+async def test_bossac_rescue_rejects_bad_action_and_entry() -> None:
+    ctx = _ctx(_transport(), device={"solenoid_channel": 4})
+    with pytest.raises(StageError, match="unknown action"):
+        await run_stages([{"type": "bossac_rescue", "action": "detonate"}], ctx)
+    with pytest.raises(StageError, match="bootloader_entry"):
+        await run_stages(
+            [{"type": "bossac_rescue", "action": "info", "bootloader_entry": "maybe"}], ctx
+        )
+
+
+async def test_bossac_rescue_fails_fast_when_port_absent() -> None:
+    tp = _absent_port_transport()
+    ctx = _ctx(tp, device={"id": "dut-1", "host_id": "rpi-hil006"})
+    with pytest.raises(StageError, match="not present on host rpi-hil006"):
+        await run_stages([{"type": "bossac_rescue", "action": "info"}], ctx)
+    assert all(a[0] != "bossac" for a in _argvs(tp))
+
+
+# --------------------------------------------------------------------------- #
+# web stage-builder helper (shared by /ui/rescue/{device} and /ui/tools)      #
+# --------------------------------------------------------------------------- #
+
+
+def test_tool_stages_from_form_bossac() -> None:
+    from hil_controller.web.router import _tool_stages_from_form
+
+    stages, err = _tool_stages_from_form(
+        tool="bossac", firmware_path="/x.bin", bossac_action="write", bossac_reset=""
+    )
+    assert err == ""
+    assert stages == [{"type": "bossac_rescue", "action": "write", "reset": False}]
+    stages, err = _tool_stages_from_form(
+        tool="bossac", firmware_path="", bossac_action="info", bossac_entry="skip"
+    )
+    assert err == ""
+    assert stages == [{"type": "bossac_rescue", "action": "info", "bootloader_entry": "skip"}]
+    _, err = _tool_stages_from_form(tool="bossac", firmware_path="", bossac_action="write")
+    assert "firmware" in err
+
+
+def test_tool_stages_from_form_esptool_and_picotool() -> None:
+    from hil_controller.web.router import _tool_stages_from_form
+
+    stages, err = _tool_stages_from_form(
+        tool="esptool", firmware_path="", esptool_action="flash_id",
+        esptool_before="usb_reset", esptool_after="",
+    )
+    assert err == ""
+    assert stages == [
+        {"type": "esptool_rescue", "action": "flash_id", "address": "0x0",
+         "before": "usb_reset"}
+    ]
+    _, err = _tool_stages_from_form(
+        tool="esptool", firmware_path="", esptool_action="flash_id", esptool_after="rts"
+    )
+    assert "--after" in err
+    stages, err = _tool_stages_from_form(
+        tool="picotool", firmware_path="", picotool_action="info", bootsel_fallback=""
+    )
+    assert err == ""
+    assert stages == [
+        {"type": "picotool_rescue", "action": "info", "bootsel_fallback": False}
+    ]
+    _, err = _tool_stages_from_form(tool="avrdude", firmware_path="")
+    assert "Unknown tool" in err
+
+
+# --------------------------------------------------------------------------- #
 # bare param (rescue job ergonomics)                                          #
 # --------------------------------------------------------------------------- #
 

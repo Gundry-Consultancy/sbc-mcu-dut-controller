@@ -4457,21 +4457,33 @@ async def usbip_overview(
     request: Request,
     hil_token: str = Cookie(default=""),
     timeout: float | None = Query(default=None),
+    auto: int | None = Query(default=None),
 ) -> HTMLResponse:
     """Top-level bench overview: every host gets a placeholder section that
     HTMX-loads its busid table on connect.
 
     ``?timeout=<seconds>`` is an optional per-command cap propagated to each
     host fragment; with no timeout the page waits for the full result (``lsusb
-    -v`` is slow on a big/wedged bus but does finish)."""
+    -v`` is slow on a big/wedged bus but does finish). ``?auto=<seconds>``
+    turns on auto-refresh: each host section re-queries every N seconds
+    (clamped 5–600) via its HTMX trigger. Sections carry stable id anchors
+    (``#hubs-and-power``, ``#host-<id>``) for deep links."""
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
     db_path: str = request.app.state.db_path
     hosts = await _hub_hosts_with_devices(db_path)
+    if auto is not None:
+        auto = max(5, min(600, auto))
     return _tr(
         request,
         "usbip.html",
-        {"token": hil_token, "active": "usbip", "hosts": hosts, "timeout": timeout},
+        {
+            "token": hil_token,
+            "active": "usbip",
+            "hosts": hosts,
+            "timeout": timeout,
+            "auto": auto,
+        },
     )
 
 
@@ -5093,6 +5105,75 @@ async def install_tinyuf2_ui(
 _RESCUE_POKES = ("enter", "ctrl_c", "ctrl_d")
 
 
+def _tool_stages_from_form(
+    *,
+    tool: str,
+    firmware_path: str,
+    picotool_action: str = "info",
+    bootsel_fallback: str = "on",
+    esptool_action: str = "chip_id",
+    esptool_before: str = "",
+    esptool_after: str = "",
+    address: str = "0x0",
+    bossac_action: str = "info",
+    bossac_reset: str = "on",
+    bossac_entry: str = "auto",
+) -> tuple[list[dict], str]:
+    """Build the rescue stage list for one flash-tool form submit.
+
+    Returns ``(stages, error)`` — ``stages`` is empty when ``error`` is set.
+    Shared by the per-device rescue page and the /ui/tools chip workbench so
+    both submit identical stage lists.
+    """
+    from hil_controller.adapters.bench_stages import (
+        _ESPTOOL_RESCUE_AFTER,
+        _ESPTOOL_RESCUE_BEFORE,
+    )
+
+    if tool == "picotool":
+        if picotool_action not in ("info", "reboot_bootsel", "load", "erase", "reboot"):
+            return [], f"Unknown picotool action {picotool_action!r}"
+        if picotool_action == "load" and not firmware_path:
+            return [], "picotool load needs a firmware file (.uf2 or .bin)"
+        stage: dict = {"type": "picotool_rescue", "action": picotool_action}
+        if bootsel_fallback != "on":
+            stage["bootsel_fallback"] = False
+        return [stage], ""
+    if tool == "esptool":
+        if esptool_action not in ("chip_id", "flash_id", "read_mac", "erase_flash", "write"):
+            return [], f"Unknown esptool action {esptool_action!r}"
+        if esptool_action == "write" and not firmware_path:
+            return [], "esptool write needs a firmware file (.bin)"
+        if esptool_before and esptool_before not in _ESPTOOL_RESCUE_BEFORE:
+            return [], f"Unknown esptool --before {esptool_before!r}"
+        if esptool_after and esptool_after not in _ESPTOOL_RESCUE_AFTER:
+            return [], f"Unknown esptool --after {esptool_after!r}"
+        stage = {"type": "esptool_rescue", "action": esptool_action,
+                 "address": address or "0x0"}
+        if esptool_before:  # "" = (default): omit so esptool's own default applies
+            stage["before"] = esptool_before
+        if esptool_after:
+            stage["after"] = esptool_after
+        stages = [stage]
+        if esptool_action == "write":
+            stages.append({"type": "power_cycle"})  # boot the rescued firmware
+        return stages, ""
+    if tool == "bossac":
+        if bossac_action not in ("info", "erase", "write"):
+            return [], f"Unknown bossac action {bossac_action!r}"
+        if bossac_action == "write" and not firmware_path:
+            return [], "bossac write needs a firmware file (.bin built for the SAM app offset)"
+        if bossac_entry not in ("auto", "skip"):
+            return [], f"Unknown bossac bootloader entry {bossac_entry!r}"
+        stage = {"type": "bossac_rescue", "action": bossac_action}
+        if bossac_entry != "auto":
+            stage["bootloader_entry"] = bossac_entry
+        if bossac_action == "write" and bossac_reset != "on":
+            stage["reset"] = False
+        return [stage], ""
+    return [], f"Unknown tool {tool!r}"
+
+
 def _build_rescue_job_request(
     *,
     device_id: str,
@@ -5100,13 +5181,22 @@ def _build_rescue_job_request(
     firmware_path: str = "",
     offset: str = "0x0",
     window_minutes: int = 0,
+    serial_port: str = "",
 ) -> dict:
-    """A bare firmware-bench JobRequest for a rescue action (no protomq, no hold)."""
+    """A bare firmware-bench JobRequest for a rescue action (no protomq, no hold).
+
+    ``serial_port`` is an explicit override for an unregistered board plugged
+    into a registered device's bench position (it becomes both the flash and
+    log port, skipping filter resolution).
+    """
     params: dict = {
         "stages": stages,
         "bare": True,
         "window_minutes": window_minutes,
     }
+    if serial_port:
+        params["flash_serial_port"] = serial_port
+        params["log_serial_port"] = serial_port
     req: dict = {
         "target": {"device": {"id": device_id}, "pool": "public"},
         "script": "firmware-bench",
@@ -5118,6 +5208,32 @@ def _build_rescue_job_request(
         params["firmware"] = firmware
         req["payload"] = {"kind": "firmware-bin", "firmware": firmware}
     return req
+
+
+async def _save_rescue_firmware(
+    db_path: str, firmware_file: UploadFile | None
+) -> tuple[str, str | None]:
+    """Save an uploaded rescue image (picotool load / esptool or bossac write)
+    to the controller and register it as a firmware asset, same as the
+    firmware-bench form. Returns ``(path, asset_id)`` — ``("", None)`` when no
+    file was uploaded."""
+    if not (firmware_file and firmware_file.filename):
+        return "", None
+    aid = str(uuid.uuid4())
+    save_dir = Path(_jobs_dir()) / "firmware" / aid
+    save_dir.mkdir(parents=True, exist_ok=True)
+    dest = save_dir / firmware_file.filename
+    content = await firmware_file.read()
+    dest.write_bytes(content)
+    async with get_db(db_path) as db:
+        await db.execute(
+            """INSERT INTO assets (id, filename, path, size_bytes, kind, job_id, created_at)
+               VALUES (?, ?, ?, ?, 'firmware', NULL, ?)""",
+            (aid, firmware_file.filename, str(dest), len(content),
+             datetime.now(UTC).isoformat()),
+        )
+        await db.commit()
+    return str(dest), aid
 
 
 @router.get("/rescue/{device_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -5148,7 +5264,7 @@ async def submit_rescue_job(
     settle_s: Annotated[str, Form()] = "1",
     expect: Annotated[str, Form()] = "",
     picotool_action: Annotated[str, Form()] = "info",
-    bootsel_fallback: Annotated[str, Form()] = "on",
+    bootsel_fallback: Annotated[str, Form()] = "",  # checkbox: absent when unchecked
     esptool_action: Annotated[str, Form()] = "chip_id",
     esptool_before: Annotated[str, Form()] = "",
     esptool_after: Annotated[str, Form()] = "",
@@ -5170,27 +5286,7 @@ async def submit_rescue_job(
             {"token": hil_token, "active": "devices", "device": device, "error": msg},
         )
 
-    # Resolve an uploaded image (picotool load / esptool write) to a controller
-    # path + firmware asset, same as the firmware-bench form.
-    firmware_path = ""
-    asset_id: str | None = None
-    if firmware_file and firmware_file.filename:
-        aid = str(uuid.uuid4())
-        save_dir = Path(_jobs_dir()) / "firmware" / aid
-        save_dir.mkdir(parents=True, exist_ok=True)
-        dest = save_dir / firmware_file.filename
-        content = await firmware_file.read()
-        dest.write_bytes(content)
-        async with get_db(db_path) as db:
-            await db.execute(
-                """INSERT INTO assets (id, filename, path, size_bytes, kind, job_id, created_at)
-                   VALUES (?, ?, ?, ?, 'firmware', NULL, ?)""",
-                (aid, firmware_file.filename, str(dest), len(content),
-                 datetime.now(UTC).isoformat()),
-            )
-            await db.commit()
-        asset_id = aid
-        firmware_path = str(dest)
+    firmware_path, asset_id = await _save_rescue_firmware(db_path, firmware_file)
 
     stages: list[dict] = []
     if rescue_action == "probe":
@@ -5210,38 +5306,19 @@ async def submit_rescue_job(
         if device.get("bootsel_channel") is None:
             return _err("This device has no bootsel_channel mapped — set it on the device first.")
         stages = [{"type": "enter_bootsel"}]
-    elif rescue_action == "picotool":
-        if picotool_action not in ("info", "reboot_bootsel", "load", "erase", "reboot"):
-            return _err(f"Unknown picotool action {picotool_action!r}")
-        if picotool_action == "load" and not firmware_path:
-            return _err("picotool load needs a firmware file (.uf2 or .bin)")
-        stage: dict = {"type": "picotool_rescue", "action": picotool_action}
-        if bootsel_fallback != "on":
-            stage["bootsel_fallback"] = False
-        stages = [stage]
-    elif rescue_action == "esptool":
-        from hil_controller.adapters.bench_stages import (
-            _ESPTOOL_RESCUE_AFTER,
-            _ESPTOOL_RESCUE_BEFORE,
+    elif rescue_action in ("picotool", "esptool", "bossac"):
+        stages, tool_err = _tool_stages_from_form(
+            tool=rescue_action,
+            firmware_path=firmware_path,
+            picotool_action=picotool_action,
+            bootsel_fallback=bootsel_fallback,
+            esptool_action=esptool_action,
+            esptool_before=esptool_before,
+            esptool_after=esptool_after,
+            address=address,
         )
-
-        if esptool_action not in ("chip_id", "flash_id", "read_mac", "erase_flash", "write"):
-            return _err(f"Unknown esptool action {esptool_action!r}")
-        if esptool_action == "write" and not firmware_path:
-            return _err("esptool write needs a firmware file (.bin)")
-        if esptool_before and esptool_before not in _ESPTOOL_RESCUE_BEFORE:
-            return _err(f"Unknown esptool --before {esptool_before!r}")
-        if esptool_after and esptool_after not in _ESPTOOL_RESCUE_AFTER:
-            return _err(f"Unknown esptool --after {esptool_after!r}")
-        esp_stage: dict = {"type": "esptool_rescue", "action": esptool_action,
-                           "address": address or "0x0"}
-        if esptool_before:  # "" = (default): omit so esptool's own default applies
-            esp_stage["before"] = esptool_before
-        if esptool_after:
-            esp_stage["after"] = esptool_after
-        stages = [esp_stage]
-        if esptool_action == "write":
-            stages.append({"type": "power_cycle"})  # boot the rescued firmware
+        if tool_err:
+            return _err(tool_err)
     else:
         return _err(f"Unknown rescue action {rescue_action!r}")
 
@@ -5260,4 +5337,98 @@ async def submit_rescue_job(
                 await db.commit()
     except Exception as exc:  # noqa: BLE001 — surface the submit error on the form
         return _err(str(exc))
+    return RedirectResponse(f"/ui/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ---------------------------------------------------------------------------
+# Chip tools — general rescue/interrogation workbench (/ui/tools): esptool /
+# picotool / bossac against any bench DUT, each action a bare firmware-bench
+# job. The per-device /ui/rescue/{device} page stays; this page links to it.
+# ---------------------------------------------------------------------------
+
+
+async def _tools_page_ctx(request: Request, hil_token: str, error: str | None) -> dict:
+    devices = [
+        d for d in await _devices(request.app.state.db_path) if d["kind"] == "microcontroller"
+    ]
+    return {
+        "token": hil_token,
+        "active": "tools",
+        "mcu_devices": devices,
+        "error": error,
+    }
+
+
+@router.get("/tools", response_class=HTMLResponse, include_in_schema=False)
+async def tools_page(request: Request, hil_token: str = Cookie(default="")) -> Response:
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    return _tr(request, "tools.html", await _tools_page_ctx(request, hil_token, None))
+
+
+@router.post("/tools", include_in_schema=False, response_model=None)
+async def submit_tools_job(
+    request: Request,
+    hil_token: str = Cookie(default=""),
+    rescue_action: Annotated[str, Form()] = "",  # set by the pressed submit button
+    device_id: Annotated[str, Form()] = "",
+    serial_port: Annotated[str, Form()] = "",
+    picotool_action: Annotated[str, Form()] = "info",
+    bootsel_fallback: Annotated[str, Form()] = "",  # checkbox: absent when unchecked
+    esptool_action: Annotated[str, Form()] = "chip_id",
+    esptool_before: Annotated[str, Form()] = "",
+    esptool_after: Annotated[str, Form()] = "",
+    address: Annotated[str, Form()] = "0x0",
+    bossac_action: Annotated[str, Form()] = "info",
+    bossac_reset: Annotated[str, Form()] = "",  # checkbox: absent when unchecked
+    bossac_entry: Annotated[str, Form()] = "auto",
+    firmware_file: UploadFile | None = File(default=None),
+) -> Response:
+    """One tool action from the workbench → a bare firmware-bench rescue job."""
+    if not (await _check_web_token(request, hil_token)):
+        return _login_redirect()
+    db_path: str = request.app.state.db_path
+
+    async def _err(msg: str) -> HTMLResponse:
+        return _tr(request, "tools.html", await _tools_page_ctx(request, hil_token, msg))
+
+    device = await _device_row(db_path, device_id) if device_id else None
+    if device is None:
+        return await _err("Pick a device (rescue jobs lease a registered bench position; "
+                          "for an unregistered board, pick the device whose position it "
+                          "occupies and override the serial port).")
+
+    firmware_path, asset_id = await _save_rescue_firmware(db_path, firmware_file)
+    stages, tool_err = _tool_stages_from_form(
+        tool=rescue_action,
+        firmware_path=firmware_path,
+        picotool_action=picotool_action,
+        bootsel_fallback=bootsel_fallback,
+        esptool_action=esptool_action,
+        esptool_before=esptool_before,
+        esptool_after=esptool_after,
+        address=address,
+        bossac_action=bossac_action,
+        bossac_reset=bossac_reset,
+        bossac_entry=bossac_entry,
+    )
+    if tool_err:
+        return await _err(tool_err)
+
+    job_req = _build_rescue_job_request(
+        device_id=device_id,
+        stages=stages,
+        firmware_path=firmware_path,
+        offset=address or "0x0",
+        serial_port=serial_port.strip(),
+    )
+    try:
+        resp = await _call_jobs_api(request, job_req, hil_token)
+        job_id = resp["id"]
+        if asset_id:
+            async with get_db(db_path) as db:
+                await db.execute("UPDATE assets SET job_id = ? WHERE id = ?", (job_id, asset_id))
+                await db.commit()
+    except Exception as exc:  # noqa: BLE001 — surface the submit error on the form
+        return await _err(str(exc))
     return RedirectResponse(f"/ui/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
