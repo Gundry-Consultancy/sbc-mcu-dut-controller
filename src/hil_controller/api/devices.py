@@ -174,6 +174,7 @@ class DevicePatch(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    host_id: str | None = None
     kind: str | None = None
     model: str | None = None
     pool: str | None = None
@@ -209,7 +210,7 @@ class DevicePatch(BaseModel):
 
 
 #: Fields whose value must never be null in the devices table.
-_NOT_NULL_DEVICE_FIELDS = {"kind", "model", "pool", "status", "capabilities"}
+_NOT_NULL_DEVICE_FIELDS = {"host_id", "kind", "model", "pool", "status", "capabilities"}
 
 
 @router.patch("/{device_id}", response_model=DeviceDetail)
@@ -232,6 +233,17 @@ async def patch_device(
             row = await cur.fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Device not found")
+        for field in ("host_id", "hub_host_id"):
+            # Moving a DUT (e.g. a bridge DUT to the SSH host that should be
+            # its USB/IP receiver) must name a host that exists.
+            if changes.get(field):
+                async with db.execute(
+                    "SELECT 1 FROM hosts WHERE id = ?", (changes[field],)
+                ) as cur:
+                    if await cur.fetchone() is None:
+                        raise HTTPException(
+                            status_code=422, detail=f"unknown {field}: {changes[field]!r}"
+                        )
         if "capabilities" in changes:
             changes["capabilities_json"] = json.dumps(changes.pop("capabilities"))
         status_now = changes.get("status", row["status"])

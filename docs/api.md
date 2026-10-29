@@ -93,6 +93,11 @@ Device selection enriches the matched device with the DB's authoritative
 hardware fields (`serial_port`, `hub_host_id`, `hub_port_path`,
 `solenoid_channel`, `flasher`, `build_target`) — topology.yaml is only a seed.
 
+For a DUT on an esp-usbip-bridge (`hub_host_id` is the bridge), `host_id`
+names its USB/IP receiver: an SSH host (e.g. `rpi-hil006`) attaches the busid
+and runs flash/serial there; `localhost` (or the bridge itself) attaches on the
+controller. Move one with `PATCH /v1/devices/{id}` `{"host_id": "rpi-hil006"}`.
+
 ### `GET /v1/jobs/{id}` — snapshot
 
 `{ id, state, result, … }`. `state` ∈ `queued | assigned | preparing |
