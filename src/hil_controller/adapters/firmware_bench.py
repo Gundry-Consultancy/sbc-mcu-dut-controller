@@ -421,10 +421,11 @@ class FirmwareBenchAdapter:
         return BridgePortPower(client, str(port), force=force)
 
     async def _attach_usbip(self) -> None:
-        """Attach the bridge DUT's busid to the controller and keep it attached.
+        """Attach the bridge DUT's busid to its USB/IP receiver and keep it attached.
 
         The bridge always exports (no bind), so this is ``modprobe vhci-hcd`` +
-        ``usbip attach -r <bridge> -b <busid>`` on the controller, then the new
+        ``usbip attach -r <bridge> -b <busid>`` on the receiver (the device's SSH
+        host, else the controller), then the new
         ``/dev/tty*`` is remembered as the serial fallback. An
         :class:`UsbipAttachKeeper` re-attaches whenever the DUT re-enumerates
         (power-cycle, 1200-baud touch into the ROM) for the rest of the session.
@@ -436,6 +437,7 @@ class FirmwareBenchAdapter:
             diff_serial_ports,
         )
         from hil_controller.hosts.esp_bridge import bridge_client_of
+        from hil_controller.hosts.local import LocalTransport
 
         busid = self.device.get("hub_port_path")
         if not busid:
@@ -484,7 +486,8 @@ class FirmwareBenchAdapter:
         self._usbip_tty = diff_serial_ports(before, await bridge.list_serial_ports()) or ""
         self._sink(
             "bench",
-            f"usbip: {busid} from {self.usbip_server_addr} attached on the controller"
+            f"usbip: {busid} from {self.usbip_server_addr} attached on "
+            + ("the controller" if isinstance(self.dut_transport, LocalTransport) else "its host")
             + (f" → {self._usbip_tty}" if self._usbip_tty else " (no new tty appeared)"),
         )
         totals = ((await bridge_claims()) or {}).get("totals") or {}
