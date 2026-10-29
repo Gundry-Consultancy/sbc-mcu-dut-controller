@@ -446,11 +446,16 @@ class RealHostRegistry(HostRegistry):
             hub_transport = dut_transport
             usbip_server_addr = ""
             if is_esp_bridge_host(dut_host):
-                # An esp-usbip-bridge has no shell: the controller attaches the
-                # DUT's busid over usbip and runs flash/serial/MSC itself, while
-                # power + presence go to the bridge's HTTP API (hub_transport).
+                # An esp-usbip-bridge has no shell: a USB/IP receiver attaches the
+                # DUT's busid and runs flash/serial/MSC, while power + presence go
+                # to the bridge's HTTP API (hub_transport). The receiver is the
+                # device's own host when that is a shell host (e.g. a bench Pi,
+                # host_id: rpi-hil006), else the controller itself.
                 usbip_server_addr = dut_host.get("addr") or ""
-                dut_transport = LocalTransport()
+                if host["id"] == dut_host["id"] or is_esp_bridge_host(host):
+                    dut_transport = LocalTransport()
+                else:
+                    dut_transport = transport
             cfg = get_settings()
             # If the job requires an I2C strand and this device is routed to one
             # that provides it, hand the strand id to the adapter so it auto-mux's

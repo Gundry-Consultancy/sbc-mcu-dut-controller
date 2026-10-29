@@ -141,8 +141,37 @@ def test_make_adapter_firmware_bench_on_bridge_runs_dut_side_on_controller():
     assert adapter.usbip_server_addr == "usbip-a1b2c3.local"
 
 
+def test_make_adapter_firmware_bench_on_bridge_attaches_on_device_ssh_host():
+    from hil_controller.adapters.firmware_bench import FirmwareBenchAdapter
+    from hil_controller.hosts.ssh import SSHTransport
+
+    reg = RealHostRegistry(topology_file="", db_path=":memory:")
+    reg._hosts = [
+        {"id": "usbip-bridge-s31", "transport": "esp-usbip-bridge", "addr": "usbip-a1b2c3.local"},
+        {"id": "localhost", "transport": "local"},
+        {"id": "rpi-hil006", "transport": "ssh", "addr": "192.168.1.204", "ssh_user": "pi"},
+    ]
+    request = {"script": "firmware-bench", "params": {"firmware": {"path": "/tmp/fw.bin"}}}
+
+    def adapter_for(host_id: str) -> FirmwareBenchAdapter:
+        device = {
+            "id": "mcu-metro-esp32p4",
+            "host_id": host_id,
+            "hub_host_id": "usbip-bridge-s31",
+            "hub_port_path": "1-1.1",
+        }
+        host = next(h for h in reg._hosts if h["id"] == host_id)
+        return reg.make_adapter(host, device, request, "job-1")
+
+    on_pi = adapter_for("rpi-hil006")
+    assert isinstance(on_pi.dut_transport, SSHTransport)  # usbip attach + esptool on the Pi
+    assert isinstance(on_pi.hub_transport, EspBridgeTransport)
+    assert on_pi.usbip_server_addr == "usbip-a1b2c3.local"
+    assert isinstance(adapter_for("localhost").dut_transport, LocalTransport)
+
+
 # --------------------------------------------------------------------------- #
-# topology seeding + migration                                                #
+# topology seeding + migration                                               #
 # --------------------------------------------------------------------------- #
 
 
