@@ -159,6 +159,12 @@ async def test_patch_device_validation_and_outage_bookkeeping(app_topo):
         assert (
             await c.patch("/v1/devices/pi-dut", json={"power_control": "solenoid"})
         ).status_code == 422
+        assert (await c.patch("/v1/devices/pi-dut", json={"host_id": None})).status_code == 422
+        assert (
+            await c.patch("/v1/devices/pi-dut", json={"host_id": "no-such-host"})
+        ).status_code == 422
+        r = await c.patch("/v1/devices/pi-dut", json={"host_id": "rpi-a"})
+        assert r.status_code == 200
         r = await c.patch(
             "/v1/devices/pi-dut",
             json={"status": "unavailable", "unavailable_reason": "re-imaging SD card"},

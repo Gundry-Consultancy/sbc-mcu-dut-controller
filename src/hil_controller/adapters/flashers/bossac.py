@@ -221,7 +221,7 @@ class BossacFlasher(CliFlasher):
             self._base_argv(port) + ["--erase", f"--offset={self._offset_hex(self.app_offset)}"]
         )
 
-    async def flash(self, artifact: Artifact) -> FlashResult:
+    async def flash(self, artifact: Artifact, *, reset: bool = True) -> FlashResult:
         """Erase + write + verify ``artifact`` at the app offset, then reset to run it.
 
         One combined ``bossac -e -w -v -b -R --offset=<app> <file>``: erase
@@ -229,16 +229,15 @@ class BossacFlasher(CliFlasher):
         boot-from-flash, and reset the CPU into the freshly-flashed app. A
         ``0``/``None`` offset is coerced to ``app_offset`` so an ESP-shaped
         ``offset: 0x0`` can never overwrite the bootloader. Verify failure makes
-        bossac exit non-zero → :class:`FlasherToolFailed`.
+        bossac exit non-zero → :class:`FlasherToolFailed`. ``reset=False`` drops
+        ``--boot --reset`` so the board stays in SAM-BA for chained operations.
         """
         port = await self._bare_port()
         offset = artifact.offset if artifact.offset else self.app_offset
-        argv = self._base_argv(port) + [
-            "--erase",
-            "--write",
-            "--verify",
-            "--boot",
-            "--reset",
+        argv = self._base_argv(port) + ["--erase", "--write", "--verify"]
+        if reset:
+            argv += ["--boot", "--reset"]
+        argv += [
             f"--offset={self._offset_hex(offset)}",
             artifact.path,
         ]

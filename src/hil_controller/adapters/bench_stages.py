@@ -45,9 +45,24 @@ from hil_controller.adapters.esp_usbip_bridge import (
     EspBridgeError,
     bridge_power_force,
 )
-from hil_controller.adapters.flashers.base import Artifact, FlasherError
-from hil_controller.adapters.flashers.bossac import SAMD51_APP_OFFSET, BossacFlasher
-from hil_controller.adapters.flashers.esptool import EsptoolFlasher, classify_boot_state
+from hil_controller.adapters.flashers.base import Artifact, FlasherError, FlasherToolFailed
+from hil_controller.adapters.flashers.bossac import (
+    SAMD51_APP_OFFSET,
+    BossacFlasher,
+    parse_bossac_device,
+)
+from hil_controller.adapters.flashers.esptool import (
+    EsptoolFlasher,
+    classify_boot_state,
+    parse_chip_family,
+    parse_flash_size_bytes,
+    parse_mac,
+)
+from hil_controller.adapters.flashers.picotool import (
+    PicotoolFlasher,
+    needs_bootsel,
+    parse_picotool_info,
+)
 from hil_controller.adapters.flashers.pio_upload import PioUploadFlasher
 from hil_controller.adapters.flashers.uf2_msc import Uf2MscFlasher
 from hil_controller.adapters.msc_secrets import (
@@ -57,6 +72,7 @@ from hil_controller.adapters.msc_secrets import (
     resolve_msc_device,
     write_secrets_to_msc,
 )
+from hil_controller.adapters.serial_capture import SerialWriteError, write_serial_bytes
 from hil_controller.adapters.solenoid_hub import SolenoidHubAdapter, SolenoidHubError
 from hil_controller.adapters.ws_i2c_inject import WsI2cInjectError, WsI2cProbeInjector
 from hil_controller.adapters.ws_signal_inject import WsInjectError, WsSignalInjector
@@ -236,6 +252,10 @@ class BenchContext:
     #: can reconnect WiFi+MQTT to re-checkin).
     serial_log_path: str = ""
     serial_assert_offset: int = 0
+    #: Controller-local path the ``serial_probe`` stage appends its per-probe
+    #: transcript to; the orchestrator registers it as a downloadable job asset
+    #: at teardown (``serial-probe.log``). "" disables the asset copy.
+    probe_log_path: str = ""
     #: Verbosity of the LIVE streaming job log (the event feed CI tails). One of:
     #:   "all"      — emit every stdout+stderr line of every command (default).
     #:   "filtered" — emit only the :data:`NOTABLE_LIVE_LINES` allow-list + a summary.
@@ -307,6 +327,12 @@ class BenchContext:
                 sudo=True,
                 app_offset=self.bossac_offset,
             )
+        elif which == "picotool":
+            flasher = PicotoolFlasher(
+                transport=self.dut_transport,
+                port=self.flash_serial_port,
+                sudo=self.sudo,
+            )
         elif which in ("esptool", "", None):
             flasher = EsptoolFlasher(
                 transport=self.dut_transport,
@@ -317,7 +343,8 @@ class BenchContext:
             )
         else:
             raise StageError(
-                f"unknown flasher {which!r} (expected 'esptool', 'pio', 'bossac', or 'uf2-msc')"
+                f"unknown flasher {which!r} "
+                "(expected 'esptool', 'pio', 'bossac', 'uf2-msc', or 'picotool')"
             )
         return flasher
 
@@ -1154,6 +1181,578 @@ async def _await_serial_marker(path: str, marker: re.Pattern[str], timeout_s: fl
             pass
         await asyncio.sleep(0.5)
     return False
+
+
+# --------------------------------------------------------------------------- #
+# Board-rescue stages (see docs/notes/board-rescue.md)                        #
+# --------------------------------------------------------------------------- #
+
+#: Named poke sequences the ``serial_probe`` stage can send. ``enter`` wakes a
+#: REPL prompt; ``ctrl_c`` interrupts running CircuitPython/MicroPython code
+#: (prints ``KeyboardInterrupt`` + a fresh ``>>>``); ``ctrl_d`` soft-reboots a
+#: REPL (reprints the full banner). Arbitrary bytes go via ``{"hex": "..."}``.
+_PROBE_POKES: dict[str, bytes] = {
+    "enter": b"\r\n",
+    "ctrl_c": b"\x03",
+    "ctrl_d": b"\x04",
+}
+
+#: Output fragments that mean "the board printed a boot banner" (vs a live
+#: REPL or silence) — ESP ROM lines, UF2/CP/MP banners, generic loaders.
+_PROBE_BOOT_NEEDLES = (
+    "rst:",
+    "boot:",
+    "ESP-ROM",
+    "configsip:",
+    "entry ",
+    "Boot ",
+    "CIRCUITPY",
+    "CircuitPython",
+    "MicroPython",
+    "WipperSnapper",
+    "invalid header",
+)
+
+
+def resolve_probe_poke(poke: Any) -> tuple[str, bytes]:
+    """Resolve one ``pokes`` entry to ``(label, bytes)``.
+
+    Accepts a named sequence (``"enter"`` / ``"ctrl_c"`` / ``"ctrl_d"``) or
+    ``{"hex": "0d0a"}`` for raw bytes. Raises :class:`StageError` otherwise.
+    """
+    if isinstance(poke, str):
+        data = _PROBE_POKES.get(poke)
+        if data is None:
+            raise StageError(
+                f"serial_probe: unknown poke {poke!r} (named pokes: {sorted(_PROBE_POKES)}; "
+                'or pass {"hex": "..."})'
+            )
+        return poke, data
+    if isinstance(poke, dict) and poke.get("hex"):
+        raw = str(poke["hex"]).replace(" ", "").replace("_", "")
+        try:
+            data = bytes.fromhex(raw)
+        except ValueError as exc:
+            raise StageError(f"serial_probe: bad hex poke {poke['hex']!r}: {exc}") from exc
+        return f"hex:{data.hex()}", data
+    raise StageError(
+        f'serial_probe: each poke must be a name or {{"hex": "..."}} (got {poke!r})'
+    )
+
+
+def classify_probe_transcript(text: str) -> str:
+    """Classify a serial-probe capture into a coarse board state.
+
+    One of ``circuitpython_repl`` (a ``>>>`` prompt answered),
+    ``circuitpython_safe_mode``, ``micropython_repl``, ``boot_banner_detected``
+    (banner but no prompt), ``silent`` (nothing came back), or ``other``.
+    Pure + top-level so it's directly unit-testable.
+    """
+    t = text or ""
+    low = t.lower()
+    if not t.strip():
+        return "silent"
+    if "safe mode" in low:
+        return "circuitpython_safe_mode"
+    if ">>>" in t:
+        if "micropython" in low and "circuitpython" not in low:
+            return "micropython_repl"
+        return "circuitpython_repl"
+    if any(n in t for n in _PROBE_BOOT_NEEDLES) or classify_boot_state(t)["state"] != "unknown":
+        return "boot_banner_detected"
+    return "other"
+
+
+def _read_serial_since(path: str, offset: int) -> str:
+    """Text appended to the controller-local serial.log after byte *offset*."""
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            return fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+async def _require_serial_port(
+    stage: dict[str, Any], ctx: BenchContext, stype: str, port: str
+) -> None:
+    """Fail a rescue stage fast when its serial port is unset or absent.
+
+    Mirrors the chip-aware fail-fast in ``power_cycle``: a target with an
+    empty or never-enumerated port must raise immediately instead of letting
+    esptool spin through its connect retries for minutes. ONE existence check
+    (``test -e`` over SSH) decides. ``require_port: false`` skips the
+    existence check only (e.g. an RP2040 already sitting in BOOTSEL exposes
+    no CDC node, so picotool work on it is legitimate with the node absent);
+    a stage with no port configured at all always fails.
+    """
+    host = ctx.device.get("hub_host_id") or ctx.device.get("host_id") or "the DUT host"
+    if not port:
+        raise StageError(
+            f"{stype}: no serial port configured for device "
+            f"{ctx.device.get('id') or '(unknown)'} (infra error, not a test verdict)"
+        )
+    if bool(stage.get("require_port", True)) and not await _serial_node_present(ctx, port):
+        raise StageError(
+            f"{stype}: serial port {port} not present on host {host} — failing fast "
+            "instead of retrying (set require_port: false to skip the check; "
+            "infra error, not a test verdict)"
+        )
+
+
+async def _stage_serial_probe(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Poke the DUT's console and classify what (if anything) answers.
+
+    Non-destructive by default: sends the configured ``pokes`` (enter / ctrl_c /
+    ctrl_d / raw hex) to the log serial port — pausing the running serial
+    capture around each write so the writer and the capture's socat never fight
+    over the tty — then captures for ``capture_s`` and classifies the new
+    serial output (REPL prompt / safe mode / boot banner / silent). The probe
+    transcript is appended to the ``serial-probe.log`` job asset and recorded
+    (with classification + byte count) in the flash.log transcript. Optional
+    ``expect`` regexes make it an assertion: StageError when none match.
+
+    Params: ``pokes`` (default ``["enter"]``), ``settle_s`` (1, between pokes),
+    ``capture_s`` (5, after the last poke), ``serial_baud`` (115200),
+    ``expect`` (list of regexes), ``rts`` (true/false to force RTS).
+    """
+    port = ctx.log_serial_port or ctx.flash_serial_port
+    await _require_serial_port(stage, ctx, "serial_probe", port)
+    # Make sure capture is running so the responses land in serial.log (no-op
+    # when the start_serial_log stage already attached it).
+    if ctx.start_serial is not None:
+        await ctx.start_serial()
+    if not ctx.serial_log_path:
+        ctx.log_line(
+            "serial_probe: WARNING no serial capture log bound — responses cannot be read back"
+        )
+    pokes_opt = stage.get("pokes") or ["enter"]
+    if not isinstance(pokes_opt, list):
+        raise StageError("serial_probe: 'pokes' must be a list")
+    pokes = [resolve_probe_poke(p) for p in pokes_opt]
+    settle_s = float(stage.get("settle_s", 1.0))
+    capture_s = float(stage.get("capture_s", 5.0))
+    baud = int(stage.get("serial_baud", 115200))
+    rts_opt = stage.get("rts")
+    rts = None if rts_opt is None else bool(rts_opt)
+    start_offset = _serial_size(ctx.serial_log_path) if ctx.serial_log_path else 0
+
+    for label, data in pokes:
+        ctx.log_line(f"serial_probe: poke {label} ({len(data)} byte(s)) → {port}")
+        # pause capture → write → resume, so socat and the writer never share
+        # the port (same discipline as the esptool soft-reset path).
+        if ctx.pause_serial is not None:
+            await ctx.pause_serial()
+        try:
+            try:
+                await write_serial_bytes(ctx.dut_transport, port, data, baud=baud, rts=rts)
+            except SerialWriteError as exc:
+                raise StageError(f"serial_probe: {exc}") from exc
+        finally:
+            if ctx.resume_serial is not None:
+                await ctx.resume_serial()
+        if settle_s > 0:
+            await asyncio.sleep(settle_s)
+    if capture_s > 0:
+        ctx.log_line(f"serial_probe: capturing for {capture_s:g}s")
+        await asyncio.sleep(capture_s)
+
+    text = _read_serial_since(ctx.serial_log_path, start_offset)
+    classification = classify_probe_transcript(text)
+    nbytes = len(text.encode("utf-8", errors="replace"))
+    poke_names = ",".join(label for label, _ in pokes)
+    ctx.transcript.append(
+        {
+            "at": _now_iso(),
+            "cmd": f"[serial_probe pokes={poke_names}]",
+            "exit": 0,
+            "stdout": text,
+            "stderr": "",
+            "classification": classification,
+            "bytes": nbytes,
+        }
+    )
+    if ctx.probe_log_path:
+        try:
+            with open(ctx.probe_log_path, "a", encoding="utf-8") as fh:
+                fh.write(
+                    f"===== serial_probe [{_now_iso()}] pokes={poke_names} "
+                    f"classification={classification} bytes={nbytes} =====\n{text}\n"
+                )
+        except OSError as exc:
+            ctx.log_line(f"serial_probe: WARNING probe asset write failed: {exc}")
+    ctx.log_line(
+        f"SERIAL_PROBE_VERDICT classification={classification} bytes={nbytes} "
+        f"pokes={len(pokes)}"
+    )
+    expect = stage.get("expect")
+    if expect:
+        patterns = [str(p) for p in (expect if isinstance(expect, list) else [expect])]
+        matched = [p for p in patterns if re.search(p, text)]
+        if matched:
+            ctx.log_line(f"serial_probe: expect matched {matched}")
+        else:
+            raise StageError(
+                f"serial_probe: none of the expected patterns matched {patterns} "
+                f"(classification={classification}, {nbytes} bytes captured)"
+            )
+
+
+async def _stage_enter_bootsel(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Cold-boot an RP2040/RP2350 into its BOOTSEL ROM via the solenoid bench.
+
+    Holds the device's BOOTSEL press solenoid (bank B, ``bootsel_channel``),
+    power-cycles its bank-A ``solenoid_channel`` so the chip boots with BOOTSEL
+    held, then releases — honouring ``bootsel_inverted`` polarity. The same
+    shared :meth:`SolenoidHubAdapter.bootsel_entry` backs the web UI's BOOTSEL
+    button. Stage opts override the device record: ``bootsel_channel``,
+    ``solenoid_channel``, ``bootsel_inverted``, ``off_s`` (1.0), ``settle_s`` (1.5).
+    """
+    bootsel_ch = stage.get("bootsel_channel", ctx.device.get("bootsel_channel"))
+    power_ch = stage.get("solenoid_channel", ctx.device.get("solenoid_channel"))
+    if bootsel_ch is None:
+        raise StageError(
+            f"enter_bootsel: device {ctx.device.get('id') or '(unknown)'} has no "
+            "bootsel_channel mapping — wire its BOOTSEL press to a bank-B solenoid "
+            "channel and set devices.bootsel_channel (infra error, not a test verdict)"
+        )
+    if power_ch is None:
+        raise StageError(
+            f"enter_bootsel: device {ctx.device.get('id') or '(unknown)'} has no "
+            "solenoid_channel to power-cycle while BOOTSEL is held"
+        )
+    inverted = bool(stage.get("bootsel_inverted", ctx.device.get("bootsel_inverted") or False))
+    hub = SolenoidHubAdapter(transport=ctx.hub_transport, sudo=ctx.sudo)
+    ctx.log_line(
+        f"enter_bootsel: hold ch {bootsel_ch}{' (inverted)' if inverted else ''}, "
+        f"power-cycle ch {power_ch}"
+    )
+    try:
+        await hub.bootsel_entry(
+            power_channel=int(power_ch),
+            bootsel_channel=int(bootsel_ch),
+            inverted=inverted,
+            off_s=float(stage.get("off_s", 1.0)),
+            settle_s=float(stage.get("settle_s", 1.5)),
+        )
+    except (SolenoidHubError, ValueError) as exc:
+        raise StageError(f"enter_bootsel failed: {exc}") from exc
+    ctx.log_line(
+        "enter_bootsel: cold-booted with BOOTSEL held — expect the BOOTSEL USB "
+        "device / RPI-RP2 drive to enumerate"
+    )
+
+
+_PICOTOOL_RESCUE_ACTIONS = ("info", "reboot_bootsel", "load", "erase", "reboot")
+#: Actions that may retry once via the solenoid BOOTSEL entry when picotool
+#: reports no BOOTSEL-mode device (``bootsel_fallback``, default true).
+_PICOTOOL_FALLBACK_ACTIONS = ("load", "info")
+
+
+async def _stage_picotool_rescue(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Drive ``picotool`` against an RP2040/RP2350 DUT (rescue verbs).
+
+    ``action``: ``info`` (``picotool info -a``, parsed into the verdict),
+    ``reboot_bootsel`` (``reboot -f -u`` — force a running app into BOOTSEL),
+    ``load`` (``load -v -x`` of the staged firmware), ``erase``, ``reboot``.
+
+    For ``load``/``info``, when picotool fails because no BOOTSEL-mode device is
+    present and the device has a ``bootsel_channel`` mapped, the stage runs the
+    ``enter_bootsel`` sequence and retries once (disable with
+    ``bootsel_fallback: false``). picotool must be installed on the bench host.
+    """
+    action = str(stage.get("action") or "info")
+    if action not in _PICOTOOL_RESCUE_ACTIONS:
+        raise StageError(
+            f"picotool_rescue: unknown action {action!r} "
+            f"(expected one of {list(_PICOTOOL_RESCUE_ACTIONS)})"
+        )
+    # Fail fast on an unset/absent port (one test -e) rather than spinning.
+    # NOTE: a board already in BOOTSEL exposes no CDC node — pass
+    # require_port: false for that case (picotool finds it over raw USB).
+    await _require_serial_port(stage, ctx, "picotool_rescue", ctx.flash_serial_port)
+    flasher = ctx.make_flasher("picotool")
+
+    async def _do() -> str:
+        if action == "info":
+            return str(await flasher.info())
+        if action == "reboot_bootsel":
+            await flasher.reboot_bootsel()
+            return ""
+        if action == "reboot":
+            await flasher.reboot_app()
+            return ""
+        if action == "erase":
+            await flasher.erase()
+            return ""
+        result = await flasher.flash(ctx.stage_artifact(stage))  # load -v -x
+        return str(result.raw_stdout)
+
+    ctx.log_line(f"picotool_rescue: {action}")
+    try:
+        out = await _do()
+    except FlasherToolFailed as exc:
+        blob = (exc.stdout or "") + "\n" + (exc.stderr or "")
+        can_fallback = (
+            bool(stage.get("bootsel_fallback", True))
+            and action in _PICOTOOL_FALLBACK_ACTIONS
+            and needs_bootsel(blob)
+            and ctx.device.get("bootsel_channel") is not None
+        )
+        if not can_fallback:
+            raise StageError(f"picotool_rescue {action} failed: {exc}") from exc
+        ctx.log_line(
+            "picotool_rescue: no BOOTSEL-mode device found — entering BOOTSEL via "
+            "the solenoid press and retrying once"
+        )
+        await _stage_enter_bootsel(stage, ctx)
+        # Give the BOOTSEL USB device a moment to enumerate before the retry.
+        await asyncio.sleep(float(stage.get("bootsel_settle_s", 3.0)))
+        try:
+            out = await _do()
+        except FlasherError as exc2:
+            raise StageError(
+                f"picotool_rescue {action} failed even after BOOTSEL entry: {exc2}"
+            ) from exc2
+    except FlasherError as exc:
+        raise StageError(f"picotool_rescue {action} failed: {exc}") from exc
+
+    if action == "info":
+        parsed = parse_picotool_info(out)
+        ctx.transcript.append(
+            {
+                "at": _now_iso(),
+                "cmd": "[picotool_rescue info]",
+                "exit": 0,
+                "stdout": out,
+                "stderr": "",
+                "picotool": parsed,
+            }
+        )
+        ctx.log_line(
+            f"PICOTOOL_VERDICT action=info ok=true family={parsed['family']} "
+            f"flash_k={parsed['flash_k']} program={parsed['program']}"
+        )
+    else:
+        ctx.log_line(f"PICOTOOL_VERDICT action={action} ok=true")
+
+
+_ESPTOOL_RESCUE_ACTIONS = ("chip_id", "flash_id", "read_mac", "erase_flash", "write")
+#: Stage-level allow-lists for the optional ``before``/``after`` pass-throughs.
+#: When an opt is ABSENT the flag is not emitted at all, so esptool's own
+#: defaults apply (``default_reset`` entry / ``hard_reset`` exit).
+_ESPTOOL_RESCUE_BEFORE = ("default_reset", "usb_reset", "no_reset", "no_reset_no_sync")
+_ESPTOOL_RESCUE_AFTER = ("hard_reset", "soft_reset", "no_reset", "no_reset_stub",
+                         "watchdog_reset")
+
+
+async def _stage_esptool_rescue(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Thin esptool rescue orchestration over the existing download-mode machinery.
+
+    First gets the chip into the ROM download loader via the full
+    ``enter_bootloader`` detect→rectify ladder (1200-touch → USB-JTAG reset →
+    hub power-cycle recovery; skip with ``enter_download: false``), then runs
+    ``action``: ``chip_id``, ``flash_id`` (the canonical cheap
+    aliveness/identity probe), ``read_mac``, ``erase_flash``, or ``write`` (the
+    staged firmware at ``address``, default 0x0 — reuses the flash stage's
+    retry + hub-power recovery).
+
+    ``before`` / ``after`` are optional pass-throughs; when absent the flag is
+    **not emitted**, so esptool's own defaults apply. Semantics:
+
+    * ``before`` default (absent) → esptool's DTR/RTS ``default_reset`` entry —
+      right for UART-bridge wiring (an external USB-UART adapter driving
+      EN/IO0); pair with ``enter_download: false`` when esptool should do the
+      entry itself. ``usb_reset`` for native-USB-connected chips.
+      ``no_reset`` targets a board already sitting in the bootloader — pair it
+      with a prior stage's ``after: no_reset`` to chain operations without
+      bouncing the chip.
+    * ``after: watchdog_reset`` restarts the app via the RTC watchdog where an
+      RTS-style ``hard_reset`` is unavailable (EN not wired) or would drop a
+      native-USB port; ``no_reset`` keeps the chip in the ROM for the next
+      stage; otherwise add a ``power_cycle`` stage after a write to boot the
+      result.
+    """
+    action = str(stage.get("action") or "chip_id")
+    if action not in _ESPTOOL_RESCUE_ACTIONS:
+        raise StageError(
+            f"esptool_rescue: unknown action {action!r} "
+            f"(expected one of {list(_ESPTOOL_RESCUE_ACTIONS)})"
+        )
+    before = stage.get("before")
+    if before is not None and before not in _ESPTOOL_RESCUE_BEFORE:
+        raise StageError(
+            f"esptool_rescue: invalid before {before!r} "
+            f"(expected one of {list(_ESPTOOL_RESCUE_BEFORE)}, or omit it for "
+            "esptool's own default)"
+        )
+    after = stage.get("after")
+    if after is not None and after not in _ESPTOOL_RESCUE_AFTER:
+        raise StageError(
+            f"esptool_rescue: invalid after {after!r} "
+            f"(expected one of {list(_ESPTOOL_RESCUE_AFTER)}, or omit it for "
+            "esptool's own default)"
+        )
+    # Fail fast on an unset/absent flash port (one test -e) — esptool would
+    # otherwise retry its connect for minutes against a node that isn't there.
+    await _require_serial_port(stage, ctx, "esptool_rescue", ctx.flash_serial_port)
+    if stage.get("enter_download", True):
+        enter = {k: v for k, v in stage.items() if k != "flasher"}
+        enter["type"] = "enter_bootloader"
+        await _stage_enter_bootloader(enter, ctx)
+
+    flasher = ctx.make_flasher("esptool")
+    ctx.log_line(f"esptool_rescue: {action}" + _reset_flags({"before": before, "after": after}))
+    try:
+        if action == "chip_id":
+            out = await _retry_step(
+                ctx, stage, label="chip_id",
+                do=lambda: flasher.chip_id(before=before, after=after),
+            )
+            family, mac = parse_chip_family(out), parse_mac(out)
+            ctx.transcript.append(
+                {
+                    "at": _now_iso(),
+                    "cmd": "[esptool_rescue chip_id]",
+                    "exit": 0,
+                    "stdout": out,
+                    "stderr": "",
+                    "esptool": {"family": family, "mac": mac},
+                }
+            )
+            ctx.log_line(f"ESPTOOL_RESCUE_VERDICT action=chip_id ok=true chip={family} mac={mac}")
+        elif action == "read_mac":
+            out = await _retry_step(
+                ctx, stage, label="read_mac",
+                do=lambda: flasher.read_mac(before=before, after=after),
+            )
+            mac = parse_mac(out)
+            ctx.transcript.append(
+                {
+                    "at": _now_iso(),
+                    "cmd": "[esptool_rescue read_mac]",
+                    "exit": 0,
+                    "stdout": out,
+                    "stderr": "",
+                    "esptool": {"mac": mac},
+                }
+            )
+            ctx.log_line(f"ESPTOOL_RESCUE_VERDICT action=read_mac ok=true mac={mac}")
+        elif action == "flash_id":
+            out = await _retry_step(
+                ctx, stage, label="flash_id",
+                do=lambda: flasher.flash_id(before=before, after=after),
+            )
+            family, mac = parse_chip_family(out), parse_mac(out)
+            flash_bytes = parse_flash_size_bytes(out)
+            ctx.transcript.append(
+                {
+                    "at": _now_iso(),
+                    "cmd": "[esptool_rescue flash_id]",
+                    "exit": 0,
+                    "stdout": out,
+                    "stderr": "",
+                    "esptool": {"family": family, "mac": mac, "flash_bytes": flash_bytes},
+                }
+            )
+            flash_mb = f"{flash_bytes // (1024 * 1024)}MB" if flash_bytes else None
+            ctx.log_line(
+                f"ESPTOOL_RESCUE_VERDICT action=flash_id ok=true chip={family} "
+                f"mac={mac} flash={flash_mb}"
+            )
+        elif action == "erase_flash":
+            await _retry_step(
+                ctx, stage, label="erase_flash",
+                do=lambda: flasher.erase(before=before, after=after),
+            )
+            ctx.log_line("ESPTOOL_RESCUE_VERDICT action=erase_flash ok=true")
+        else:  # write
+            sub = {**stage, "type": "flash", "flasher": "esptool"}
+            sub.pop("before", None)
+            sub.pop("after", None)
+            if before is not None:
+                sub["before"] = before
+            if after is not None:
+                sub["after"] = after
+            if "offset" not in sub:
+                sub["offset"] = stage.get("address", "0x0")
+            await _stage_flash(sub, ctx)
+            ctx.log_line(
+                f"ESPTOOL_RESCUE_VERDICT action=write ok=true offset={sub['offset']}"
+            )
+    except FlasherError as exc:
+        raise StageError(f"esptool_rescue {action} failed: {exc}") from exc
+
+
+_BOSSAC_RESCUE_ACTIONS = ("info", "erase", "write")
+
+
+async def _stage_bossac_rescue(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Drive ``bossac`` against a SAM (SAMD21/SAMD51) DUT (rescue verbs).
+
+    ``action``: ``info`` (``bossac -i``, SAM device parsed into the verdict),
+    ``erase`` (``-e`` above the app offset — the bootloader region is never
+    touched), ``write`` (the staged firmware via the combined
+    ``-e -w -v [-b -R] --offset=<app>`` call; ``reset: false`` drops ``-b -R``
+    so the board stays in SAM-BA for chained operations).
+
+    ``bootloader_entry``: ``auto`` (default) reuses the existing SAM
+    1200-baud-touch entry ladder (:func:`_enter_bootloader_sam` — no-op when
+    the board already answers ``bossac -i``, hub power-cycle recovery when the
+    touch never lands); ``skip`` assumes the board is already in SAM-BA.
+    """
+    action = str(stage.get("action") or "info")
+    if action not in _BOSSAC_RESCUE_ACTIONS:
+        raise StageError(
+            f"bossac_rescue: unknown action {action!r} "
+            f"(expected one of {list(_BOSSAC_RESCUE_ACTIONS)})"
+        )
+    entry = str(stage.get("bootloader_entry", "auto"))
+    if entry not in ("auto", "skip"):
+        raise StageError(
+            f"bossac_rescue: bootloader_entry must be 'auto' or 'skip' (got {entry!r})"
+        )
+    # Fail fast on an unset/absent port (one test -e) — same discipline as the
+    # other rescue stages.
+    await _require_serial_port(stage, ctx, "bossac_rescue", ctx.flash_serial_port)
+    if entry == "auto":
+        # Reuses the SAM path: returns immediately when bossac -i already
+        # answers, else 1200-touch hammer (+ hub power-cycle recovery).
+        await _enter_bootloader_sam({**stage, "flasher": "bossac"}, ctx)
+
+    flasher = ctx.make_flasher("bossac")
+    ctx.log_line(f"bossac_rescue: {action}")
+    try:
+        if action == "info":
+            info = await flasher.probe()
+            out = (info.raw or {}).get("info", "")
+            device = parse_bossac_device(out) or info.family
+            ctx.transcript.append(
+                {
+                    "at": _now_iso(),
+                    "cmd": "[bossac_rescue info]",
+                    "exit": 0,
+                    "stdout": out,
+                    "stderr": "",
+                    "bossac": {"device": device},
+                }
+            )
+            ctx.log_line(f"BOSSAC_VERDICT action=info ok=true device={device}")
+        elif action == "erase":
+            await flasher.erase()
+            ctx.log_line("BOSSAC_VERDICT action=erase ok=true")
+        else:  # write
+            artifact = ctx.stage_artifact(stage)
+            reset = bool(stage.get("reset", True))
+            result = await flasher.flash(artifact, reset=reset)
+            ctx.log_line(
+                f"BOSSAC_VERDICT action=write ok=true bytes={result.bytes_written} "
+                f"reset={str(reset).lower()}"
+            )
+    except FlasherError as exc:
+        raise StageError(f"bossac_rescue {action} failed: {exc}") from exc
 
 
 async def _await_serial_reboot(path: str, start_offset: int, timeout_s: float) -> bool:
@@ -2574,6 +3173,12 @@ STAGE_HANDLERS: dict[str, Handler] = {
     "io_api_component": _stage_io_api_component,
     "io_ws_publish": _stage_io_ws_publish,
     "io_ws_expect": _stage_io_ws_expect,
+    # board rescue (docs/notes/board-rescue.md)
+    "serial_probe": _stage_serial_probe,
+    "enter_bootsel": _stage_enter_bootsel,
+    "picotool_rescue": _stage_picotool_rescue,
+    "esptool_rescue": _stage_esptool_rescue,
+    "bossac_rescue": _stage_bossac_rescue,
 }
 
 
@@ -2616,6 +3221,18 @@ SAMD51_BOSSAC_FLASH_STAGES: list[dict[str, Any]] = [
     {"type": "enter_bootloader", "flasher": "bossac"},
     {"type": "flash", "flasher": "bossac", "offset": "0x4000"},
     {"type": "power_cycle"},
+]
+
+
+#: Non-destructive board-rescue probe: attach serial capture, then poke the
+#: console (wake → interrupt → wake) and classify what answers (REPL / safe
+#: mode / boot banner / silent). Submit as ``params.stages`` on a firmware-bench
+#: job with ``params.bare: true`` (keeps protomq out of the job) and
+#: ``window_minutes: 0`` — no firmware upload needed. First step of any rescue:
+#: probe before BOOTSEL, BOOTSEL before reflash.
+RESCUE_PROBE_STAGES: list[dict[str, Any]] = [
+    {"type": "start_serial_log"},
+    {"type": "serial_probe", "pokes": ["enter", "ctrl_c", "enter"], "capture_s": 5},
 ]
 
 

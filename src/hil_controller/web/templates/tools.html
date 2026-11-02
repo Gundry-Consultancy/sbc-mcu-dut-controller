@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Chip tools</h1>
+<p class="form-hint" style="margin-bottom:1rem;max-width:900px;">
+  General rescue / interrogation workbench: run <strong>esptool</strong>,
+  <strong>picotool</strong> or <strong>bossac</strong> against a bench DUT. Each button
+  submits a <strong>bare</strong> firmware-bench job (no protomq, no hold window) with the
+  matching rescue stage and redirects to the job page. For the guided per-device flow
+  (serial probe, BOOTSEL press) use that device's
+  <a href="/ui/devices">Rescue page</a> (Devices → edit → Rescue…).
+</p>
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/ui/tools" enctype="multipart/form-data" style="max-width:900px;">
+
+  <div class="form-panel" id="target">
+    <h2>Target</h2>
+    <div class="form-group">
+      <label for="device_id">Device</label>
+      <select id="device_id" name="device_id" required>
+        <option value="">— select a microcontroller —</option>
+        {% for d in mcu_devices %}
+        <option value="{{ d.id }}">
+          {{ d.id }}{% if d.model %} — {{ d.model }}{% endif %}
+          {% if d.flasher %} ({{ d.flasher }}){% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <span class="form-hint">
+        Rescue jobs lease a registered bench position. For an <em>unregistered</em> board,
+        pick the device whose position (host + hub port) it occupies and override the
+        serial port below.
+        {% if mcu_devices %}
+        Per-device rescue pages:
+        {% for d in mcu_devices %}<a href="/ui/rescue/{{ d.id }}" class="mono">{{ d.id }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+        {% endif %}
+      </span>
+    </div>
+    <div class="form-group">
+      <label for="serial_port">Serial port override (optional)</label>
+      <input type="text" id="serial_port" name="serial_port"
+             placeholder="/dev/serial/by-path/..." size="48">
+      <span class="form-hint">Used as both flash and log port; skips filter resolution.</span>
+    </div>
+    <div class="form-group">
+      <label for="firmware_file">Firmware file (esptool write / picotool load / bossac write)</label>
+      <input type="file" id="firmware_file" name="firmware_file" accept=".bin,.uf2">
+    </div>
+  </div>
+
+  <div class="form-panel" id="esptool">
+    <h2>esptool (ESP32 family)</h2>
+    <div class="form-group">
+      <label for="esptool_action">Action</label>
+      <select id="esptool_action" name="esptool_action">
+        <option value="flash_id" selected>flash_id (aliveness / identity probe — non-destructive)</option>
+        <option value="chip_id">chip_id (identity — non-destructive)</option>
+        <option value="read_mac">read_mac</option>
+        <option value="erase_flash">erase_flash (whole chip)</option>
+        <option value="write">write firmware @ address</option>
+      </select>
+      <label for="address" style="margin-left:1rem;">Address</label>
+      <input type="text" id="address" name="address" value="0x0" size="10">
+    </div>
+    <div class="form-group">
+      <label for="esptool_before">--before (connect reset)</label>
+      <select id="esptool_before" name="esptool_before">
+        <option value="" selected>(default)</option>
+        <option value="default_reset">default_reset (DTR/RTS — UART-bridge wiring)</option>
+        <option value="usb_reset">usb_reset (native-USB chips)</option>
+        <option value="no_reset">no_reset (already in bootloader)</option>
+        <option value="no_reset_no_sync">no_reset_no_sync</option>
+      </select>
+      <label for="esptool_after" style="margin-left:1rem;">--after (exit reset)</label>
+      <select id="esptool_after" name="esptool_after">
+        <option value="" selected>(default)</option>
+        <option value="hard_reset">hard_reset (RTS reboot)</option>
+        <option value="soft_reset">soft_reset</option>
+        <option value="no_reset">no_reset (stay in bootloader)</option>
+        <option value="no_reset_stub">no_reset_stub</option>
+        <option value="watchdog_reset">watchdog_reset (WDT reboot — native-USB safe)</option>
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary" name="rescue_action" value="esptool"
+            onclick="return confirm('Run the selected esptool action? erase/write overwrite flash.');">
+      Run esptool
+    </button>
+  </div>
+
+  <div class="form-panel" id="picotool">
+    <h2>picotool (RP2040 / RP2350)</h2>
+    <div class="form-group">
+      <label for="picotool_action">Action</label>
+      <select id="picotool_action" name="picotool_action">
+        <option value="info" selected>info (identity report — non-destructive)</option>
+        <option value="reboot_bootsel">reboot into BOOTSEL (running app)</option>
+        <option value="load">load firmware (write + verify + execute)</option>
+        <option value="erase">erase whole flash</option>
+        <option value="reboot">reboot into application</option>
+      </select>
+    </div>
+    <label style="display:block;margin-bottom:0.5rem;">
+      <input type="checkbox" name="bootsel_fallback" checked>
+      BOOTSEL fallback (hold the press solenoid + power-cycle, retry once)
+    </label>
+    <button type="submit" class="btn btn-primary" name="rescue_action" value="picotool"
+            onclick="return confirm('Run the selected picotool action? load/erase overwrite flash.');">
+      Run picotool
+    </button>
+  </div>
+
+  <div class="form-panel" id="bossac">
+    <h2>bossac (SAM / SAMD21 / SAMD51)</h2>
+    <p class="form-hint">
+      Bootloader entry defaults to the 1200-baud touch ladder (no-op when SAM-BA already
+      answers). Erase/write stay above the SAM app offset, so the bootloader is never touched.
+    </p>
+    <div class="form-group">
+      <label for="bossac_action">Action</label>
+      <select id="bossac_action" name="bossac_action">
+        <option value="info" selected>info (bossac -i — non-destructive)</option>
+        <option value="erase">erase app region (-e @ app offset)</option>
+        <option value="write">write firmware (-e -w -v [+ reset])</option>
+      </select>
+      <label for="bossac_entry" style="margin-left:1rem;">Bootloader entry</label>
+      <select id="bossac_entry" name="bossac_entry">
+        <option value="auto" selected>auto (1200-touch when needed)</option>
+        <option value="skip">skip (already in SAM-BA)</option>
+      </select>
+    </div>
+    <label style="display:block;margin-bottom:0.5rem;">
+      <input type="checkbox" name="bossac_reset" checked>
+      Reset into the app after write (-b -R; uncheck to stay in SAM-BA)
+    </label>
+    <button type="submit" class="btn btn-primary" name="rescue_action" value="bossac"
+            onclick="return confirm('Run the selected bossac action? erase/write overwrite the app region.');">
+      Run bossac
+    </button>
+  </div>
+
+</form>
+{% endblock %}

@@ -76,6 +76,42 @@ boards holding a latched I2C mux need `power_cycle` with
 `reset_via: "esptool"` — a soft reset that keeps the solenoid mapped (see
 hil-i2c-strands).
 
+## Board rescue (probe → BOOTSEL → reflash)
+
+When a DUT itself is the problem (dead firmware, bricked app, unknown state),
+drive the **rescue stages** through a normal firmware-bench job instead of
+ad-hoc SSH: set `params.bare: true` (no protoMQ) and `window_minutes: 0`, or
+use the web page `/ui/rescue/{device}`. Work **non-destructively first**:
+
+1. **Probe** — `serial_probe` (preset `RESCUE_PROBE_STAGES`: start_serial_log +
+   pokes enter/ctrl-C/enter). The verdict classifies the console:
+   `circuitpython_repl` / `micropython_repl` → the board is alive, fix the code,
+   don't reflash; `circuitpython_safe_mode` → read the safe-mode reason in the
+   `serial-probe.log` asset; `boot_banner_detected` → boot-looping, go to step 2;
+   `silent` → USB/port/power problem first (triage order below), then step 2.
+2. **Bootloader entry** — still non-destructive:
+   - RP2040/RP2350: `picotool_rescue action: info` (its BOOTSEL fallback holds
+     the press solenoid + power-cycles when nothing answers), or `enter_bootsel`
+     directly. Needs `devices.bootsel_channel` (+ `bootsel_inverted` where the
+     rig presses on relay-OFF).
+   - ESP32 family: `esptool_rescue action: chip_id` — enters the ROM download
+     loader via the full 1200-touch → USB-JTAG reset → hub power-cycle ladder
+     and reads identity without touching flash.
+   - SAM/SAMD boards: `bossac_rescue action: info` — 1200-touch into SAM-BA
+     (`bootloader_entry: auto`) and read the device identity without touching
+     flash.
+3. **Reflash / erase** — only once identity reads back: `picotool_rescue
+   action: load` (or `erase`), `esptool_rescue action: erase_flash` /
+   `write` @ `address` (then a `power_cycle` to boot it), or `bossac_rescue action: write` (combined
+   erase+write+verify at the SAM app offset; the bootloader survives). Erase and write are
+   destructive; a rescue job failing at step 1–2 is an **infra signal**, not a
+   reason to erase.
+
+**picotool must be installed on every bench host that owns RP2040/RP2350 DUTs**
+(>= 2.0 for `erase`). Full stage opts: `docs/api.md` "Board rescue"; design +
+phase-2 (UART rescue of dead-USB ESP32s via a cross-wired CircuitPython helper
+running adafruit_miniesptool): `docs/notes/board-rescue.md`.
+
 ## Host-level failures
 
 - **unreachable** (`No route to host`, SSH drop mid-stage): the host's devices

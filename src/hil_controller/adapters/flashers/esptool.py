@@ -52,7 +52,8 @@ _ESPTOOL_TRANSIENT = (
 # ``hard_reset`` is a no-op there). Used as the power-cycle fallback when a DUT
 # has no solenoid channel mapped.
 ESPTOOL_AFTER_MODES = frozenset(
-    {"hard_reset", "watchdog_reset", "no_reset", "soft_reset", "no_reset_no_sync"}
+    {"hard_reset", "watchdog_reset", "no_reset", "soft_reset", "no_reset_stub",
+     "no_reset_no_sync"}
 )
 ESPTOOL_BEFORE_MODES = frozenset({"default_reset", "usb_reset", "no_reset", "no_reset_no_sync"})
 
@@ -72,8 +73,13 @@ def stty_1200_touch_argv(port: str) -> list[str]:
 # Pure parsers (top-level so they're directly unit-testable)                  #
 # --------------------------------------------------------------------------- #
 
-# "Chip is ESP32-S3 (revision v0.2)" → "ESP32-S3"
-_CHIP_RE = re.compile(r"Chip is\s+([\w\-]+)", re.IGNORECASE)
+# "Chip is ESP32-S3 (revision v0.2)" / "Chip type: ESP32-S3 (QFN56)" /
+# "Detecting chip type... ESP32-S3" → "ESP32-S3". The family must start with
+# ESP so lines like "Warning: ESP32-S3 has no Chip ID. Reading MAC instead."
+# or "Chip is not ..." phrasing can never be scraped as the chip name.
+_CHIP_RE = re.compile(
+    r"(?:Chip is|Chip type:|Detecting chip type\.*:?)\s+(ESP[\w\-]+)", re.IGNORECASE
+)
 # "MAC: 7c:df:a1:b2:c3:d4" — 6 colon-separated hex pairs
 _MAC_RE = re.compile(r"^MAC:\s+([0-9a-fA-F:]{17})\s*$", re.MULTILINE)
 # "Detected flash size: 8MB"
@@ -447,6 +453,33 @@ class EsptoolFlasher(CliFlasher):
             flash_bytes=parse_flash_size_bytes(text),
             raw={"flash_id": text},
         )
+
+    async def chip_id(self, *, before: str | None = None, after: str | None = None) -> str:
+        """Run ``chip_id`` (chip family + revision + MAC); returns raw stdout.
+
+        Pass ``before="no_reset"``/``after="no_reset"`` when the chip is already
+        held in the download ROM (the rescue flow) so the probe neither needs a
+        reset to connect nor bounces the chip out of download mode on exit.
+        """
+        result = await self._run_esptool(self._base_argv(before=before, after=after) + ["chip_id"])
+        return result.stdout or ""
+
+    async def flash_id(self, *, before: str | None = None, after: str | None = None) -> str:
+        """Run ``flash_id`` (the canonical cheap aliveness/identity probe).
+
+        Returns raw stdout — chip family, MAC and detected flash size are all in
+        there (see :func:`parse_chip_family` / :func:`parse_mac` /
+        :func:`parse_flash_size_bytes`). Flags are only emitted when given, so
+        esptool's own ``default_reset``/``hard_reset`` behaviour applies by
+        default (right for UART-bridge wiring).
+        """
+        result = await self._run_esptool(self._base_argv(before=before, after=after) + ["flash_id"])
+        return result.stdout or ""
+
+    async def read_mac(self, *, before: str | None = None, after: str | None = None) -> str:
+        """Run ``read_mac``; returns raw stdout (see :func:`parse_mac`)."""
+        result = await self._run_esptool(self._base_argv(before=before, after=after) + ["read_mac"])
+        return result.stdout or ""
 
     async def erase(self, *, before: str | None = None, after: str | None = None) -> None:
         """Run ``erase_flash``.
