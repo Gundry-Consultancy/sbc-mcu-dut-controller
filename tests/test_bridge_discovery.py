@@ -142,7 +142,7 @@ class CapsBridge:
             self.jobs[job_id] = {
                 "id": job_id,
                 "state": "running",
-                "log": [f"{action} on {busid}"],
+                "log": f"[0.001] {action} on {busid}\n",  # one growing text, as the bridge
                 "result": {"chip": "ESP32-S31"},
                 "polls": 0,
             }
@@ -600,6 +600,12 @@ async def test_bridge_rescue_esp_flash_stages_file_runs_job_and_cleans_up(tmp_pa
     assert flash["images"][0]["file"] == puts[0].rsplit("/", 1)[1]
     assert bridge.files == {}  # staged file deleted after the job
     assert any("[bridge_rescue esp_flash 1-1]" in t["cmd"] for t in ctx.transcript)
+
+
+def test_staged_name_stays_under_the_bridge_name_limit():
+    name = br.staged_name("0123456789abcdef", "/tmp/" + "x" * 200 + " firmware (1).bin")
+    assert len(name) < 64 and name.startswith("hil-01234567-")
+    assert all(c.isalnum() or c in "._-" for c in name)
 
 
 async def test_bridge_rescue_refuses_a_pre_1_0_bridge_without_any_post(tmp_path):

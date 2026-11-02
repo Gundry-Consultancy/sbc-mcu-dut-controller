@@ -78,6 +78,8 @@ ACTION_FEATURES: dict[str, tuple[str, int]] = {
 FILE_ACTIONS = frozenset({"esp_flash", "picoboot_load", "samba_flash", "uf2_copy"})
 
 _STAGED_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
+#: The bridge rejects names of 64 bytes or more (blob_store.c BLOB_NAME_MAX).
+STAGED_NAME_MAX = 60
 
 
 class BridgeRescueUnsupported(EspBridgeError):
@@ -112,9 +114,10 @@ def available_actions(caps: BridgeCapabilities | None) -> list[str]:
 
 
 def staged_name(job_id: str, filename: str) -> str:
-    """A bridge-safe staged file name (``[A-Za-z0-9._-]``), unique per job."""
+    """A bridge-safe staged file name: ``[A-Za-z0-9._-]``, unique per call, and
+    shorter than the bridge's 64-byte name limit (``BLOB_NAME_MAX``)."""
     base = _STAGED_NAME_RE.sub("_", Path(filename).name) or "image.bin"
-    return f"hil-{job_id[:8]}-{base}"[:64]
+    return f"hil-{job_id[:8]}-{base}"[:STAGED_NAME_MAX]
 
 
 def _int_or_hex(value: Any) -> int:
@@ -185,16 +188,23 @@ class BridgeRescueClient:
         timeout_s: float = DEFAULT_JOB_TIMEOUT_S,
         on_line: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
-        """Poll a bridge job until done/failed; relay new log lines. Raises on timeout."""
+        """Poll a bridge job until done/failed; relay new log lines. Raises on timeout.
+
+        The bridge reports ``state`` queued|running|done|failed (a cancelled job
+        is ``failed``) and ``log`` as one timestamped text that grows; only the
+        lines not yet relayed are passed to ``on_line``.
+        """
         deadline = time.monotonic() + timeout_s
         seen = 0
         while True:
             state = await self.job(job_id)
-            log_lines = state.get("log") or []
-            if isinstance(log_lines, list) and on_line is not None:
-                for entry in log_lines[seen:]:
-                    on_line(entry if isinstance(entry, str) else str(entry))
-                seen = len(log_lines)
+            raw_log = state.get("log") or ""
+            lines = raw_log if isinstance(raw_log, list) else str(raw_log).splitlines()
+            if on_line is not None:
+                for entry in lines[seen:]:
+                    if str(entry).strip():
+                        on_line(str(entry))
+            seen = len(lines)
             if state.get("state") in ("done", "failed"):
                 return state
             if time.monotonic() >= deadline:
