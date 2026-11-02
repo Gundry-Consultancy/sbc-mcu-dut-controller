@@ -145,7 +145,10 @@ devices:
     usb: { vid: "10c4", pid: "ea60" }
     usb_serial: 7acdcb62bcbcf011a6b3107148e9de0f
     capabilities: [esp-usbip-bridge]
-    pool: bridge-uat
+    # Its own pool: this chip runs bridge usbip-d19c04's firmware, so generic
+    # bridge-uat jobs must never be scheduled onto it. Rescue/tool jobs name the
+    # device id explicitly (which bypasses the pool match).
+    pool: bridge-rescue
     status: available
 
 strands:
