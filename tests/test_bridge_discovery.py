@@ -871,3 +871,202 @@ async def test_host_and_usbip_pages_show_capabilities(ui):
     assert "api <strong>1.0</strong>" in r.text and "flash_esp v1" in r.text
     r = await c.get("/ui/hosts/usbip-bridge-s31")
     assert "pre-1.0" in r.text
+
+
+# --------------------------------------------------------------------------- #
+# mDNS names: bridges are addressed as <hostname>.local, not by DHCP lease    #
+# --------------------------------------------------------------------------- #
+
+
+def _resolver(table: dict[str, list[str]]):
+    async def resolve(name, **_kw):
+        return list(table.get(name.lower().rstrip("."), []))
+
+    return resolve
+
+
+async def test_new_proposal_suggests_the_mdns_name_and_keeps_the_ip(tmp_path, monkeypatch):
+    from hil_controller.adapters import esp_usbip_bridge as eub
+
+    monkeypatch.setattr(eub, "resolve_ipv4", _resolver({"usbip-d19bee.local": ["192.168.1.133"]}))
+    db = await _db_with_bridge_hosts(tmp_path)
+    bridges = {
+        "192.168.1.133": CapsBridge(CAPS_133, INFO_133),
+        "usbip-d19bee.local": CapsBridge(CAPS_133, INFO_133),
+    }
+    p = await bd.probe_address(db, "192.168.1.133", client_factory=_factory(bridges))
+    assert p.action == "new"
+    assert p.address == "usbip-d19bee.local" and p.host["addr"] == "usbip-d19bee.local"
+    assert p.ip == "192.168.1.133" and p.name_resolves is True
+    # apply goes through the name and stores it
+    host = await bd.apply_proposal(db, p.address, client_factory=_factory(bridges))
+    assert host["addr"] == "usbip-d19bee.local"
+
+
+async def test_new_proposal_falls_back_to_ip_when_the_name_does_not_resolve(tmp_path):
+    db = await _db_with_bridge_hosts(tmp_path)  # conftest: nothing resolves
+    p = await bd.probe_address(
+        db, "192.168.1.133", client_factory=_factory({"192.168.1.133": CapsBridge(CAPS_133, {})})
+    )
+    assert p.action == "new" and p.address == "192.168.1.133"
+    assert p.name_resolves is False and "does not resolve" in p.note
+
+
+async def _db_with_named_host(tmp_path, mac_doc: dict[str, Any]) -> str:
+    db = str(tmp_path / "named.db")
+    await init_db(db)
+    async with get_db(db) as conn:
+        await conn.execute(
+            "INSERT INTO hosts (id, role, addr, transport, status, capabilities_json) "
+            "VALUES ('usbip-d19bee', 'microcontroller-fleet', 'usbip-d19bee.local', "
+            "'esp-usbip-bridge', 'available', '[]')"
+        )
+        await conn.commit()
+    await bc.store_capabilities(db, "usbip-d19bee", bc.parse_capabilities(mac_doc))
+    return db
+
+
+def _at(ip: str) -> dict[str, Any]:
+    doc = deepcopy(CAPS_133)
+    doc["network"]["interfaces"][0]["ip"] = ip
+    return doc
+
+
+async def test_a_name_addressed_host_whose_ip_changed_is_known_not_moved(tmp_path, monkeypatch):
+    from hil_controller.adapters import esp_usbip_bridge as eub
+
+    db = await _db_with_named_host(tmp_path, CAPS_133)
+    # new DHCP lease: the bridge now answers at .150 and the name follows it
+    monkeypatch.setattr(eub, "resolve_ipv4", _resolver({"usbip-d19bee.local": ["192.168.1.150"]}))
+    here = {"192.168.1.150": CapsBridge(_at("192.168.1.150"), {})}
+    p = await bd.probe_address(db, "192.168.1.150", client_factory=_factory(here))
+    assert p.action == "known", p.move_reason
+    assert p.match_reason == "base MAC 1c:29:04:d1:9b:ee"
+    assert p.address == "usbip-d19bee.local" and p.ip == "192.168.1.150"
+
+
+async def test_name_addressed_host_is_moved_only_when_the_name_breaks(tmp_path, monkeypatch):
+    from hil_controller.adapters import esp_usbip_bridge as eub
+
+    db = await _db_with_named_host(tmp_path, CAPS_133)
+    here = {"192.168.1.150": CapsBridge(_at("192.168.1.150"), {})}
+    # 1. the name stopped resolving
+    p = await bd.probe_address(db, "192.168.1.150", client_factory=_factory(here))
+    assert p.action == "moved" and "no longer resolves" in p.move_reason
+    # 2. the name resolves somewhere that is the same bridge (another interface)
+    monkeypatch.setattr(eub, "resolve_ipv4", _resolver({"usbip-d19bee.local": ["192.168.1.201"]}))
+    same = {**here, "usbip-d19bee.local": CapsBridge(_at("192.168.1.201"), {})}
+    p = await bd.probe_address(db, "192.168.1.150", client_factory=_factory(same))
+    assert p.action == "known"
+    # 3. the name now answers with a different base MAC
+    other = deepcopy(CAPS_133)
+    other["board"]["mac"] = "1c:29:04:aa:bb:cc"
+    diff = {**here, "usbip-d19bee.local": CapsBridge(other, {})}
+    p = await bd.probe_address(db, "192.168.1.150", client_factory=_factory(diff))
+    assert p.action == "moved" and "different bridge (base MAC 1c:29:04:aa:bb:cc)" in p.move_reason
+
+
+def test_is_mdns_name():
+    from hil_controller.adapters.esp_usbip_bridge import bridge_base_url, is_mdns_name
+
+    assert is_mdns_name("usbip-d19bee.local") and is_mdns_name("USBIP-D19BEE.local.")
+    assert not is_mdns_name("192.168.1.133") and not is_mdns_name("rpi-hil006")
+    assert bridge_base_url("usbip-d19bee.local") == "http://usbip-d19bee.local"
+
+
+async def test_usbip_attach_resolves_local_names_on_the_controller(monkeypatch):
+    """The receiver (e.g. a Pi without nss-mdns) gets the IPv4, not the name."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from hil_controller.adapters import esp_usbip_bridge as eub
+    from hil_controller.adapters.usbip_bridge import UsbipBridge, VhciPort, stale_vhci_ports
+
+    monkeypatch.setattr(eub, "resolve_ipv4", _resolver({"usbip-d19bee.local": ["192.168.1.133"]}))
+    ok = MagicMock(exit_status=0, stdout="", stderr="")
+    client = AsyncMock()
+    client.exec = AsyncMock(return_value=ok)
+    bridge = UsbipBridge(
+        server_tp=MagicMock(usbip_exports_always=True),
+        client_tp=client,
+        server_addr="usbip-d19bee.local",
+        busid="1-1",
+    )
+    await bridge.attach()
+    assert client.exec.call_args.args[0] == [
+        "sudo", "usbip", "attach", "-r", "192.168.1.133", "-b", "1-1"
+    ]
+    assert bridge.resolved_addr == "192.168.1.133"
+    # vhci records written with the IP are still recognised as ours
+    ports = [VhciPort(3, 6, "3-1", "192.168.1.133", "1-1")]
+    assert stale_vhci_ports(
+        ports, {"3-1"}, server_addr="usbip-d19bee.local", busid="1-1", aliases=["192.168.1.133"]
+    ) == [3]
+    # unresolvable on the controller: the name is passed through to the receiver
+    monkeypatch.setattr(eub, "resolve_ipv4", _resolver({}))
+    await bridge.attach()
+    assert client.exec.call_args.args[0][4] == "usbip-d19bee.local"
+    # plain IPs never go through the resolver
+    ip_bridge = UsbipBridge(
+        server_tp=MagicMock(usbip_exports_always=True),
+        client_tp=client,
+        server_addr="192.168.1.147",
+        busid="1-1.1",
+    )
+    assert await ip_bridge.attach_addr() == "192.168.1.147"
+
+
+# --------------------------------------------------------------------------- #
+# a bridge that renames itself (same base MAC) is known, never new            #
+# --------------------------------------------------------------------------- #
+
+RENAMED = deepcopy(CAPS_133)
+RENAMED["board"]["hostname"] = "usbip-s31-d19bee"  # firmware's new default scheme
+
+
+async def test_bridge_renamed_itself_is_known_by_mac_not_new(tmp_path, monkeypatch):
+    """usbip-d19bee -> usbip-s31-d19bee after a firmware update: same base MAC.
+
+    The host still points at the old .local name, which no longer resolves; the
+    proposal stays ``known`` and suggests the new name, editing nothing.
+    """
+    from hil_controller.adapters import esp_usbip_bridge as eub
+
+    db = await _db_with_named_host(tmp_path, CAPS_133)  # id/addr use the old name
+    before = await _hosts_snapshot(db)
+    monkeypatch.setattr(
+        eub, "resolve_ipv4", _resolver({"usbip-s31-d19bee.local": ["192.168.1.133"]})
+    )
+    avahi = (
+        '=;eth0;IPv4;usbip-s31-d19bee;_hil-bridge._tcp;local;usbip-s31-d19bee.local;'
+        '192.168.1.133;80;"api=1.0" "mac=1c:29:04:d1:9b:ee"\n'
+    )
+    out = await bd.discover(
+        db,
+        browse_result=bd.BrowseResult(bd.parse_avahi_browse(avahi), "avahi-browse"),
+        client_factory=_factory({"192.168.1.133": CapsBridge(RENAMED, {})}),
+    )
+    (p,) = out["proposals"]
+    assert p["action"] == "known"
+    assert p["matched_host_id"] == "usbip-d19bee"
+    assert p["match_reason"] == "base MAC 1c:29:04:d1:9b:ee"
+    assert p["renamed_from"] == "usbip-d19bee"
+    assert p["address"] == "usbip-s31-d19bee.local"
+    assert "edit its address to usbip-s31-d19bee.local" in p["note"]
+    assert p["host"] is None  # nothing to create
+    assert out["not_seen"] == []
+    assert await _hosts_snapshot(db) == before  # never edited automatically
+
+
+async def test_ip_addressed_bridge_that_renamed_itself_is_plain_known(tmp_path):
+    db = await _db_with_bridge_hosts(tmp_path)  # usbip-bridge-s31 @ 192.168.1.147
+    old = deepcopy(CAPS_133)
+    old["board"].update(mac="1c:29:04:d0:7a:04", hostname="usbip-d07a04")
+    old["network"]["interfaces"][0]["ip"] = "192.168.1.147"
+    await bc.store_capabilities(db, "usbip-bridge-s31", bc.parse_capabilities(old))
+    new = deepcopy(old)
+    new["board"]["hostname"] = "usbip-s31-d07a04"
+    p = await bd.probe_address(
+        db, "192.168.1.147", client_factory=_factory({"192.168.1.147": CapsBridge(new, {})})
+    )
+    assert p.action == "known" and p.matched_host_id == "usbip-bridge-s31"
+    assert p.renamed_from == "usbip-d07a04" and p.address == "192.168.1.147"

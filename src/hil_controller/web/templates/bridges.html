@@ -51,7 +51,11 @@
           {% if c and c.mac %}<br><span class="form-hint">{{ c.mac }}</span>{% endif %}
           <br><span class="badge badge-gray">{{ p.source }}</span>
         </td>
-        <td class="mono">{% for a in p.addresses %}{{ a }}{% if a == p.address %} <span class="badge badge-ok">use</span>{% endif %}<br>{% endfor %}</td>
+        <td class="mono">
+          {% if p.address and p.address not in p.addresses %}{{ p.address }} <span class="badge badge-ok">use</span><br>{% endif %}
+          {% for a in p.addresses %}{{ a }}{% if a == p.address %} <span class="badge badge-ok">use</span>{% elif a == p.ip %} <span class="badge badge-gray">IP today</span>{% endif %}<br>{% endfor %}
+          {% if p.note %}<span class="form-hint">{{ p.note }}</span>{% endif %}
+        </td>
         <td>
           {% if c %}
             api <strong>{{ c.api_version or 'pre-1.0' }}</strong>
@@ -65,6 +69,7 @@
         <td>
           {% if p.action == 'new' %}
             <span class="badge badge-ok">new host</span>
+            {% if p.mdns_name and p.name_resolves %}<br><span class="form-hint">addressed by mDNS name <code>{{ p.mdns_name }}</code> so DHCP lease changes don't matter</span>{% endif %}
             {% if can_write %}
             <form method="post" action="/ui/twins/bridges/apply" style="margin-top:0.5rem;">
               <input type="hidden" name="address" value="{{ p.address }}">
@@ -77,10 +82,11 @@
             {% else %}<br><span class="form-hint">needs inventory:write to apply</span>{% endif %}
           {% elif p.action == 'known' %}
             <span class="badge badge-gray">known</span> as <a class="mono" href="/ui/hosts/{{ p.matched_host_id }}">{{ p.matched_host_id }}</a>
+            {% if p.renamed_from %}<span class="badge badge-warn">renamed from {{ p.renamed_from }}</span>{% endif %}
             <br><span class="form-hint">matched by {{ p.match_reason }}</span>
           {% elif p.action == 'moved' %}
             <span class="badge badge-warn">known, other address</span> — <a class="mono" href="/ui/hosts/{{ p.matched_host_id }}">{{ p.matched_host_id }}</a>
-            <br><span class="form-hint">matched by {{ p.match_reason }}; edit the host if it really moved (never changed automatically)</span>
+            <br><span class="form-hint">matched by {{ p.match_reason }}{% if p.move_reason %}: {{ p.move_reason }}{% endif %}. Edit the host if it really moved (never changed automatically)</span>
           {% else %}
             <span class="badge badge-warn">not confirmed</span>
             <br><span class="form-hint">{{ p.error }}</span>

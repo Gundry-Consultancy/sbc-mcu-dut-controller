@@ -244,7 +244,7 @@ Never changes hub port power.
 
 ```json
 {"script": "firmware-bench",
- "target": {"device": {"id": "mcu-s31-d19c04-on-d19bee"}},
+ "target": {"device": {"id": "mcu-s31-d19c04-on-s31-d19bee"}},
  "params": {"bare": true, "window_minutes": 0, "stages": [
    {"type": "bridge_rescue", "action": "console", "pokes": ["enter"], "capture_s": 3}
  ]}}
@@ -447,15 +447,32 @@ gates every feature off.
 | POST | `/v1/bridges/apply` `{"address", "host_id"?, "token_env"?, "role"?, "capabilities"?}` | re-checks, then creates **one** `esp-usbip-bridge` host for a `new` proposal; 409 when it matches an existing host or the id is taken, 422 when it does not confirm |
 
 Proposal `action`: `new` (apply creates the host; suggested id = the bridge's
-hostname, address = its Ethernet IP), `known` (matches a host at the same
-address), `moved` (matches by base MAC/hostname at another address — shown, never
-changed), `unconfirmed` (advertised or typed but the check failed). Matching
+hostname, address = **`<hostname>.local`** when that resolves on the controller,
+else the IP; `ip` is informational), `known` (matches a host whose address still
+reaches it — a host addressed by `.local` name stays known whatever IP the name
+resolves to today), `moved` (the host's address no longer reaches it:
+`move_reason` says an IP it does not answer at, a name that stopped resolving, or
+a name now answered by a different base MAC — shown, never changed),
+`unconfirmed` (advertised or typed but the check failed). A bridge that
+**renamed itself** (same base MAC, new hostname — e.g. firmware's
+`usbip-<chip>-<6 hex>` default replacing `usbip-<6 hex>`) is `known` with
+`renamed_from`; if its host still points at the old `.local` name the proposal
+suggests the new one in `note`. No naming scheme is assumed anywhere: hostnames
+come from the bridge (SRV/TXT, `board.hostname`), identity from the base MAC. Matching
 order: base MAC (from the host's cached capabilities), hostname, address. One
 bridge seen on several interfaces is one proposal. Discovery never adds,
 removes or disables hosts; hosts not seen are listed in `not_seen` and left
 alone (the controller's LAN link flaps; multicast does not cross Tailscale).
 `discover`/`probe` need `inventory:read` + all pools, `apply` needs
 `inventory:write`; the capabilities reads need only a bearer token.
+
+**Bridges are addressed by mDNS name** (`usbip-s31-d19bee.local`) so DHCP lease
+changes don't matter. The controller resolves `.local` through the system
+resolver (nss-mdns: `hosts: files mdns4_minimal [NOTFOUND=return] dns`) for its
+HTTP calls, and resolves the name itself before `usbip attach -r` so the USB/IP
+receiver host gets an IPv4 and needs no nss-mdns of its own (if the controller
+cannot resolve it, the name is passed through). A controller without nss-mdns
+gets IP-addressed proposals with a note.
 
 mDNS browsing uses python `zeroconf` (`pip install -e '.[discovery]'`), else
 `avahi-browse -rpt` when on PATH, else it reports `method: unavailable` and

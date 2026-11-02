@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from hil_controller.adapters import esp_usbip_bridge as eub
 from hil_controller.adapters.bridge_capabilities import (
     FEATURE_HUB_POWER,
     FEATURE_MUX,
@@ -406,9 +407,16 @@ class BridgeProposal:
     """What applying would do for one bridge. ``action``:
 
     * ``new`` — confirmed bridge not in the hosts table: apply creates a host.
-    * ``known`` — matches an existing host at the same address: nothing to do.
-    * ``moved`` — matches an existing host but answers at another address:
-      shown for the operator to edit the host (never changed automatically).
+      ``address`` is ``<hostname>.local`` when that name resolves on the
+      controller (bridges are addressed by mDNS name so DHCP leases do not
+      matter), else the IP; ``ip`` is informational either way.
+    * ``known`` — matches an existing host whose address still reaches it. A
+      host addressed by name is known as long as the name resolves to this
+      bridge (same base MAC), whatever IP it has today.
+    * ``moved`` — matches an existing host whose address no longer reaches it
+      (``move_reason``: an IP it does not answer at, a name that stopped
+      resolving, or a name now answered by a different MAC). Shown for the
+      operator to edit the host; never changed automatically.
     * ``unconfirmed`` — advertised/typed, but the capabilities check failed.
     """
 
@@ -424,6 +432,15 @@ class BridgeProposal:
     matched_host_id: str | None = None
     match_reason: str = ""
     host: dict[str, Any] = field(default_factory=dict)
+    #: The IPv4 the bridge answered at (informational; hosts use the name).
+    ip: str = ""
+    #: ``<hostname>.local`` and whether the controller resolves it.
+    mdns_name: str = ""
+    name_resolves: bool | None = None
+    move_reason: str = ""
+    note: str = ""
+    #: The bridge's previous hostname when it renamed itself (same base MAC).
+    renamed_from: str = ""
 
     def view(self) -> dict[str, Any]:
         return {
@@ -439,6 +456,12 @@ class BridgeProposal:
             "match_reason": self.match_reason or None,
             "capabilities": self.caps.summary() if self.caps else None,
             "host": self.host or None,
+            "ip": self.ip or None,
+            "mdns_name": self.mdns_name or None,
+            "name_resolves": self.name_resolves,
+            "move_reason": self.move_reason or None,
+            "note": self.note or None,
+            "renamed_from": self.renamed_from or None,
         }
 
 
@@ -455,11 +478,84 @@ async def confirm_address(
     return await fetch_capabilities(client or _client(address))
 
 
-def _addr_matches(host: dict[str, Any], addresses: list[str]) -> bool:
-    lowered = {a.lower() for a in addresses}
-    return (str(host.get("addr") or "").lower() in lowered) or (
-        _url_host(host.get("api_url")) in lowered
-    )
+def _host_target(host: dict[str, Any]) -> str:
+    """The name/IP a host row points the controller at (api_url host wins)."""
+    return (_url_host(host.get("api_url")) or str(host.get("addr") or "")).lower().rstrip(".")
+
+
+async def _host_still_reaches(
+    host: dict[str, Any],
+    proposal: BridgeProposal,
+    factory: Any,
+) -> tuple[bool, str]:
+    """Does the existing host's address still reach this bridge? ``(ok, why_not)``.
+
+    An IP must be one the bridge answers at. A name (``usbip-s31-d19bee.local``) is
+    fine whatever IP it resolves to today — DHCP leases are why bridges are
+    addressed by mDNS name — unless it no longer resolves, or whoever answers
+    it now is a different bridge (base MAC; hostname for pre-1.0 bridges).
+    """
+    target = _host_target(host)
+    seen = {a.lower() for a in [*proposal.addresses, proposal.ip] if a}
+    if not target:
+        return False, "the host has no address"
+    if target in seen:
+        return True, ""
+    if _is_ipv4(target) or ":" in target:
+        answers = ", ".join(proposal.addresses)
+        return False, f"host address {target} is not where the bridge answers ({answers})"
+    ips = await eub.resolve_ipv4(target)
+    if not ips:
+        return False, f"{target} no longer resolves on the controller"
+    if set(ips) & seen:
+        return True, ""
+    try:
+        other = await confirm_address(target, client=factory(target))
+    except EspBridgeError as exc:
+        return False, f"{target} resolves to {ips[0]}, which does not answer as a bridge: {exc}"
+    mine = proposal.caps
+    if mine is not None and mine.mac and other.mac:
+        if other.mac == mine.mac:
+            return True, ""
+        return False, f"{target} now resolves to a different bridge (base MAC {other.mac})"
+    if mine is not None and other.hostname and other.hostname == mine.hostname:
+        return True, ""
+    return False, f"{target} resolves to {ips[0]}, which is not this bridge"
+
+
+def _note_rename(
+    proposal: BridgeProposal, host: dict[str, Any], caps: BridgeCapabilities
+) -> None:
+    """A bridge that renamed itself (same base MAC, new hostname) is still the
+    same bridge: ``known``, never ``new`` or ``moved``. The naming scheme is not
+    assumed anywhere — the old name comes from the host's cached capabilities or
+    its ``.local`` address, the new one from the bridge itself.
+
+    When the host is addressed by the old ``.local`` name (which stops resolving
+    after a rename), the proposal says so and suggests the new name; the host is
+    never edited automatically.
+    """
+    if not (caps.hostname and proposal.match_reason.startswith("base MAC")):
+        return
+    new = _short(caps.hostname)
+    cached = capabilities_from_json(host.get("bridge_caps_json"))
+    target = _host_target(host)
+    old = _short(cached.hostname) if cached and cached.hostname else ""
+    if not old and eub.is_mdns_name(target):
+        old = _short(target)
+    if not old or old == new:
+        return
+    proposal.renamed_from = old
+    proposal.action = "known"
+    if eub.is_mdns_name(target) and _short(target) == old:
+        proposal.move_reason = ""
+        proposal.address = f"{new}.local"
+        proposal.note = (
+            f"bridge renamed itself {old} -> {new} (same base MAC {caps.mac}); host "
+            f"{host.get('id')} still points at {target}: edit its address to {new}.local"
+        )
+    else:
+        proposal.note = f"bridge renamed itself {old} -> {new} (same base MAC {caps.mac})"
 
 
 async def build_proposal(
@@ -504,14 +600,39 @@ async def build_proposal(
         proposal.match_reason = reason
     if caps is None:
         return proposal
-    # Prefer the Ethernet address (primary transport) when the bridge reports it.
+    # The IP (informational): Ethernet first (primary transport), else where it
+    # answered / was advertised.
     preferred = caps.eth_ip()
     if preferred and preferred not in proposal.addresses:
         proposal.addresses.insert(0, preferred)
-    proposal.address = preferred or address
+    v4 = [a for a in proposal.addresses if _is_ipv4(a)]
+    proposal.ip = preferred or (address if _is_ipv4(address) else (v4[0] if v4 else ""))
+    for ip in caps.up_ips():
+        if ip not in proposal.addresses:
+            proposal.addresses.append(ip)
     if matched is not None:
-        proposal.action = "known" if _addr_matches(matched, proposal.addresses) else "moved"
+        ok, why = await _host_still_reaches(matched, proposal, factory)
+        proposal.action = "known" if ok else "moved"
+        proposal.move_reason = why
+        proposal.address = _host_target(matched) if ok else (proposal.ip or address)
+        _note_rename(proposal, matched, caps)
         return proposal
+    # Suggest the mDNS name, so the host survives DHCP lease changes.
+    proposal.mdns_name = f"{_short(caps.hostname)}.local" if caps.hostname else ""
+    if proposal.mdns_name:
+        if address.lower().rstrip(".") == proposal.mdns_name:
+            proposal.name_resolves = True  # we just reached it by that name
+        else:
+            proposal.name_resolves = bool(await eub.resolve_ipv4(proposal.mdns_name))
+    if proposal.mdns_name and proposal.name_resolves:
+        proposal.address = proposal.mdns_name
+    else:
+        proposal.address = proposal.ip or address
+        if proposal.mdns_name:
+            proposal.note = (
+                f"{proposal.mdns_name} does not resolve on this controller (no nss-mdns?); "
+                f"suggesting the IP {proposal.address}, which a DHCP lease change can move"
+            )
     proposal.action = "new"
     proposal.host = {
         "id": suggest_host_id(caps, hostname),

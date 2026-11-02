@@ -14,6 +14,20 @@ os.environ.setdefault("HIL_TOPOLOGY_FILE", "")
 os.environ.setdefault("HIL_STATIC_TOKEN", "test-token-for-ci")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_name_resolution(monkeypatch):
+    """Unit tests never wait on the host resolver for ``*.local`` bridge names.
+
+    ``resolve_ipv4`` answers [] (unresolved) unless a test patches it.
+    """
+    from hil_controller.adapters import esp_usbip_bridge as eub
+
+    async def _unresolved(_name, **_kw):
+        return []
+
+    monkeypatch.setattr(eub, "resolve_ipv4", _unresolved)
+
+
 @pytest.fixture(scope="session")
 def event_loop_policy():
     return asyncio.DefaultEventLoopPolicy()

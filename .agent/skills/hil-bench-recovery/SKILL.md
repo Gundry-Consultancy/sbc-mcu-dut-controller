@@ -132,7 +132,7 @@ DUT's bridge** on `/ui/tools`, or a bare job with `bridge_rescue` stages
   attaches.
 - **Never changes port power.** Resets are the bridge's DTR/RTS / USB-JTAG /
   1200-baud / PICOBOOT sequences. A DUT on a root port (`hub: null`, e.g. the
-  S31 on usbip-d19bee `1-1`) has no switchable power at all; don't add a
+  S31 on usbip-s31-d19bee `1-1`) has no switchable power at all; don't add a
   `power_control` for it.
 - **The bridge HTTP server is single-threaded**: a console peek blocks its API
   (not USB/IP) for up to 12 s. Don't poll other bridge endpoints in parallel.

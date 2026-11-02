@@ -112,7 +112,12 @@ def parse_vhci_probe(text: str) -> tuple[list[VhciPort], set[str]]:
 
 
 def stale_vhci_ports(
-    ports: Iterable[VhciPort], devices: set[str], *, server_addr: str, busid: str
+    ports: Iterable[VhciPort],
+    devices: set[str],
+    *,
+    server_addr: str,
+    busid: str,
+    aliases: Iterable[str] = (),
 ) -> list[int]:
     """Ports to clear when ``usbip`` fails with the vhci_driver error.
 
@@ -122,13 +127,16 @@ def stale_vhci_ports(
       is what breaks libusbip for every caller, whatever server it pointed at;
     - a used port recorded as *this* server's *busid*: our own earlier
       attachment, which is about to be replaced by a new attach anyway.
+      ``aliases`` are other spellings of the server (the IP a ``.local`` name
+      resolved to), since the record holds whatever ``usbip attach -r`` got.
     """
+    names = {server_addr, *aliases}
     stale = []
     for p in ports:
         if p.status == VHCI_ST_NULL:
             continue
         orphaned = p.local_busid not in devices
-        ours = p.remote_host == server_addr and p.remote_busid == busid
+        ours = p.remote_host in names and p.remote_busid == busid
         if orphaned or ours:
             stale.append(p.port)
     return stale
@@ -177,6 +185,8 @@ class UsbipBridge:
         self.server_tp = server_tp
         self.client_tp = client_tp
         self.server_addr = server_addr
+        #: IPv4 the controller resolved a ``.local`` server_addr to (see attach).
+        self.resolved_addr: str = ""
         self.busid = busid
         self._sudo = sudo
         self.settle_s = settle_s
@@ -230,7 +240,13 @@ class UsbipBridge:
         """
         probe = await self.client_tp.exec(self._argv("bash", "-c", _VHCI_PROBE))
         ports, devices = parse_vhci_probe(probe.stdout or "")
-        stale = stale_vhci_ports(ports, devices, server_addr=self.server_addr, busid=self.busid)
+        stale = stale_vhci_ports(
+            ports,
+            devices,
+            server_addr=self.server_addr,
+            busid=self.busid,
+            aliases=[self.resolved_addr] if self.resolved_addr else [],
+        )
         cleared = []
         for port in stale:
             result = await self._run(
@@ -262,9 +278,34 @@ class UsbipBridge:
             raise RuntimeError(f"{what} failed (exit {result.exit_status}): {result.stderr}")
         return result
 
+    async def attach_addr(self) -> str:
+        """The address handed to ``usbip attach -r``.
+
+        Bridges are addressed by mDNS name (``usbip-s31-d19bee.local``) so DHCP
+        leases do not matter. The name is resolved **on the controller** (whose
+        nss-mdns is known to work) and the IPv4 passed to the receiver, so a
+        receiver host without nss-mdns can still attach. If the controller cannot
+        resolve it, the name is passed through for the receiver to try.
+        """
+        from hil_controller.adapters import esp_usbip_bridge as eub
+
+        if not eub.is_mdns_name(self.server_addr):
+            return self.server_addr
+        ips = await eub.resolve_ipv4(self.server_addr)
+        if ips:
+            if ips[0] != self.resolved_addr:
+                log.info("usbip: %s resolved to %s on the controller", self.server_addr, ips[0])
+            self.resolved_addr = ips[0]
+            return ips[0]
+        log.warning(
+            "usbip: %s did not resolve on the controller; passing the name to the receiver",
+            self.server_addr,
+        )
+        return self.server_addr
+
     async def attach(self, *, check: bool = True) -> Any:
         return await self._run_usbip(
-            self._argv("usbip", "attach", "-r", self.server_addr, "-b", self.busid),
+            self._argv("usbip", "attach", "-r", await self.attach_addr(), "-b", self.busid),
             what="usbip attach",
             check=check,
         )

@@ -50,26 +50,33 @@ hosts:
     capabilities: [usbip-server, bridge-port-power, i2c-strand-mux]
 
   # --- ESP32-S31 bridges on the bench LAN (seeded 2026-11-02) -----------------
-  # Base MAC 1c:29:04:d1:9b:ee (from GET /api/capabilities board.mac once the
-  # bridge is on API 1.0). Ethernet; Wi-Fi may come up as a second interface.
-  - id: usbip-d19bee
+  # Host ids follow the bridges' own hostnames (firmware default
+  # usbip-<chip>-<last 6 hex of the base MAC>, e.g. usbip-s31-d19bee; older
+  # firmware used usbip-<6 hex>, as .147's usbip-d07a04 still does). Nothing in
+  # the controller depends on that scheme: discovery matches bridges by base MAC,
+  # so a bridge that renames itself shows as "known (renamed from ...)".
+  # Addressed by mDNS name, so DHCP lease changes don't matter: the controller
+  # resolves `.local` with nss-mdns (getent hosts usbip-s31-d19bee.local) for HTTP,
+  # and resolves it for `usbip attach` too, handing the receiver host the IPv4.
+  # Base MAC 1c:29:04:d1:9b:ee (GET /api/capabilities board.mac). Ethernet
+  # (192.168.1.133 on 2026-11-02); Wi-Fi may come up as a second interface.
+  - id: usbip-s31-d19bee
     role: microcontroller-fleet
     transport: esp-usbip-bridge
-    addr: 192.168.1.133
+    addr: usbip-s31-d19bee.local
     max_concurrent_jobs: null
     capabilities: [usbip-server]
 
   # A second S31 (base MAC 1c:29:04:d1:9c:04), a bridge of its own over Wi-Fi.
-  # It is ALSO a DUT today: plugged into usbip-d19bee's root port (busid 1-1,
-  # CP2102N) — see device mcu-s31-d19c04-on-d19bee below, which
+  # It is ALSO a DUT today: plugged into usbip-s31-d19bee's root port (busid 1-1,
+  # CP2102N) — see device mcu-s31-d19c04-on-s31-d19bee below, which
   # lets it be rescued/flashed through .133. It is on Wi-Fi only (no Ethernet
-  # link); 192.168.1.134 is its DHCP lease as seen by discovery on 2026-11-02
-  # (mDNS name usbip-d19c04.local). If the lease moves, discovery shows the
-  # host as "moved"; edit addr by hand — it is never changed automatically.
-  - id: usbip-d19c04
+  # link; 192.168.1.134 on 2026-11-02). Addressed by mDNS name; discovery calls
+  # it "moved" only if the name stops resolving or answers with another MAC.
+  - id: usbip-s31-d19c04
     role: microcontroller-fleet
     transport: esp-usbip-bridge
-    addr: 192.168.1.134
+    addr: usbip-s31-d19c04.local
     max_concurrent_jobs: null
     capabilities: [usbip-server]
 
@@ -130,14 +137,14 @@ devices:
     pool: public
     status: available
 
-  # The S31 that is also bridge usbip-d19c04, as a DUT on usbip-d19bee's
+  # The S31 that is also bridge usbip-s31-d19c04, as a DUT on usbip-s31-d19bee's
   # root port. CP2102N USB-UART (10c4:ea60); the iSerial belongs to that UART
   # chip, not the S31. Root port (hub: null) => no switchable port power, so no
   # power_control: rescue/reset go through the bridge's DTR/RTS reset modes.
   # host_id: localhost = the controller is the USB/IP receiver when one is needed.
-  - id: mcu-s31-d19c04-on-d19bee
+  - id: mcu-s31-d19c04-on-s31-d19bee
     host_id: localhost
-    hub_host_id: usbip-d19bee
+    hub_host_id: usbip-s31-d19bee
     hub_port_path: "1-1"
     kind: microcontroller
     model: esp32-s31
@@ -145,7 +152,7 @@ devices:
     usb: { vid: "10c4", pid: "ea60" }
     usb_serial: 7acdcb62bcbcf011a6b3107148e9de0f
     capabilities: [esp-usbip-bridge]
-    # Its own pool: this chip runs bridge usbip-d19c04's firmware, so generic
+    # Its own pool: this chip runs bridge usbip-s31-d19c04's firmware, so generic
     # bridge-uat jobs must never be scheduled onto it. Rescue/tool jobs name the
     # device id explicitly (which bypasses the pool match).
     pool: bridge-rescue

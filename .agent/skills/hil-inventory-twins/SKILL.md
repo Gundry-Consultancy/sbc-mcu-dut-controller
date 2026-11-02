@@ -72,7 +72,13 @@ against stale slots.
 
   Proposals are `new` / `known` / `moved` / `unconfirmed`; matching is by base
   MAC (from cached capabilities), then hostname, then address, and one bridge
-  seen on Ethernet + Wi-Fi is one proposal. **Nothing is ever added, removed or
+  seen on Ethernet + Wi-Fi is one proposal. New hosts get the mDNS name
+  `<hostname>.local` as address (the IP is shown for information) so DHCP
+  leases don't matter; a name-addressed host is only `moved` when the name stops
+  resolving or answers with another base MAC (`move_reason`). A bridge that
+  renamed itself (same MAC; e.g. `usbip-d19bee` -> `usbip-s31-d19bee`) is
+  `known` with `renamed_from`; edit the host's address to the new `.local` name
+  by hand if the note says it still uses the old one. **Nothing is ever added, removed or
   disabled automatically** — a bridge missing from a browse is just listed as
   not seen (LAN flaps, multicast does not cross Tailscale). A `moved` bridge is
   fixed by editing the host, by hand. mDNS needs the `[discovery]` extra

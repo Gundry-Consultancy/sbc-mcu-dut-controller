@@ -83,6 +83,46 @@ _STATUS_ERRORS: dict[int, type[EspBridgeError]] = {
 }
 
 
+def is_mdns_name(addr: str | None) -> bool:
+    """True for a multicast-DNS name (``usbip-s31-d19bee.local``), the way bridges
+    are addressed so a DHCP lease change does not matter."""
+    return (addr or "").strip().lower().rstrip(".").endswith(".local")
+
+
+#: Resolution timeout. mDNS answers on the LAN in milliseconds; a name that is
+#: gone should not hold a page or a job for long.
+RESOLVE_TIMEOUT_S = 3.0
+
+
+async def resolve_ipv4(name: str, *, timeout_s: float = RESOLVE_TIMEOUT_S) -> list[str]:
+    """IPv4 addresses for ``name`` from the controller's resolver ([] on failure).
+
+    On the bench controller (Linux + nss-mdns: ``hosts: files mdns4_minimal
+    [NOTFOUND=return] dns``) this resolves ``*.local`` the same way httpx and
+    ``usbip attach`` do. IPv4 only: USB/IP attach and the vhci records use v4.
+    Never raises.
+    """
+    import socket
+
+    host = (name or "").strip().rstrip(".")
+    if not host:
+        return []
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM),
+            timeout=timeout_s,
+        )
+    except (TimeoutError, OSError, UnicodeError):
+        return []
+    out: list[str] = []
+    for info in infos:
+        ip = str(info[4][0])
+        if ip not in out:
+            out.append(ip)
+    return out
+
+
 def bridge_base_url(addr: str, api_url: str | None = None) -> str:
     """HTTP base URL for a bridge: explicit ``api_url``, else ``http://<addr>``."""
     url = (api_url or "").strip() or (addr or "").strip()
