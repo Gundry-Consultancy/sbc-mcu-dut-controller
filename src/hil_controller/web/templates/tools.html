@@ -44,6 +44,20 @@
       <span class="form-hint">Used as both flash and log port; skips filter resolution.</span>
     </div>
     <div class="form-group">
+      <label for="route">Route</label>
+      <select id="route" name="route">
+        <option value="usbip" selected>USB/IP attach + host tool (default)</option>
+        <option value="bridge">Through the DUT's bridge (on-bridge rescue API)</option>
+      </select>
+      <span class="form-hint">
+        <em>Through the bridge</em> applies to DUTs on an esp-usbip-bridge whose
+        <code>/api/capabilities</code> offers the feature (<code>flash_esp</code>, <code>flash_picoboot</code>,
+        <code>flash_samba</code>, <code>reset</code> ≥ 1); pre-1.0 bridges are refused. Info/identity actions map to the
+        bridge's <code>esp/info</code>, <code>picoboot/info</code>, <code>samba/info</code>; writes to its flash jobs;
+        reboots to its reset modes. Erase-only runs have no bridge equivalent. The serial-port override is ignored.
+      </span>
+    </div>
+    <div class="form-group">
       <label for="firmware_file">Firmware file (esptool write / picotool load / bossac write)</label>
       <input type="file" id="firmware_file" name="firmware_file" accept=".bin,.uf2">
     </div>

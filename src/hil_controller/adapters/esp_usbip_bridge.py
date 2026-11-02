@@ -7,6 +7,7 @@ call is an HTTP request. Contract (esp-usbip-bridge README, "Controller API")::
 
     GET  /ping                         {"ok": true}
     GET  /api/info                     hostname, board_id, target, version, auth_required, ...
+    GET  /api/capabilities             1.x feature versions; 404 = pre-1.0 (bridge_capabilities.py)
     GET  /api/usb/devices              every exported device (busid = Linux port path)
     GET  /api/usb/devices/{busid}      one device; 404 when absent (presence check)
     GET  /api/usb/hubs                 hubs, power_switching (per-port|ganged|none), ports
@@ -82,6 +83,46 @@ _STATUS_ERRORS: dict[int, type[EspBridgeError]] = {
 }
 
 
+def is_mdns_name(addr: str | None) -> bool:
+    """True for a multicast-DNS name (``usbip-s31-d19bee.local``), the way bridges
+    are addressed so a DHCP lease change does not matter."""
+    return (addr or "").strip().lower().rstrip(".").endswith(".local")
+
+
+#: Resolution timeout. mDNS answers on the LAN in milliseconds; a name that is
+#: gone should not hold a page or a job for long.
+RESOLVE_TIMEOUT_S = 3.0
+
+
+async def resolve_ipv4(name: str, *, timeout_s: float = RESOLVE_TIMEOUT_S) -> list[str]:
+    """IPv4 addresses for ``name`` from the controller's resolver ([] on failure).
+
+    On the bench controller (Linux + nss-mdns: ``hosts: files mdns4_minimal
+    [NOTFOUND=return] dns``) this resolves ``*.local`` the same way httpx and
+    ``usbip attach`` do. IPv4 only: USB/IP attach and the vhci records use v4.
+    Never raises.
+    """
+    import socket
+
+    host = (name or "").strip().rstrip(".")
+    if not host:
+        return []
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM),
+            timeout=timeout_s,
+        )
+    except (TimeoutError, OSError, UnicodeError):
+        return []
+    out: list[str] = []
+    for info in infos:
+        ip = str(info[4][0])
+        if ip not in out:
+            out.append(ip)
+    return out
+
+
 def bridge_base_url(addr: str, api_url: str | None = None) -> str:
     """HTTP base URL for a bridge: explicit ``api_url``, else ``http://<addr>``."""
     url = (api_url or "").strip() or (addr or "").strip()
@@ -111,16 +152,30 @@ class EspUsbipBridgeClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
-    async def _request(self, method: str, path: str, *, json: Any = None) -> Any:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        content: bytes | None = None,
+        timeout_s: float | None = None,
+    ) -> Any:
         url = self.base_url + path
+        timeout = self._timeout if timeout_s is None else timeout_s
+        headers = self._headers()
+        if content is not None:
+            headers["Content-Type"] = "application/octet-stream"
         try:
             if self._client is not None:
                 resp = await self._client.request(
-                    method, url, headers=self._headers(), json=json, timeout=self._timeout
+                    method, url, headers=headers, json=json, content=content, timeout=timeout
                 )
             else:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    resp = await client.request(method, url, headers=self._headers(), json=json)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.request(
+                        method, url, headers=headers, json=json, content=content
+                    )
         except httpx.HTTPError as exc:
             raise EspBridgeError(f"{method} {url} failed: {exc}") from exc
         if resp.status_code >= 400:
@@ -157,6 +212,30 @@ class EspUsbipBridgeClient:
     async def info(self) -> dict[str, Any]:
         body = await self._request("GET", "/api/info")
         return body if isinstance(body, dict) else {}
+
+    async def capabilities(self) -> dict[str, Any] | None:
+        """``GET /api/capabilities``; ``None`` on 404 (a pre-1.0 bridge).
+
+        Interpret it with :mod:`hil_controller.adapters.bridge_capabilities`,
+        which gates on feature versions, never the firmware commit.
+        """
+        try:
+            body = await self._request("GET", "/api/capabilities")
+        except EspBridgeNotFoundError:
+            return None
+        return body if isinstance(body, dict) else {}
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        content: bytes | None = None,
+        timeout_s: float | None = None,
+    ) -> Any:
+        """Raw API call (used by the on-bridge rescue adapter); errors map by status."""
+        return await self._request(method, path, json=json, content=content, timeout_s=timeout_s)
 
     # ------------------------------------------------------------------ #
     # USB devices + hubs                                                  #

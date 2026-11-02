@@ -193,6 +193,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     from fastapi.staticfiles import StaticFiles
 
     from hil_controller.api.auxes import router as aux_router
+    from hil_controller.api.bridges import router as bridges_router
     from hil_controller.api.cameras import router as cameras_router
     from hil_controller.api.devices import router as devices_router
     from hil_controller.api.firmware import router as firmware_router
@@ -204,6 +205,7 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     from hil_controller.api.targets import router as targets_router
     from hil_controller.api.topology import router as topology_router
     from hil_controller.api.twins import router as twins_router
+    from hil_controller.web.bridges_views import router as bridges_web_router
     from hil_controller.web.ops_views import router as ops_router
     from hil_controller.web.router import router as web_router
     from hil_controller.web.twins_views import router as twins_web_router
@@ -218,10 +220,12 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
     app.include_router(cameras_router)
     app.include_router(topology_router)
     app.include_router(twins_router)
+    app.include_router(bridges_router)
     app.include_router(strands_router)
     app.include_router(leases_router)
     app.include_router(targets_router)
     app.include_router(firmware_router)
+    app.include_router(bridges_web_router)  # before twins: /ui/twins/{id} would shadow
     app.include_router(ops_router)  # before web_router: its /ui/jobs/{job_id} would shadow
     app.include_router(web_router)
     app.include_router(twins_web_router)

@@ -40,6 +40,15 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         except Exception:
             pass  # column already exists
 
+    # discovered_mac: base MAC of a strand-mux box applied from mDNS discovery
+    # (strand_mux_discovery.py), so a re-discovered box at a new address still
+    # matches. Runtime only — never seeded, so no topology drift.
+    try:
+        await db.execute("ALTER TABLE auxes ADD COLUMN discovered_mac TEXT")
+        await db.commit()
+    except Exception:
+        pass
+
     # streams_json: list of {url, type} dicts — used by camera aux items.
     try:
         await db.execute("ALTER TABLE auxes ADD COLUMN streams_json TEXT")
@@ -286,7 +295,16 @@ async def _migrate(db: aiosqlite.Connection) -> None:
 
     # esp-usbip-bridge hosts: HTTP API base URL + the NAME of the env var holding
     # the bearer token (see hosts/esp_bridge.py). Additive; no-op when present.
-    for col, defn in [("api_url", "TEXT"), ("token_env", "TEXT")]:
+    # bridge_caps_*: runtime cache of GET /api/capabilities (never seeded from
+    # the topology, so no drift); see adapters/bridge_capabilities.py.
+    for col, defn in [
+        ("api_url", "TEXT"),
+        ("token_env", "TEXT"),
+        ("bridge_caps_json", "TEXT"),
+        ("bridge_caps_at", "TEXT"),
+        ("bridge_caps_checked_at", "TEXT"),
+        ("bridge_caps_error", "TEXT"),
+    ]:
         try:
             await db.execute(f"ALTER TABLE hosts ADD COLUMN {col} {defn}")
             await db.commit()

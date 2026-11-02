@@ -260,13 +260,21 @@ class FirmwareBenchAdapter:
         # enumerate. Idle DUTs (incl. a flaky/bad board) stay off the bus, so a
         # single misbehaving device can't storm dwc_otg and wedge the whole hub.
         await self._power_on_dut()
-        if self.usbip_server_addr:
+        requested = self.params.get("stages") or DEFAULT_FLASH_STAGES
+        # A job made only of bridge_rescue stages drives the DUT through the
+        # bridge's own API. The bridge refuses rescue while the device is
+        # imported over USB/IP, so such a job must not attach it, and there is no
+        # local tty or staged image either (the stage uploads the image itself).
+        bridge_only = self._bridge_only(requested)
+        if self.usbip_server_addr and not bridge_only:
             await self._attach_usbip()
+        elif bridge_only:
+            self._sink("bench", "bridge_rescue job: driving the DUT through its bridge "
+                       "(no usbip attach, no local serial)")
 
         work_root = PurePosixPath(f"/tmp/hil/{self.job_id}")
         # Explicit no-flash pipelines can deploy CircuitPython files or re-drive
         # installed firmware without staging an unrelated firmware artifact.
-        requested = self.params.get("stages") or DEFAULT_FLASH_STAGES
         needs_artifact = any(
             (
                 s.get("type") in {"flash", "verify"}
@@ -289,16 +297,19 @@ class FirmwareBenchAdapter:
         self._flash_log_path = local_log_dir / "flash.log"
         self._probe_log_path = local_log_dir / "serial-probe.log"
 
-        flash_port = await self._resolve_serial(
-            explicit=self.params.get("flash_serial_port"),
-            filt=self.params.get("flash_port_filter"),
-            fallback=self.device.get("serial_port") or self._usbip_tty or "",
-        )
-        log_port = await self._resolve_serial(
-            explicit=self.params.get("log_serial_port"),
-            filt=self.params.get("log_port_filter"),
-            fallback=flash_port,
-        )
+        if bridge_only:
+            flash_port = log_port = ""
+        else:
+            flash_port = await self._resolve_serial(
+                explicit=self.params.get("flash_serial_port"),
+                filt=self.params.get("flash_port_filter"),
+                fallback=self.device.get("serial_port") or self._usbip_tty or "",
+            )
+            log_port = await self._resolve_serial(
+                explicit=self.params.get("log_serial_port"),
+                filt=self.params.get("log_port_filter"),
+                fallback=flash_port,
+            )
         self._log_serial_port = log_port
 
         stages = self._build_stages(log_port=log_port)
@@ -340,6 +351,7 @@ class FirmwareBenchAdapter:
             # Live-stream verbosity: "all" (default, everything) or "filtered"
             # (NOTABLE_LIVE_LINES allow-list). flash.log asset is always full.
             stream_log_level=str(self.params.get("log_level", "all")).lower(),
+            local_firmware_path=self._fw_local_path,
         )
         try:
             await run_stages(stages, ctx)
@@ -361,8 +373,14 @@ class FirmwareBenchAdapter:
 
         # Fallback: if no start_serial_log stage ran (e.g. a flash-only cycle
         # with no power-cycle), attach serial capture now so the hold still logs.
-        if self._serial is None:
+        if self._serial is None and not bridge_only:
             await self._start_serial(log_port)
+
+    @staticmethod
+    def _bridge_only(stages: list[dict[str, Any]]) -> bool:
+        """True when every stage is an on-bridge ``bridge_rescue`` stage."""
+        flat = list(walk_stages(list(stages)))
+        return bool(flat) and all(st.get("type") == "bridge_rescue" for st in flat)
 
     async def _flag_host_wedged(self, detail: str) -> None:
         """Flag the DUT's host reboot_required after a HostUsbWedgedError (best effort)."""

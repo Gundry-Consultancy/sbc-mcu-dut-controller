@@ -112,6 +112,34 @@ use the web page `/ui/rescue/{device}`. Work **non-destructively first**:
 phase-2 (UART rescue of dead-USB ESP32s via a cross-wired CircuitPython helper
 running adafruit_miniesptool): `docs/notes/board-rescue.md`.
 
+### Bridge-hosted DUTs: rescue through the bridge
+
+For a DUT on an esp-usbip-bridge (its `hub_host_id` is a bridge host) the
+bridge itself can interrogate, reset, console-peek and flash it: the
+**Through the bridge** panel on `/ui/rescue/{device}`, Route **through the
+DUT's bridge** on `/ui/tools`, or a bare job with `bridge_rescue` stages
+(`docs/api.md` "On-bridge rescue"). Rules:
+
+- **Gate on capabilities, not firmware.** Check
+  `GET /v1/bridges/{host}/capabilities`: the action needs its feature
+  `usable` (`console`, `reset` + the mode in `reset.modes`, `flash_esp`,
+  `flash_picoboot`, `flash_samba`, `flash_uf2`, `device_info`). A bridge with
+  `pre_1_0: true` gets none of it even if you know its firmware has the
+  endpoints — use the USB/IP path (`esptool_rescue` etc.) there.
+- **USB/IP and on-bridge rescue exclude each other.** The bridge answers 409
+  while a client has the device imported (or a capture/job holds it): stop the
+  job/lease holding the attach, then retry. A `bridge_rescue`-only job never
+  attaches.
+- **Never changes port power.** Resets are the bridge's DTR/RTS / USB-JTAG /
+  1200-baud / PICOBOOT sequences. A DUT on a root port (`hub: null`, e.g. the
+  S31 on usbip-s31-d19bee `1-1`) has no switchable power at all; don't add a
+  `power_control` for it.
+- **The bridge HTTP server is single-threaded**: a console peek blocks its API
+  (not USB/IP) for up to 12 s. Don't poll other bridge endpoints in parallel.
+- **Capabilities fetch failed?** The host/USB-IP pages show a *stale* badge
+  with the error and keep the last good document; the host is not disabled.
+  Check reachability (`GET http://<bridge>/api/info`) before blaming the DUT.
+
 ## Host-level failures
 
 - **unreachable** (`No route to host`, SSH drop mid-stage): the host's devices

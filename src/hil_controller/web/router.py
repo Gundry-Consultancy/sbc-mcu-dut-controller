@@ -10,7 +10,7 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Cookie, File, Form, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -451,7 +451,7 @@ async def edit_host_form(
 
 @router.get("/hosts/{host_id}", response_class=HTMLResponse, include_in_schema=False)
 async def host_detail(
-    request: Request, host_id: str, hil_token: str = Cookie(default="")
+    request: Request, host_id: str, hil_token: str = Cookie(default=""), refresh_caps: int = 0
 ) -> HTMLResponse:
     """Everything about one host on one page: config, hardware, devices, jobs, leases."""
     if not (await _check_web_token(request, hil_token)):
@@ -492,18 +492,30 @@ async def host_detail(
         d["capabilities"] = json.loads(d.pop("capabilities_json") or "[]")
     registry = getattr(request.app.state, "host_registry", None)
     has_transport = False
+    transport = None
     if registry is not None:
         try:
-            registry.transport_for(host_id)
+            transport = registry.transport_for(host_id)
             has_transport = True
         except (KeyError, ValueError):
             has_transport = False
+    bridge_caps = None
+    if h.get("transport") == "esp-usbip-bridge":
+        from hil_controller.adapters.bridge_capabilities import get_capabilities
+        from hil_controller.hosts.esp_bridge import bridge_client_of
+
+        bridge_caps = (
+            await get_capabilities(
+                db_path, host_id, bridge_client_of(transport), refresh=bool(refresh_caps)
+            )
+        ).view()
     return _tr(
         request,
         "host_detail.html",
         {
             "token": hil_token,
             "active": "hosts",
+            "bridge_caps": bridge_caps,
             "host": h,
             "devices": devices,
             "cameras": cameras,
@@ -4605,6 +4617,9 @@ async def _bridge_fragment_context(db_path: str, host_id: str, transport) -> dic
             power_control = {r["id"]: r["power_control"] for r in await cur.fetchall()}
         async with db.execute("SELECT token_env FROM hosts WHERE id = ?", (host_id,)) as cur:
             host_row = await cur.fetchone()
+    from hil_controller.adapters.bridge_capabilities import get_capabilities
+
+    caps = await get_capabilities(db_path, host_id, bridge)
     return {
         "base_url": bridge.base_url,
         "token_env": host_row["token_env"] if host_row else None,
@@ -4612,6 +4627,7 @@ async def _bridge_fragment_context(db_path: str, host_id: str, transport) -> dic
         "info": info,
         "info_error": info_error,
         "power_control": power_control,
+        "caps": caps.view(),
     }
 
 
@@ -5236,6 +5252,49 @@ async def _save_rescue_firmware(
     return str(dest), aid
 
 
+async def _bridge_rescue_ctx(request: Request, device: dict[str, Any]) -> dict[str, Any] | None:
+    """On-bridge rescue offer for a bridge-hosted DUT, gated on capabilities.
+
+    None when the DUT's USB host (``hub_host_id``, else ``host_id``) is not an
+    esp-usbip-bridge. Otherwise the bridge's cached ``/api/capabilities`` view
+    (refreshed when older than 5 min), the rescue actions its feature versions
+    allow, its reset modes, and — when nothing is allowed — why (pre-1.0 etc.).
+    """
+    from hil_controller.adapters.bridge_capabilities import get_capabilities
+    from hil_controller.adapters.bridge_rescue import available_actions, gate
+    from hil_controller.hosts.esp_bridge import bridge_client_of
+    from hil_controller.hosts.registry import TRANSPORT_ESP_USBIP_BRIDGE
+
+    host_id = device.get("hub_host_id") or device.get("host_id")
+    if not host_id:
+        return None
+    db_path: str = request.app.state.db_path
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT transport FROM hosts WHERE id = ?", (host_id,)) as cur:
+            row = await cur.fetchone()
+    if row is None or row["transport"] != TRANSPORT_ESP_USBIP_BRIDGE:
+        return None
+    client = None
+    registry = getattr(request.app.state, "host_registry", None)
+    if registry is not None:
+        try:
+            client = bridge_client_of(registry.transport_for(host_id))
+        except (KeyError, ValueError):
+            client = None
+    cached = await get_capabilities(db_path, host_id, client)
+    caps = cached.caps
+    actions = available_actions(caps)
+    return {
+        "host_id": host_id,
+        "busid": device.get("hub_port_path") or "",
+        "base_url": client.base_url if client else None,
+        "caps": cached.view(),
+        "actions": actions,
+        "reset_modes": caps.reset_modes() if caps else [],
+        "reason": "" if actions else gate(caps, "info"),
+    }
+
+
 @router.get("/rescue/{device_id}", response_class=HTMLResponse, include_in_schema=False)
 async def rescue_page(
     request: Request, device_id: str, hil_token: str = Cookie(default="")
@@ -5248,7 +5307,13 @@ async def rescue_page(
     return _tr(
         request,
         "rescue.html",
-        {"token": hil_token, "active": "devices", "device": device, "error": None},
+        {
+            "token": hil_token,
+            "active": "devices",
+            "device": device,
+            "error": None,
+            "bridge": await _bridge_rescue_ctx(request, device),
+        },
     )
 
 
@@ -5269,6 +5334,8 @@ async def submit_rescue_job(
     esptool_before: Annotated[str, Form()] = "",
     esptool_after: Annotated[str, Form()] = "",
     address: Annotated[str, Form()] = "0x0",
+    bridge_action: Annotated[str, Form()] = "",
+    bridge_mode: Annotated[str, Form()] = "",
     firmware_file: UploadFile | None = File(default=None),
 ) -> Response:
     """Build the stage list for one rescue action and submit it as a bare job."""
@@ -5279,11 +5346,17 @@ async def submit_rescue_job(
     if device is None:
         return HTMLResponse(f"Unknown device {html.escape(device_id)}", status_code=404)
 
-    def _err(msg: str) -> HTMLResponse:
+    async def _err(msg: str) -> HTMLResponse:
         return _tr(
             request,
             "rescue.html",
-            {"token": hil_token, "active": "devices", "device": device, "error": msg},
+            {
+                "token": hil_token,
+                "active": "devices",
+                "device": device,
+                "error": msg,
+                "bridge": await _bridge_rescue_ctx(request, device),
+            },
         )
 
     firmware_path, asset_id = await _save_rescue_firmware(db_path, firmware_file)
@@ -5302,9 +5375,44 @@ async def submit_rescue_job(
         if expect.strip():
             probe["expect"] = [expect.strip()]
         stages = [{"type": "start_serial_log"}, probe]
+    elif rescue_action == "bridge":
+        # On-bridge rescue: offered only when the bridge's capabilities allow it.
+        from hil_controller.adapters.bridge_rescue import FILE_ACTIONS
+
+        bctx = await _bridge_rescue_ctx(request, device)
+        if bctx is None:
+            return await _err("This device is not on an esp-usbip-bridge.")
+        if bridge_action not in bctx["actions"]:
+            return await _err(
+                f"The bridge does not offer {bridge_action!r}: "
+                f"{bctx['reason'] or 'feature not in its capabilities'}"
+            )
+        if bridge_action in FILE_ACTIONS and not firmware_path:
+            return await _err(f"{bridge_action} needs a firmware file")
+        stage: dict[str, Any] = {"type": "bridge_rescue", "action": bridge_action}
+        if bridge_action == "reset":
+            if bridge_mode not in bctx["reset_modes"]:
+                return await _err(f"The bridge does not offer reset mode {bridge_mode!r}")
+            stage["mode"] = bridge_mode
+        elif bridge_action == "console":
+            chosen_b: list[Any] = [p for p in pokes if p in _RESCUE_POKES]
+            if poke_hex.strip():
+                chosen_b.append({"hex": poke_hex.strip()})
+            stage.update(
+                pokes=chosen_b or ["enter"],
+                capture_s=min(float(capture_s or 3), 10.0),
+                settle_s=float(settle_s or 1),
+            )
+            if expect.strip():
+                stage["expect"] = [expect.strip()]
+        elif bridge_action == "esp_flash":
+            stage["address"] = address or "0x0"
+        stages = [stage]
     elif rescue_action == "bootsel":
         if device.get("bootsel_channel") is None:
-            return _err("This device has no bootsel_channel mapped — set it on the device first.")
+            return await _err(
+                "This device has no bootsel_channel mapped — set it on the device first."
+            )
         stages = [{"type": "enter_bootsel"}]
     elif rescue_action in ("picotool", "esptool", "bossac"):
         stages, tool_err = _tool_stages_from_form(
@@ -5318,9 +5426,9 @@ async def submit_rescue_job(
             address=address,
         )
         if tool_err:
-            return _err(tool_err)
+            return await _err(tool_err)
     else:
-        return _err(f"Unknown rescue action {rescue_action!r}")
+        return await _err(f"Unknown rescue action {rescue_action!r}")
 
     job_req = _build_rescue_job_request(
         device_id=device_id,
@@ -5336,7 +5444,7 @@ async def submit_rescue_job(
                 await db.execute("UPDATE assets SET job_id = ? WHERE id = ?", (job_id, asset_id))
                 await db.commit()
     except Exception as exc:  # noqa: BLE001 — surface the submit error on the form
-        return _err(str(exc))
+        return await _err(str(exc))
     return RedirectResponse(f"/ui/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5382,9 +5490,15 @@ async def submit_tools_job(
     bossac_action: Annotated[str, Form()] = "info",
     bossac_reset: Annotated[str, Form()] = "",  # checkbox: absent when unchecked
     bossac_entry: Annotated[str, Form()] = "auto",
+    route: Annotated[str, Form()] = "usbip",
     firmware_file: UploadFile | None = File(default=None),
 ) -> Response:
-    """One tool action from the workbench → a bare firmware-bench rescue job."""
+    """One tool action from the workbench → a bare firmware-bench rescue job.
+
+    ``route=bridge`` runs the action through a bridge-hosted DUT's bridge
+    (``bridge_rescue`` stage) instead of attaching it over USB/IP — only when
+    the bridge's capabilities offer the matching feature.
+    """
     if not (await _check_web_token(request, hil_token)):
         return _login_redirect()
     db_path: str = request.app.state.db_path
@@ -5398,9 +5512,48 @@ async def submit_tools_job(
                           "for an unregistered board, pick the device whose position it "
                           "occupies and override the serial port).")
 
+    bridge_stages: list[dict[str, Any]] = []
+    if route == "bridge":
+        from hil_controller.adapters.bridge_rescue import bridge_stage_for_tool
+
+        bctx = await _bridge_rescue_ctx(request, device)
+        if bctx is None:
+            return await _err(f"{device_id} is not on an esp-usbip-bridge; use the USB/IP route.")
+        action = {
+            "esptool": esptool_action,
+            "picotool": picotool_action,
+            "bossac": bossac_action,
+        }.get(rescue_action, "")
+        bstage, berr = bridge_stage_for_tool(
+            rescue_action,
+            action,
+            address=address,
+            esptool_before=esptool_before,
+            esptool_after=esptool_after,
+            reset_modes=bctx["reset_modes"],
+        )
+        if bstage is None:
+            return await _err(berr)
+        if bstage["action"] not in bctx["actions"] or (
+            bstage.get("mode") and bstage["mode"] not in bctx["reset_modes"]
+        ):
+            return await _err(
+                f"The bridge on {bctx['host_id']} does not offer {bstage['action']}"
+                + (f" mode {bstage['mode']}" if bstage.get("mode") else "")
+                + f": {bctx['reason'] or 'feature not in its capabilities'}"
+            )
+        bridge_stages = [bstage]
     firmware_path, asset_id = await _save_rescue_firmware(db_path, firmware_file)
-    stages, tool_err = _tool_stages_from_form(
-        tool=rescue_action,
+    stages: list[dict[str, Any]]
+    if bridge_stages:
+        from hil_controller.adapters.bridge_rescue import FILE_ACTIONS
+
+        if bridge_stages[0]["action"] in FILE_ACTIONS and not firmware_path:
+            return await _err(f"{bridge_stages[0]['action']} needs a firmware file")
+        stages, tool_err = bridge_stages, ""
+    else:
+        stages, tool_err = _tool_stages_from_form(
+            tool=rescue_action,
         firmware_path=firmware_path,
         picotool_action=picotool_action,
         bootsel_fallback=bootsel_fallback,
@@ -5408,10 +5561,10 @@ async def submit_tools_job(
         esptool_before=esptool_before,
         esptool_after=esptool_after,
         address=address,
-        bossac_action=bossac_action,
-        bossac_reset=bossac_reset,
-        bossac_entry=bossac_entry,
-    )
+            bossac_action=bossac_action,
+            bossac_reset=bossac_reset,
+            bossac_entry=bossac_entry,
+        )
     if tool_err:
         return await _err(tool_err)
 
@@ -5420,7 +5573,7 @@ async def submit_tools_job(
         stages=stages,
         firmware_path=firmware_path,
         offset=address or "0x0",
-        serial_port=serial_port.strip(),
+        serial_port="" if route == "bridge" else serial_port.strip(),
     )
     try:
         resp = await _call_jobs_api(request, job_req, hil_token)
