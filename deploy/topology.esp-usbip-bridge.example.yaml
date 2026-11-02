@@ -14,10 +14,12 @@
 #   * serial / flashing / MSC run on the CONTROLLER after `usbip attach`
 #     (the controller needs usbip + vhci-hcd, like an arduino-ws usbip flash).
 #
-# Discovery: bridges on API 1.0+ advertise `_hil-bridge._tcp` (port 80, TXT
-# api/fw/target/board/mac/caps/auth) besides `_usbip._tcp` (3240). The
-# controller browses `_hil-bridge._tcp` (python zeroconf from the [discovery]
-# extra, else avahi-browse) on Twins → Bridges (`/ui/twins/bridges`, or
+# Discovery: bridges on API 1.0+ advertise `_esp-usbip._tcp` (port 80, TXT
+# product=esp-usbip-bridge, api/fw/target/board/mac/caps/auth) besides
+# `_usbip._tcp` (3240), which carries the DNS-SD subtype `_esp-usbip-bridge`; the
+# strand mux advertises `_i2c-strand._tcp`. The controller browses all three
+# (python zeroconf from the [discovery] extra, else avahi-browse) on Twins →
+# Bridges (`/ui/twins/bridges`, or
 # `GET /v1/bridges/discover`), confirms each one with GET /api/capabilities and
 # shows PROPOSALS; a host is only created when you apply one. Bridges it cannot
 # see (pre-1.0 firmware, or across Tailscale) are added by address the same way.

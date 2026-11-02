@@ -160,23 +160,25 @@ class CapsBridge:
 # --------------------------------------------------------------------------- #
 
 AVAHI_OUT = (
-    "+;eth0;IPv4;usbip-d19bee;_hil-bridge._tcp;local\n"
-    '=;eth0;IPv4;usbip-d19bee;_hil-bridge._tcp;local;usbip-d19bee.local;192.168.1.133;80;'
+    "+;eth0;IPv4;usbip-d19bee;_esp-usbip._tcp;local\n"
+    '=;eth0;IPv4;usbip-d19bee;_esp-usbip._tcp;local;usbip-d19bee.local;192.168.1.133;80;'
     '"auth=0" "caps=/api/capabilities" "mac=1c:29:04:d1:9b:ee" "board=s31-function-coreboard-1" '
-    '"target=esp32s31" "fw=ac4fbed" "api=1.0"\n'
-    '=;wlan0;IPv4;usbip-d19bee;_hil-bridge._tcp;local;usbip-d19bee.local;192.168.1.201;80;'
+    '"target=esp32s31" "fw=ac4fbed" "api=1.0" "product=esp-usbip-bridge"\n'
+    '=;wlan0;IPv4;usbip-d19bee;_esp-usbip._tcp;local;usbip-d19bee.local;192.168.1.201;80;'
     '"api=1.0" "mac=1C:29:04:D1:9B:EE"\n'
-    '=;eth0;IPv6;usbip-d19bee;_hil-bridge._tcp;local;usbip-d19bee.local;fe80::1e29:4ff:fed1:9bef;80;'
+    '=;eth0;IPv6;usbip-d19bee;_esp-usbip._tcp;local;usbip-d19bee.local;fe80::1e29:4ff:fed1:9bef;80;'
     '"api=1.0" "mac=1c:29:04:d1:9b:ee"\n'
-    '=;eth0;IPv4;usbip-d19c04;_hil-bridge._tcp;local;usbip-d19c04.local;192.168.1.140;80;'
+    '=;eth0;IPv4;usbip-d19c04;_esp-usbip._tcp;local;usbip-d19c04.local;192.168.1.140;80;'
     '"api=1.0" "mac=1c:29:04:d1:9c:04" "board=semi\\059colon"\n'
     '=;eth0;IPv4;usbip-d19bee;_usbip._tcp;local;usbip-d19bee.local;192.168.1.133;3240;"busid=1-1"\n'
+    '=;eth0;IPv4;printer;_ipp._tcp;local;printer.local;192.168.1.9;631;"ty=printer"\n'
 )
 
 
 def test_parse_avahi_browse_resolved_lines_only():
     recs = bd.parse_avahi_browse(AVAHI_OUT)
-    assert len(recs) == 4  # '+' line and the _usbip._tcp answer are ignored
+    assert len(recs) == 5  # '+' line and the unrelated _ipp._tcp answer are ignored
+    assert [r.service for r in recs].count("_usbip._tcp") == 1  # subtype answer kept
     first = recs[0]
     assert first.instance == "usbip-d19bee"
     assert first.hostname == "usbip-d19bee.local"
@@ -189,16 +191,19 @@ def test_parse_avahi_browse_resolved_lines_only():
 
 
 def test_merge_collapses_one_bridge_seen_on_several_interfaces():
-    cands = bd.merge_records(bd.parse_avahi_browse(AVAHI_OUT))
+    cands = bd.merge_records(bd.bridge_records(bd.parse_avahi_browse(AVAHI_OUT)))
     assert [c.key for c in cands] == ["1c:29:04:d1:9b:ee", "1c:29:04:d1:9c:04"]
     bee = cands[0]
-    # eth + wifi + link-local v6 → one candidate, IPv4 first, fe80 last
+    # eth + wifi + link-local v6 → one candidate, IPv4 first, fe80 last; the
+    # MAC-less _usbip._tcp answer joins it by hostname instead of a 2nd candidate
     assert bee.addresses == ["192.168.1.133", "192.168.1.201", "fe80::1e29:4ff:fed1:9bef"]
+    assert bee.services == ["_esp-usbip._tcp", "_usbip._tcp"]
+    assert bee.txt["product"] == "esp-usbip-bridge" and "busid" not in bee.txt
 
 
 def test_record_from_zeroconf_service_info():
     class Info:
-        name = "usbip-d19bee._hil-bridge._tcp.local."
+        name = "usbip-d19bee._esp-usbip._tcp.local."
         server = "usbip-d19bee.local."
         port = 80
         properties = {b"api": b"1.0", b"mac": b"1c:29:04:d1:9b:ee", b"auth": None}
@@ -232,14 +237,22 @@ async def test_browse_falls_back_to_avahi_browse(monkeypatch):
         async def communicate(self):
             return AVAHI_OUT.encode(), b""
 
+    browsed: list[str] = []
+
     async def fake_exec(*argv, **_kw):
-        assert argv[1:] == ("-rpt", "_hil-bridge._tcp")
+        assert argv[1] == "-rpt"
+        browsed.append(argv[2])
         return Proc()
 
     monkeypatch.setattr(bd.asyncio, "create_subprocess_exec", fake_exec)
     result = await bd.browse(0.5)
     assert result.method == "avahi-browse"
-    assert len(result.records) == 4
+    assert browsed == [
+        "_esp-usbip._tcp",
+        "_esp-usbip-bridge._sub._usbip._tcp",
+        "_i2c-strand._tcp",
+    ]
+    assert len(result.records) == 15  # canned output returned for each browse
 
 
 # --------------------------------------------------------------------------- #
@@ -1037,7 +1050,7 @@ async def test_bridge_renamed_itself_is_known_by_mac_not_new(tmp_path, monkeypat
         eub, "resolve_ipv4", _resolver({"usbip-s31-d19bee.local": ["192.168.1.133"]})
     )
     avahi = (
-        '=;eth0;IPv4;usbip-s31-d19bee;_hil-bridge._tcp;local;usbip-s31-d19bee.local;'
+        '=;eth0;IPv4;usbip-s31-d19bee;_esp-usbip._tcp;local;usbip-s31-d19bee.local;'
         '192.168.1.133;80;"api=1.0" "mac=1c:29:04:d1:9b:ee"\n'
     )
     out = await bd.discover(
@@ -1070,3 +1083,231 @@ async def test_ip_addressed_bridge_that_renamed_itself_is_plain_known(tmp_path):
     )
     assert p.action == "known" and p.matched_host_id == "usbip-bridge-s31"
     assert p.renamed_from == "usbip-d07a04" and p.address == "192.168.1.147"
+
+
+# --------------------------------------------------------------------------- #
+# service names: _esp-usbip._tcp, the _esp-usbip-bridge subtype, products     #
+# --------------------------------------------------------------------------- #
+
+
+def test_usbip_subtype_only_bridge_becomes_a_candidate_and_other_products_are_skipped():
+    out = (
+        # a bridge that only advertises USB/IP, tagged with the subtype
+        '=;eth0;IPv4;usbip-p4v3-a1b2c3;_usbip._tcp;local;usbip-p4v3-a1b2c3.local;'
+        '192.168.1.60;3240;"busid=1-1" "target=esp32p4"\n'
+        # something else on _esp-usbip._tcp that says it is another product
+        '=;eth0;IPv4;other;_esp-usbip._tcp;local;other.local;192.168.1.61;80;'
+        '"product=something-else" "mac=aa:bb:cc:dd:ee:ff"\n'
+    )
+    cands = bd.merge_records(bd.bridge_records(bd.parse_avahi_browse(out)))
+    assert [c.key for c in cands] == ["usbip-p4v3-a1b2c3"]
+    assert cands[0].addresses == ["192.168.1.60"]
+
+
+def test_zeroconf_subtype_answer_maps_to_its_base_type():
+    class Info:
+        name = "usbip-p4v3-a1b2c3._usbip._tcp.local."
+        server = "usbip-p4v3-a1b2c3.local."
+        port = 3240
+        properties = {b"busid": b"1-1"}
+
+        def parsed_addresses(self):
+            return ["192.168.1.60"]
+
+    rec = bd.record_from_service_info(Info())
+    assert rec.service == "_usbip._tcp" and rec.instance == "usbip-p4v3-a1b2c3"
+    assert bd._base_type_of("x._i2c-strand._tcp.local.") == "_i2c-strand._tcp"
+
+
+# --------------------------------------------------------------------------- #
+# _i2c-strand._tcp: bridge built-in mux (link by MAC) and the mux box          #
+# --------------------------------------------------------------------------- #
+
+from hil_controller import strand_mux_discovery as smd  # noqa: E402
+
+STRAND_OUT = (
+    '=;eth0;IPv4;usbip-s31-d19bee;_i2c-strand._tcp;local;usbip-s31-d19bee.local;'
+    '192.168.1.133;80;"product=esp-usbip-bridge" "api=1" "mux=mixed" "groups=2" '
+    '"duts=3" "path=/api" "mac=1c:29:04:d1:9b:ee" "caps=/api/capabilities"\n'
+    '=;wlan0;IPv4;mux-hil006;_i2c-strand._tcp;local;mux-hil006.local;192.168.1.155;8080;'
+    '"product=sbc-dut-analog-mux" "api=1" "mux=adg729" "groups=1" "duts=4" "path=/api" '
+    '"mac=28:cd:c1:00:11:22"\n'
+)
+
+
+def _mux_factory(up: set[str]):
+    """AnalogMuxAdapter factory: /api/status answers only on ``up`` base URLs."""
+    from hil_controller.adapters.analog_mux import AnalogMuxAdapter
+
+    def make(base_url: str) -> AnalogMuxAdapter:
+        def handler(req: httpx.Request) -> httpx.Response:
+            if base_url in up and req.url.path == "/api/status":
+                return httpx.Response(200, json={"active": None, "groups": []})
+            return httpx.Response(404, json={"error": "nope"})
+
+        return AnalogMuxAdapter(
+            base_url, client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        )
+
+    return make
+
+
+async def _strands_snapshot(db: str) -> list[dict[str, Any]]:
+    async with get_db(db) as conn:
+        cur = await conn.execute("SELECT * FROM strands ORDER BY id")
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def _db_for_muxes(tmp_path, *, bridge_mac: bool = True, box_aux: str | None = None) -> str:
+    db = str(tmp_path / "mux.db")
+    await init_db(db)
+    async with get_db(db) as conn:
+        await conn.execute(
+            "INSERT INTO hosts (id, role, addr, transport, status, capabilities_json) "
+            "VALUES ('usbip-s31-d19bee', 'microcontroller-fleet', 'usbip-s31-d19bee.local', "
+            "'esp-usbip-bridge', 'available', '[]')"
+        )
+        if box_aux is not None:
+            await conn.execute(
+                "INSERT INTO auxes (id, kind, model, capabilities_json, interface) "
+                "VALUES ('mux-hil006', 'i2c_strand_mux', 'adg729', '[]', ?)",
+                (box_aux,),
+            )
+        await conn.commit()
+    if bridge_mac:
+        await bc.store_capabilities(db, "usbip-s31-d19bee", bc.parse_capabilities(RENAMED))
+    return db
+
+
+ALL_UP = {"http://192.168.1.133", "http://192.168.1.155:8080", "http://usbip-s31-d19bee.local"}
+
+
+async def test_bridge_mux_links_to_the_bridge_host_by_mac(tmp_path):
+    db = await _db_for_muxes(tmp_path)
+    before = await _strands_snapshot(db)
+    recs = bd.parse_avahi_browse(STRAND_OUT)
+    out = await smd.discover_strand_muxes(db, recs, mux_client_factory=_mux_factory(ALL_UP))
+    by_product = {m["product"]: m for m in out}
+    m = by_product["esp-usbip-bridge"]
+    assert m["action"] == "link" and m["bridge_host_id"] == "usbip-s31-d19bee"
+    assert m["aux"]["interface"] == "bridge:usbip-s31-d19bee"  # no second device
+    assert m["aux"]["model"] == "mixed"
+    aux = await smd.apply_strand_mux(
+        db,
+        interface=m["aux"]["interface"],
+        aux_id=m["aux"]["id"],
+        model=m["aux"]["model"],
+        mac=m["mac"],
+        mux_client_factory=_mux_factory(ALL_UP),
+    )
+    assert aux["interface"] == "bridge:usbip-s31-d19bee"
+    async with get_db(db) as conn:
+        n_hosts = (await (await conn.execute("SELECT COUNT(*) AS n FROM hosts")).fetchone())["n"]
+    assert n_hosts == 1  # still just the bridge host
+    # rediscovery: now known; strands never touched
+    out = await smd.discover_strand_muxes(db, recs, mux_client_factory=_mux_factory(ALL_UP))
+    m = {x["product"]: x for x in out}["esp-usbip-bridge"]
+    assert m["action"] == "known" and m["matched_aux_id"] == "mux-usbip-s31-d19bee"
+    assert await _strands_snapshot(db) == before
+
+
+async def test_bridge_mux_without_a_matching_bridge_host_waits_for_it(tmp_path):
+    db = await _db_for_muxes(tmp_path, bridge_mac=False)  # host has no cached MAC
+    out = await smd.discover_strand_muxes(
+        db, bd.parse_avahi_browse(STRAND_OUT), mux_client_factory=_mux_factory(ALL_UP)
+    )
+    m = {x["product"]: x for x in out}["esp-usbip-bridge"]
+    assert m["action"] == "needs_bridge_host" and m["aux"] is None
+
+
+async def test_mux_box_is_known_by_address_then_by_mac(tmp_path):
+    db = await _db_for_muxes(tmp_path, box_aux="http://192.168.1.155:8080")
+    recs = bd.parse_avahi_browse(STRAND_OUT)
+    out = await smd.discover_strand_muxes(db, recs, mux_client_factory=_mux_factory(ALL_UP))
+    m = {x["product"]: x for x in out}["sbc-dut-analog-mux"]
+    assert m["action"] == "known" and m["matched_aux_id"] == "mux-hil006"
+    assert m["match_reason"] == "address 192.168.1.155"
+    # with the MAC recorded, the box is still known after a DHCP move
+    async with get_db(db) as conn:
+        await conn.execute(
+            "UPDATE auxes SET discovered_mac='28:cd:c1:00:11:22', interface='http://10.0.0.9:8080'"
+        )
+        await conn.commit()
+    out = await smd.discover_strand_muxes(db, recs, mux_client_factory=_mux_factory(ALL_UP))
+    m = {x["product"]: x for x in out}["sbc-dut-analog-mux"]
+    assert m["action"] == "known" and m["match_reason"] == "MAC 28:cd:c1:00:11:22"
+
+
+async def test_new_mux_box_prefers_its_local_name_and_applies(tmp_path, monkeypatch):
+    from hil_controller.adapters import esp_usbip_bridge as eub
+
+    monkeypatch.setattr(eub, "resolve_ipv4", _resolver({"mux-hil006.local": ["192.168.1.155"]}))
+    db = await _db_for_muxes(tmp_path)
+    before = await _strands_snapshot(db)
+    up = ALL_UP | {"http://mux-hil006.local:8080"}
+    out = await smd.discover_strand_muxes(
+        db, bd.parse_avahi_browse(STRAND_OUT), mux_client_factory=_mux_factory(up)
+    )
+    m = {x["product"]: x for x in out}["sbc-dut-analog-mux"]
+    assert m["action"] == "new"
+    assert m["aux"]["interface"] == "http://mux-hil006.local:8080"
+    assert m["aux"]["id"] == "mux-hil006"
+    aux = await smd.apply_strand_mux(
+        db,
+        interface=m["aux"]["interface"],
+        aux_id="mux-hil006",
+        model="adg729",
+        mac=m["mac"],
+        mux_client_factory=_mux_factory(up),
+    )
+    assert aux["discovered_mac"] == "28:cd:c1:00:11:22"
+    with pytest.raises(bd.ApplyError) as exc:  # same MAC again
+        await smd.apply_strand_mux(
+            db,
+            interface="http://192.168.1.155:8080",
+            aux_id="mux-two",
+            mac=m["mac"],
+            mux_client_factory=_mux_factory(up),
+        )
+    assert exc.value.status == 409
+    assert await _strands_snapshot(db) == before
+
+
+async def test_unconfirmed_mux_and_unknown_product(tmp_path):
+    db = await _db_for_muxes(tmp_path)
+    out_txt = STRAND_OUT + (
+        '=;eth0;IPv4;thing;_i2c-strand._tcp;local;thing.local;192.168.1.70;80;'
+        '"product=not-a-mux" "mac=aa:aa:aa:aa:aa:aa"\n'
+    )
+    out = await smd.discover_strand_muxes(
+        db, bd.parse_avahi_browse(out_txt), mux_client_factory=_mux_factory(set())
+    )
+    assert {m["product"] for m in out} == {"esp-usbip-bridge", "sbc-dut-analog-mux"}
+    assert all(m["action"] == "unconfirmed" for m in out)
+
+
+async def test_api_strand_mux_apply(api, monkeypatch):
+    _, c = api
+    from hil_controller.adapters import analog_mux
+
+    class _Up(analog_mux.AnalogMuxAdapter):
+        async def status(self):
+            return {"active": None}
+
+    monkeypatch.setattr(smd, "_mux_client", _Up)
+    r = await c.post(
+        "/v1/bridges/strand-muxes/apply",
+        json={
+            "interface": "http://192.168.1.155:8080",
+            "aux_id": "mux-box",
+            "mac": "28:cd:c1:00:11:22",
+        },
+        headers=AUTH,
+    )
+    assert r.status_code == 201, r.text
+    r = await c.post(
+        "/v1/bridges/strand-muxes/apply",
+        json={"interface": "bridge:nope", "aux_id": "mux-nope"},
+        headers=AUTH,
+    )
+    assert r.status_code == 422

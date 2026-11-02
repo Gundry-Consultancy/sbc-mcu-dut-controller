@@ -8,7 +8,8 @@
 
 <div class="form-panel">
   <p class="form-hint">
-    Finds esp-usbip-bridges advertising <code>_hil-bridge._tcp</code> over mDNS and confirms each one with
+    Finds esp-usbip-bridges advertising <code>_esp-usbip._tcp</code> (or the <code>_esp-usbip-bridge</code> subtype of
+    <code>_usbip._tcp</code>) over mDNS and confirms each one with
     <code>GET /api/capabilities</code> (the TXT record is a hint; the endpoint is the truth). Results are
     <strong>proposals</strong>: nothing is added, removed or disabled until you press <em>Apply</em> on one.
     A bridge you can't see here (e.g. across Tailscale, where multicast does not go) can be added by address.
@@ -98,6 +99,46 @@
   </table>
 </div>
 {% elif discovery %}
-<p class="form-hint">No <code>_hil-bridge._tcp</code> answers. Pre-1.0 bridges do not advertise it: add them by address.</p>
+<p class="form-hint">No <code>_esp-usbip._tcp</code> bridge answers. Pre-1.0 bridges do not advertise it: add them by address.</p>
+{% endif %}
+{% if discovery and discovery.strand_muxes %}
+<div class="tbl-wrap">
+  <div class="tbl-header"><h2>I2C strand muxes (<code>_i2c-strand._tcp</code>) <span class="tbl-count">{{ discovery.strand_muxes|length }}</span></h2></div>
+  <p class="form-hint">Applying creates one <code>i2c_strand_mux</code> aux. Strand routing and existing strands are never changed — point a strand's mux at the aux on the Hardware page.</p>
+  <table>
+    <thead><tr><th>Mux</th><th>Product · TXT</th><th>Proposal</th></tr></thead>
+    <tbody>
+    {% for m in discovery.strand_muxes %}
+      <tr>
+        <td class="mono">{{ m.hostname or m.key }}{% if m.mac %}<br><span class="form-hint">{{ m.mac }}</span>{% endif %}<br>{% for a in m.addresses %}{{ a }}<br>{% endfor %}</td>
+        <td><code>{{ m.product }}</code><br><span class="form-hint">{% for k, v in m.txt.items() %}{% if k != 'product' %}{{ k }}={{ v }} {% endif %}{% endfor %}</span></td>
+        <td>
+          {% if m.action in ('link', 'new') %}
+            <span class="badge badge-ok">{% if m.action == 'link' %}link to bridge {{ m.bridge_host_id }}{% else %}new mux box{% endif %}</span>
+            {% if m.note %}<br><span class="form-hint">{{ m.note }}</span>{% endif %}
+            {% if can_write %}
+            <form method="post" action="/ui/twins/bridges/strand-mux/apply" style="margin-top:0.5rem;">
+              <input type="hidden" name="interface" value="{{ m.aux.interface }}">
+              <input type="hidden" name="mac" value="{{ m.mac or '' }}">
+              <div><label class="form-hint">Aux id <input name="aux_id" value="{{ m.aux.id }}" size="20"></label></div>
+              <div><label class="form-hint">Model <input name="model" value="{{ m.aux.model }}" size="12"></label></div>
+              <div class="form-hint mono">interface {{ m.aux.interface }}</div>
+              <button class="btn btn-sm btn-primary" type="submit">Apply: create aux</button>
+            </form>
+            {% else %}<br><span class="form-hint">needs inventory:write to apply</span>{% endif %}
+          {% elif m.action == 'known' %}
+            <span class="badge badge-gray">known</span> as aux <span class="mono">{{ m.matched_aux_id }}</span>
+            <br><span class="form-hint">matched by {{ m.match_reason }}</span>
+          {% elif m.action == 'needs_bridge_host' %}
+            <span class="badge badge-warn">bridge host first</span><br><span class="form-hint">{{ m.note }}</span>
+          {% else %}
+            <span class="badge badge-warn">not confirmed</span><br><span class="form-hint">{{ m.error }}</span>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
 {% endblock %}

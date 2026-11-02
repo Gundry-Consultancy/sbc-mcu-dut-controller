@@ -66,7 +66,7 @@ against stale slots.
 
   | Human (web UI) | Agent (API) |
   |---|---|
-  | **Discover (mDNS)** — browses `_hil-bridge._tcp`, confirms each answer with `GET /api/capabilities` | `GET /v1/bridges/discover?timeout_s=3` |
+  | **Discover (mDNS)** — browses `_esp-usbip._tcp` (+ the `_esp-usbip-bridge` subtype of `_usbip._tcp`), confirms each answer with `GET /api/capabilities` | `GET /v1/bridges/discover?timeout_s=3` |
   | **Add by address** — same check for one IP / `name.local` (use this across Tailscale, and for pre-1.0 bridges, which do not advertise) | `POST /v1/bridges/probe {"address": "192.168.1.133"}` |
   | **Apply: create host** on a `new` proposal (edit id / role / tags / token env var *name*) | `POST /v1/bridges/apply {"address", "host_id"?, "token_env"?}` |
 
@@ -147,6 +147,7 @@ Fix the scheduler's view so it matches the physical inventory:
 | Board removed | Device form → Status `unavailable`, Outage kind `permanent`, reason (who/when) | `PATCH /v1/devices/{id}` `{"status":"unavailable","unavailable_kind":"permanent","unavailable_reason":"…"}` |
 | New board/slot | Devices → Add Device (hub host = bridge for S31 DUTs, Power control `bridge-port` only behind a per-port switched hub; none on a root port) | — (UI or topology YAML) |
 | New bridge found | Twins → Bridges → Apply on its proposal | `POST /v1/bridges/apply` |
+| Strand mux found (`_i2c-strand._tcp`) | Twins → Bridges → strand-mux table: **link** a bridge's mux (aux `bridge:<host>`, matched by MAC — apply the bridge first) or add a mux box aux; then point the strand's mux at it on Hardware → Edit strand | `POST /v1/bridges/strand-muxes/apply`, then `PUT /v1/strands/{id}` |
 | Sensor moved strand / channel | Hardware → Edit strand | `PUT /v1/strands/{id}` |
 
 Agents can edit a device without the form: `PATCH /v1/devices/{id}` with just

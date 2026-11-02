@@ -432,7 +432,9 @@ curl -H "Authorization: Bearer $TOK" \
 Contract: esp-usbip-bridge `docs/bridge-discovery-and-capabilities.md`.
 Bridges on API 1.0+ serve `GET /api/capabilities` (`api_version`, `fw`,
 `board` incl. base `mac`, `network`, `limits`, `features: {name: {version}}`) and
-advertise `_hil-bridge._tcp` over mDNS. A bridge answering **404** there is
+advertise `_esp-usbip._tcp` (port 80, TXT `product=esp-usbip-bridge`, `api`,
+`fw`, `target`, `board`, `mac`, `caps`, `auth`) over mDNS, and tag their
+`_usbip._tcp` with the DNS-SD subtype `_esp-usbip-bridge`. A bridge answering **404** there is
 **pre-1.0**: only `/api/info` and its device list are used. The controller
 decides what to offer from **feature versions** (`flash_esp >= 1`, …) and
 `available: false`, never from the firmware commit; an API major other than 1
@@ -442,7 +444,7 @@ gates every feature off.
 |---|---|---|
 | GET | `/v1/bridges` | every bridge host with its cached capabilities view |
 | GET | `/v1/bridges/{host_id}/capabilities[?refresh=true]` | one host (re-fetched when older than 5 min or asked) |
-| GET | `/v1/bridges/discover[?timeout_s=3]` | browse `_hil-bridge._tcp`, confirm each with `GET /api/capabilities`, return **proposals**; read-only |
+| GET | `/v1/bridges/discover[?timeout_s=3]` | browse `_esp-usbip._tcp` + `_esp-usbip-bridge._sub._usbip._tcp` (bridges that only advertise USB/IP) + `_i2c-strand._tcp`; confirm each bridge with `GET /api/capabilities` and each strand mux with `GET /api/status`; return bridge **proposals** and `strand_muxes`; read-only |
 | POST | `/v1/bridges/probe` `{"address"}` | add-by-address: same check, one proposal (works across Tailscale) |
 | POST | `/v1/bridges/apply` `{"address", "host_id"?, "token_env"?, "role"?, "capabilities"?}` | re-checks, then creates **one** `esp-usbip-bridge` host for a `new` proposal; 409 when it matches an existing host or the id is taken, 422 when it does not confirm |
 
@@ -473,6 +475,20 @@ HTTP calls, and resolves the name itself before `usbip attach -r` so the USB/IP
 receiver host gets an IPv4 and needs no nss-mdns of its own (if the controller
 cannot resolve it, the name is passed through). A controller without nss-mdns
 gets IP-addressed proposals with a note.
+
+Answers whose TXT `product` names another product are skipped; `product=esp-usbip-bridge` marks a bridge, still confirmed with `/api/capabilities`. One bridge's `_esp-usbip._tcp` and `_usbip._tcp` answers are one proposal (MAC, else hostname).
+
+**Strand muxes** (`_i2c-strand._tcp`, TXT `product`, `api`, `mux`, `groups`, `duts`, `path=/api`, `mac`, `caps`): both the bridge's built-in ADG729/728 mux (`product=esp-usbip-bridge`) and the CircuitPython mux box (`product=sbc-dut-analog-mux`) speak the same strand-mux API.
+
+| `action` | meaning |
+|---|---|
+| `link` | bridge mux whose base MAC matches a bridge host: apply creates one aux with `interface: bridge:<host_id>` (shares the host's URL + token) — never a second host or device |
+| `needs_bridge_host` | bridge mux with no bridge host of that MAC yet: apply the bridge proposal first |
+| `new` | mux box not in `auxes`: apply creates an `i2c_strand_mux` aux at `http://<hostname>.local:<port>` (IP when the name doesn't resolve), recording its MAC (`auxes.discovered_mac`) |
+| `known` | an aux already points at it (bridge link / same MAC / same address) |
+| `unconfirmed` | `GET /api/status` did not answer |
+
+`POST /v1/bridges/strand-muxes/apply {"interface", "aux_id", "model"?, "mac"?}` re-confirms `/api/status` and creates **one** aux (409 when an aux already uses that interface or MAC). Discovery and apply never change strand routing or existing strands: point a strand's `mux_aux` at the aux yourself.
 
 mDNS browsing uses python `zeroconf` (`pip install -e '.[discovery]'`), else
 `avahi-browse -rpt` when on PATH, else it reports `method: unavailable` and

@@ -2,11 +2,16 @@
 
 * ``GET  /v1/bridges`` — every bridge host with its cached capabilities.
 * ``GET  /v1/bridges/{host_id}/capabilities[?refresh=true]`` — one host's view.
-* ``GET  /v1/bridges/discover[?timeout_s=3]`` — browse ``_hil-bridge._tcp``,
-  confirm each answer with ``GET /api/capabilities``, return proposals. Read-only.
+* ``GET  /v1/bridges/discover[?timeout_s=3]`` — browse ``_esp-usbip._tcp`` (and
+  the ``_esp-usbip-bridge`` subtype of ``_usbip._tcp``), confirm each answer with
+  ``GET /api/capabilities``, return bridge proposals; also ``_i2c-strand._tcp``
+  strand-mux proposals (``strand_muxes``). Read-only.
 * ``POST /v1/bridges/probe {"address"}`` — add-by-address: the same check, one proposal.
 * ``POST /v1/bridges/apply {"address", "host_id"?, "token_env"?, "role"?,
   "capabilities"?}`` — create the host for a ``new`` proposal (re-checks first).
+* ``POST /v1/bridges/strand-muxes/apply {"interface", "aux_id", "model"?, "mac"?}``
+  — create one ``i2c_strand_mux`` aux: ``bridge:<host_id>`` links a bridge's
+  built-in mux, ``http://…`` adds a mux box. Never touches strands.
 
 Discovery never adds, removes or disables hosts by itself; only ``apply`` writes,
 and only one new host per call. The capabilities reads need only a bearer token
@@ -33,6 +38,13 @@ Auth = Annotated[Principal, Depends(require_auth)]
 
 class ProbeRequest(BaseModel):
     address: str
+
+
+class StrandMuxApplyRequest(BaseModel):
+    interface: str
+    aux_id: str
+    model: str = ""
+    mac: str = ""
 
 
 class ApplyRequest(BaseModel):
@@ -111,6 +123,26 @@ async def apply_bridge(request: Request, principal: Auth, body: ApplyRequest) ->
         raise HTTPException(exc.status, exc.detail) from exc
     await refresh_app_registry(request.app)
     return {"created": host}
+
+
+@router.post("/strand-muxes/apply", status_code=201)
+async def apply_strand_mux(
+    request: Request, principal: Auth, body: StrandMuxApplyRequest
+) -> dict[str, Any]:
+    authorize(principal, write=True)
+    from hil_controller import strand_mux_discovery
+
+    try:
+        aux = await strand_mux_discovery.apply_strand_mux(
+            request.app.state.db_path,
+            interface=body.interface,
+            aux_id=body.aux_id,
+            model=body.model,
+            mac=body.mac,
+        )
+    except bridge_discovery.ApplyError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+    return {"created": aux}
 
 
 @router.get("/{host_id}/capabilities")

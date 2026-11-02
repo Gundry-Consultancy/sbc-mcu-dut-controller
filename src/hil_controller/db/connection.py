@@ -40,6 +40,15 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         except Exception:
             pass  # column already exists
 
+    # discovered_mac: base MAC of a strand-mux box applied from mDNS discovery
+    # (strand_mux_discovery.py), so a re-discovered box at a new address still
+    # matches. Runtime only — never seeded, so no topology drift.
+    try:
+        await db.execute("ALTER TABLE auxes ADD COLUMN discovered_mac TEXT")
+        await db.commit()
+    except Exception:
+        pass
+
     # streams_json: list of {url, type} dicts — used by camera aux items.
     try:
         await db.execute("ALTER TABLE auxes ADD COLUMN streams_json TEXT")

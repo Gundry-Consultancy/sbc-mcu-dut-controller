@@ -79,6 +79,19 @@ rpi-hil006 air strand's is `0x70`).
   routes lists — send the full object, not a delta.
 - The web UI has an equivalent strand form.
 
+## Finding muxes on the network (`_i2c-strand._tcp`)
+
+Both the CircuitPython mux box (`product=sbc-dut-analog-mux`) and an
+esp-usbip-bridge's built-in ADG729/728 mux (`product=esp-usbip-bridge`)
+advertise `_i2c-strand._tcp` (TXT `api`, `mux`, `groups`, `duts`, `path=/api`,
+`mac`). Twins → **Bridges** → Discover (`GET /v1/bridges/discover`,
+`strand_muxes`) proposes: **link** a bridge's mux to its bridge host by base MAC
+(aux `interface: bridge:<host_id>`, sharing the host's URL and token — apply the
+bridge first if it says `needs_bridge_host`), or add a mux box aux (at its
+`.local` name). Apply = `POST /v1/bridges/strand-muxes/apply`. Discovery never
+changes strands or routing: afterwards point the strand's mux at the aux
+(Hardware → Edit strand / `PUT /v1/strands/{id}`).
+
 ## The mux box itself (manual poking)
 
 The strand-mux is a CircuitPython ESP32-S3 running

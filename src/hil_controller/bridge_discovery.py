@@ -1,4 +1,4 @@
-"""Find esp-usbip-bridges (mDNS ``_hil-bridge._tcp``) and turn them into host proposals.
+"""Find esp-usbip-bridges and I2C strand muxes over mDNS; turn them into proposals.
 
 Discovery never changes the bench by itself. It produces **proposals** that an
 operator (web UI ``/ui/twins/bridges``) or an agent (``/v1/bridges/*``) reviews
@@ -9,9 +9,14 @@ seen right now" means nothing.
 
 Flow (contract: esp-usbip-bridge ``docs/bridge-discovery-and-capabilities.md``):
 
-1. Browse ``_hil-bridge._tcp`` — python ``zeroconf`` (optional extra
-   ``[discovery]``) when installed, else ``avahi-browse -rpt`` when on PATH,
-   else discovery reports itself unavailable (add-by-address still works).
+1. Browse ``_esp-usbip._tcp`` (port 80, TXT ``product=esp-usbip-bridge``,
+   ``api``, ``fw``, ``mac``, …), plus the DNS-SD subtype
+   ``_esp-usbip-bridge._sub._usbip._tcp`` to catch bridges that only advertise
+   USB/IP, plus ``_i2c-strand._tcp`` for strand muxes (see below) — python
+   ``zeroconf`` (optional extra ``[discovery]``) when installed, else
+   ``avahi-browse -rpt`` when on PATH, else discovery reports itself
+   unavailable (add-by-address still works). A TXT ``product`` other than
+   ``esp-usbip-bridge`` is not a bridge and is skipped.
 2. Collapse the answers per bridge: one bridge advertises on every interface
    that is up (Ethernet and Wi-Fi), so it can show several addresses. Records
    are keyed by the TXT ``mac`` (base MAC), else the hostname.
@@ -20,6 +25,19 @@ Flow (contract: esp-usbip-bridge ``docs/bridge-discovery-and-capabilities.md``):
    a 404 there means a pre-1.0 bridge, accepted when ``/api/info`` looks like one.
 4. Match against existing hosts (base MAC from the capabilities cache, then
    hostname, then address) so a known bridge is shown as known, not new.
+
+I2C strand muxes (``_i2c-strand._tcp``; TXT ``product``, ``api``, ``mux``,
+``groups``, ``duts``, ``path``, ``mac``, ``caps``) speak the same strand-mux API
+whether built into a bridge or a standalone box:
+
+* ``product=esp-usbip-bridge``: the bridge's own mux. It is linked to the bridge
+  host with the same base MAC as an aux whose interface is ``bridge:<host_id>``
+  (sharing the host's URL and token) — never a second device.
+* ``product=sbc-dut-analog-mux``: the standalone CircuitPython box, matched to an
+  existing aux by MAC, then address; a new one is proposed at its ``.local``
+  name when that resolves.
+
+Strand routing and existing strands are never changed by discovery.
 """
 
 from __future__ import annotations
@@ -50,8 +68,18 @@ from hil_controller.adapters.esp_usbip_bridge import (
 
 log = logging.getLogger(__name__)
 
-SERVICE_TYPE = "_hil-bridge._tcp"
-ZEROCONF_SERVICE_TYPE = f"{SERVICE_TYPE}.local."
+#: The bridge's own service (port 80).
+SERVICE_TYPE = "_esp-usbip._tcp"
+#: USB/IP service; bridges also tag it with the subtype below.
+USBIP_TYPE = "_usbip._tcp"
+USBIP_BRIDGE_SUBTYPE = f"_esp-usbip-bridge._sub.{USBIP_TYPE}"
+#: I2C strand mux service (bridge built-in mux and the standalone mux box).
+STRAND_TYPE = "_i2c-strand._tcp"
+#: What is browsed. Subtype answers resolve as their base type (``_usbip._tcp``).
+BROWSE_TYPES = (SERVICE_TYPE, USBIP_BRIDGE_SUBTYPE, STRAND_TYPE)
+BASE_TYPES = (SERVICE_TYPE, USBIP_TYPE, STRAND_TYPE)
+PRODUCT_BRIDGE = "esp-usbip-bridge"
+PRODUCT_MUX_BOX = "sbc-dut-analog-mux"
 TRANSPORT = "esp-usbip-bridge"
 DEFAULT_BROWSE_S = 3.0
 #: Short timeout for confirming a candidate: discovery pages must not hang on
@@ -63,7 +91,7 @@ _HOST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 @dataclass
 class MdnsRecord:
-    """One resolved ``_hil-bridge._tcp`` answer (one interface of one bridge)."""
+    """One resolved DNS-SD answer (one interface of one device, one service)."""
 
     instance: str
     hostname: str = ""
@@ -71,10 +99,16 @@ class MdnsRecord:
     port: int = 80
     txt: dict[str, str] = field(default_factory=dict)
     interface: str = ""
+    #: Base service type (``_esp-usbip._tcp`` / ``_usbip._tcp`` / ``_i2c-strand._tcp``).
+    service: str = SERVICE_TYPE
 
     @property
     def mac(self) -> str:
         return normalize_mac(self.txt.get("mac"))
+
+    @property
+    def product(self) -> str:
+        return (self.txt.get("product") or "").strip().lower()
 
 
 @dataclass
@@ -131,13 +165,17 @@ def _parse_avahi_txt(field_text: str) -> dict[str, str]:
     return txt
 
 
-def parse_avahi_browse(output: str, service_type: str = SERVICE_TYPE) -> list[MdnsRecord]:
+def parse_avahi_browse(
+    output: str, service_types: Iterable[str] = BASE_TYPES
+) -> list[MdnsRecord]:
     """Parse ``avahi-browse -rpt <type>`` output into resolved records.
 
-    Only ``=`` (resolved) lines of ``service_type`` count; ``+``/``-`` lines and
-    other services are ignored. Each resolved line is one interface/protocol of
-    one instance; use :func:`merge_records` to collapse them per bridge.
+    Only ``=`` (resolved) lines of ``service_types`` count (a subtype browse
+    answers with the base type); ``+``/``-`` lines and other services are
+    ignored. Each resolved line is one interface/protocol of one instance; use
+    :func:`merge_records` to collapse them per device.
     """
+    wanted = set(service_types)
     records: list[MdnsRecord] = []
     for raw in output.splitlines():
         line = raw.strip()
@@ -147,7 +185,8 @@ def parse_avahi_browse(output: str, service_type: str = SERVICE_TYPE) -> list[Md
         if len(fields) < 9:
             continue
         _, iface, _proto, name, stype, _domain, host, address, port = fields[:9]
-        if _avahi_unescape(stype) != service_type:
+        stype = _avahi_unescape(stype)
+        if stype not in wanted:
             continue
         txt = _parse_avahi_txt(";".join(fields[9:])) if len(fields) > 9 else {}
         try:
@@ -162,6 +201,7 @@ def parse_avahi_browse(output: str, service_type: str = SERVICE_TYPE) -> list[Md
                 port=port_n,
                 txt=txt,
                 interface=iface,
+                service=stype,
             )
         )
     return records
@@ -171,22 +211,28 @@ async def _browse_avahi(timeout_s: float) -> BrowseResult:
     exe = shutil.which("avahi-browse")
     if not exe:
         return BrowseResult([], "unavailable", "avahi-browse not on PATH")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            exe,
-            "-rpt",
-            SERVICE_TYPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=max(timeout_s, 1.0) + 10)
-    except (TimeoutError, OSError) as exc:
-        return BrowseResult([], "avahi-browse", f"avahi-browse failed: {exc}")
-    if proc.returncode != 0:
-        return BrowseResult(
-            [], "avahi-browse", f"avahi-browse exit {proc.returncode}: {err.decode()[:200]}"
-        )
-    return BrowseResult(parse_avahi_browse(out.decode("utf-8", errors="replace")), "avahi-browse")
+    records: list[MdnsRecord] = []
+    errors: list[str] = []
+    for stype in BROWSE_TYPES:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                exe,
+                "-rpt",
+                stype,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(
+                proc.communicate(), timeout=max(timeout_s, 1.0) + 10
+            )
+        except (TimeoutError, OSError) as exc:
+            errors.append(f"avahi-browse {stype} failed: {exc}")
+            continue
+        if proc.returncode != 0:
+            errors.append(f"avahi-browse {stype} exit {proc.returncode}: {err.decode()[:200]}")
+            continue
+        records += parse_avahi_browse(out.decode("utf-8", errors="replace"))
+    return BrowseResult(records, "avahi-browse", "; ".join(errors))
 
 
 # --------------------------------------------------------------------------- #
@@ -202,7 +248,15 @@ def zeroconf_available() -> bool:
     return True
 
 
-def record_from_service_info(info: Any) -> MdnsRecord:
+def _base_type_of(name: str) -> str:
+    """``inst._usbip._tcp.local.`` → ``_usbip._tcp`` (one of :data:`BASE_TYPES`)."""
+    for base in BASE_TYPES:
+        if name.endswith(f".{base}.local.") or name.endswith(f".{base}.local"):
+            return base
+    return ""
+
+
+def record_from_service_info(info: Any, service: str = "") -> MdnsRecord:
     """Build a record from a resolved ``zeroconf.ServiceInfo`` (duck-typed for tests)."""
     txt: dict[str, str] = {}
     for key, value in (getattr(info, "properties", None) or {}).items():
@@ -215,7 +269,8 @@ def record_from_service_info(info: Any) -> MdnsRecord:
             v = str(value)
         txt[k.strip().lower()] = v
     name = str(getattr(info, "name", "") or "")
-    instance = name.removesuffix("." + ZEROCONF_SERVICE_TYPE) if name else ""
+    service = service or _base_type_of(name) or SERVICE_TYPE
+    instance = name.removesuffix(f".{service}.local.").removesuffix(f".{service}.local")
     addresses: list[str] = []
     parsed = getattr(info, "parsed_addresses", None)
     if callable(parsed):
@@ -226,6 +281,7 @@ def record_from_service_info(info: Any) -> MdnsRecord:
         addresses=addresses,
         port=int(getattr(info, "port", 80) or 80),
         txt=txt,
+        service=service,
     )
 
 
@@ -242,22 +298,25 @@ async def _browse_zeroconf(timeout_s: float) -> BrowseResult:
     azc = AsyncZeroconf()
     try:
         browser = AsyncServiceBrowser(
-            azc.zeroconf, [ZEROCONF_SERVICE_TYPE], handlers=[on_change]
+            azc.zeroconf, [f"{t}.local." for t in BROWSE_TYPES], handlers=[on_change]
         )
         await asyncio.sleep(timeout_s)
         await browser.async_cancel()
         records = []
         for name in sorted(names):
-            info = AsyncServiceInfo(ZEROCONF_SERVICE_TYPE, name)
+            base = _base_type_of(name)  # a subtype answer resolves as its base type
+            if not base:
+                continue
+            info = AsyncServiceInfo(f"{base}.local.", name)
             if await info.async_request(azc.zeroconf, 3000):
-                records.append(record_from_service_info(info))
+                records.append(record_from_service_info(info, base))
         return BrowseResult(records, "zeroconf")
     finally:
         await azc.async_close()
 
 
 async def browse(timeout_s: float = DEFAULT_BROWSE_S) -> BrowseResult:
-    """Browse ``_hil-bridge._tcp`` with whatever this controller has. Never raises."""
+    """Browse :data:`BROWSE_TYPES` with whatever this controller has. Never raises."""
     if zeroconf_available():
         try:
             return await _browse_zeroconf(timeout_s)
@@ -292,6 +351,7 @@ class Candidate:
     port: int = 80
     txt: dict[str, str] = field(default_factory=dict)
     source: str = "mdns"  # "mdns" | "manual"
+    services: list[str] = field(default_factory=list)
 
 
 def _is_ipv4(addr: str) -> bool:
@@ -299,15 +359,39 @@ def _is_ipv4(addr: str) -> bool:
     return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
 
+def _host_key(rec: MdnsRecord) -> str:
+    name = (rec.hostname or rec.instance).lower().removesuffix(".").removesuffix(".local")
+    return name or (rec.addresses[0] if rec.addresses else "")
+
+
+def bridge_records(records: Iterable[MdnsRecord]) -> list[MdnsRecord]:
+    """Answers that may be bridges: ``_esp-usbip._tcp`` and the tagged
+    ``_usbip._tcp``, minus anything whose TXT ``product`` names another product."""
+    return [
+        r
+        for r in records
+        if r.service in (SERVICE_TYPE, USBIP_TYPE) and r.product in ("", PRODUCT_BRIDGE)
+    ]
+
+
 def merge_records(records: Iterable[MdnsRecord]) -> list[Candidate]:
-    """Collapse per-interface answers into one candidate per bridge (by base MAC)."""
+    """Collapse per-interface / per-service answers into one candidate per device.
+
+    Keyed by base MAC (TXT ``mac``). An answer without a MAC (e.g. the
+    ``_usbip._tcp`` TXT carries none) joins the candidate with the same
+    hostname, else is keyed by hostname. ``_esp-usbip._tcp`` answers are taken
+    first so their TXT (product, api, fw, mac) wins.
+    """
+    ordered = sorted(records, key=lambda r: (r.service != SERVICE_TYPE, not r.mac))
     by_key: dict[str, Candidate] = {}
-    for rec in records:
-        key = rec.mac or (rec.hostname or rec.instance).lower().removesuffix(".local")
-        if not key:
-            key = rec.addresses[0] if rec.addresses else ""
+    by_host: dict[str, str] = {}
+    for rec in ordered:
+        hkey = _host_key(rec)
+        key = rec.mac or by_host.get(hkey) or hkey
         if not key:
             continue
+        if hkey and hkey not in by_host:
+            by_host[hkey] = key
         cand = by_key.get(key)
         if cand is None:
             cand = by_key[key] = Candidate(
@@ -320,11 +404,19 @@ def merge_records(records: Iterable[MdnsRecord]) -> list[Candidate]:
         for addr in rec.addresses:
             if addr and addr not in cand.addresses:
                 cand.addresses.append(addr)
-        cand.txt.update({k: v for k, v in rec.txt.items() if k not in cand.txt})
+        if rec.service not in cand.services:
+            cand.services.append(rec.service)
+        if rec.service == cand_service(cand):
+            cand.txt.update({k: v for k, v in rec.txt.items() if k not in cand.txt})
     # IPv4 first (stable order), link-local IPv6 last: USB/IP attach wants v4.
     for cand in by_key.values():
         cand.addresses.sort(key=lambda a: (not _is_ipv4(a), a.startswith("fe80"), a))
     return sorted(by_key.values(), key=lambda c: c.key)
+
+
+def cand_service(cand: Candidate) -> str:
+    """The service whose TXT describes the candidate (the first one seen)."""
+    return cand.services[0] if cand.services else ""
 
 
 def _url_host(url: str | None) -> str:
@@ -665,19 +757,26 @@ async def discover(
     timeout_s: float = DEFAULT_BROWSE_S,
     browse_result: BrowseResult | None = None,
     client_factory: Any = None,
+    mux_client_factory: Any = None,
 ) -> dict[str, Any]:
-    """Browse + confirm + match. Read-only: never writes hosts."""
+    """Browse + confirm + match bridges and strand muxes. Read-only: writes nothing."""
+    from hil_controller.strand_mux_discovery import discover_strand_muxes
+
     result = browse_result or await browse(timeout_s)
     hosts = await bridge_hosts(db_path)
     proposals = [
         await build_proposal(c, hosts, client_factory=client_factory)
-        for c in merge_records(result.records)
+        for c in merge_records(bridge_records(result.records))
     ]
+    strand_muxes = await discover_strand_muxes(
+        db_path, result.records, mux_client_factory=mux_client_factory
+    )
     seen = {p.matched_host_id for p in proposals if p.matched_host_id}
     return {
         "method": result.method,
         "error": result.error or None,
         "proposals": [p.view() for p in proposals],
+        "strand_muxes": strand_muxes,
         # Hosts not seen are listed, never touched: mDNS does not cross Tailscale
         # and the controller's LAN link flaps.
         "not_seen": sorted(str(h["id"]) for h in hosts if h["id"] not in seen),

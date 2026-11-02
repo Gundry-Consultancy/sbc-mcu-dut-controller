@@ -1,7 +1,9 @@
 """Web UI: esp-usbip-bridge discovery → proposals → apply (``/ui/twins/bridges``).
 
 The page mirrors ``/v1/bridges/*``: **Discover** browses mDNS
-``_hil-bridge._tcp`` and confirms each answer with ``GET /api/capabilities``;
+``_esp-usbip._tcp`` (+ the ``_esp-usbip-bridge`` subtype of ``_usbip._tcp``)
+and confirms each answer with ``GET /api/capabilities``, and lists
+``_i2c-strand._tcp`` strand muxes (link a bridge's mux / add a mux box);
 **Add by address** runs the same check for one address (works over Tailscale,
 where multicast does not reach). Both only *show* proposals. **Apply** creates
 one host for one ``new`` proposal after re-running the check; nothing is ever
@@ -97,6 +99,35 @@ async def bridges_probe(
         return _page(request, hil_token, principal, error="Enter an address", status_code=422)
     proposal = await bridge_discovery.probe_address(request.app.state.db_path, address)
     return _page(request, hil_token, principal, proposals=[proposal.view()], address=address)
+
+
+@router.post("/twins/bridges/strand-mux/apply")
+async def strand_mux_apply(
+    request: Request,
+    hil_token: str = Cookie(default=""),
+    interface: Annotated[str, Form()] = "",
+    aux_id: Annotated[str, Form()] = "",
+    model: Annotated[str, Form()] = "",
+    mac: Annotated[str, Form()] = "",
+) -> Response:
+    principal, denied = await _guard(request, hil_token, write=True)
+    if denied is not None:
+        return denied
+    from hil_controller import strand_mux_discovery
+
+    try:
+        aux = await strand_mux_discovery.apply_strand_mux(
+            request.app.state.db_path, interface=interface, aux_id=aux_id, model=model, mac=mac
+        )
+    except bridge_discovery.ApplyError as exc:
+        return _page(request, hil_token, principal, error=exc.detail, status_code=exc.status)
+    return _page(
+        request,
+        hil_token,
+        principal,
+        notice=f"Created strand-mux aux {aux['id']} ({aux['interface']}). "
+        "Strands were not changed: point a strand's mux_aux at it on the Hardware page.",
+    )
 
 
 @router.post("/twins/bridges/apply")
