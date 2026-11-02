@@ -1,0 +1,27 @@
+{# Bridge capabilities summary. Expects `caps` = CachedCapabilities.view(). #}
+{% if caps %}
+<div class="bridge-caps" style="margin-top:0.4rem;font-size:0.8rem;">
+  <strong>Capabilities</strong>
+  {% if caps.unknown %}
+    <span class="badge badge-gray">not fetched yet</span>
+  {% else %}
+    api <strong>{{ caps.api_version or 'pre-1.0' }}</strong>
+    {% if caps.pre_1_0 %}<span class="badge badge-warn" title="No /api/capabilities (404): only /api/info and the device list are used">pre-1.0</span>
+    {% elif not caps.compatible %}<span class="badge badge-warn">unsupported API major</span>{% endif %}
+    · fw <code>{{ caps.fw_version or '?' }}</code>
+    {% if caps.target %}· {{ caps.target }}{% endif %}
+    {% if caps.board_profile %}· {{ caps.board_profile }}{% endif %}
+    {% if caps.mac %}· <span class="mono">{{ caps.mac }}</span>{% endif %}
+    {% if caps.fetched_at %}<span class="form-hint">· fetched {{ caps.fetched_at }}</span>{% endif %}
+    {% if caps.stale %}<span class="badge badge-warn" title="{{ caps.error }}">stale (last fetch failed)</span>{% endif %}
+    {% if caps.features %}
+    <div style="margin-top:0.25rem;">
+      {% for name, f in caps.features.items() %}
+        <span class="badge {% if f.usable %}badge-ok{% else %}badge-gray{% endif %}" title="{% if f.modes %}modes: {{ f.modes|join(', ') }}{% endif %}{% if f.filesystems %}filesystems: {{ f.filesystems|join(', ') }}{% endif %}{% if f.available is sameas false %} (not available now){% endif %}">{{ name }} v{{ f.version }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endif %}
+  <span class="form-hint">— <code>GET /v1/bridges/{{ host_id }}/capabilities</code></span>
+</div>
+{% endif %}

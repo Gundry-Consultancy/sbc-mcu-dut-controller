@@ -120,6 +120,7 @@ DUT. See hil-i2c-strands for the strand model.
 | `enter_bootsel` | **rescue.** RP2040/RP2350 BOOTSEL entry: hold the bank-B press solenoid (`bootsel_channel`, `bootsel_inverted` aware), power-cycle, release; StageError when no `bootsel_channel` is mapped |
 | `picotool_rescue` | **rescue.** `picotool` on the DUT host — `action`: info / reboot_bootsel / load (staged firmware) / erase / reboot; `load`/`info` retry once via `enter_bootsel` when nothing is in BOOTSEL (`bootsel_fallback`, default true); logs `PICOTOOL_VERDICT` |
 | `esptool_rescue` | **rescue.** Enter the ROM download loader (full `enter_bootloader` ladder), then `action`: chip_id / flash_id / read_mac / erase_flash / write @ `address` (0x0); optional `before`/`after` pass-throughs (omitted = esptool defaults); logs `ESPTOOL_RESCUE_VERDICT` |
+| `bridge_rescue` | **rescue through an esp-usbip-bridge** (no USB/IP attach). `action`: info / console / reset (`mode` from the bridge's `reset.modes`) / esp_info / esp_flash / picoboot_info / picoboot_load / samba_info / samba_flash / uf2_copy, run by the bridge's own API on the DUT's `hub_port_path`. Gated on the bridge's live `GET /api/capabilities` feature versions (`console`, `flash_esp`, … >= 1); a **pre-1.0 bridge is refused** whatever its firmware. A job of only these stages never attaches the DUT. Logs `BRIDGE_RESCUE_VERDICT`, console adds `SERIAL_PROBE_VERDICT … via=bridge` |
 | `bossac_rescue` | **rescue (SAM/SAMD).** `action`: info / erase / write via `bossac` (combined `-e -w -v [-b -R]` at the app offset; `reset: false` stays in SAM-BA); `bootloader_entry: auto` reuses the 1200-touch ladder; logs `BOSSAC_VERDICT` |
 
 The proven ESP32 combined-bin order (and why) lives in **hil-author-test**;
@@ -130,6 +131,16 @@ Rescue jobs set **`params.bare: true`** so `launch_protomq` is never
 auto-inserted (no app broker), usually with `window_minutes: 0`;
 `RESCUE_PROBE_STAGES` in `bench_stages.py` is the starter probe list and
 **hil-bench-recovery** has the probe → BOOTSEL → reflash triage order.
+
+## Bridge capabilities (what a bridge-hosted DUT can do)
+
+Before choosing on-bridge stages, read `GET /v1/bridges/{host_id}/capabilities`
+(`?refresh=true` to re-fetch): `api_version` (`null` + `pre_1_0: true` = the
+bridge has no `/api/capabilities`, so only info + devices), `fw_version`,
+`target`, `board_profile`, `mac`, and `features.{name}.usable`. Decide on
+`usable` / `version`, **never on `fw_version`**. `GET /v1/bridges` lists every
+bridge host. New bridges come in through discovery proposals (see
+hil-inventory-twins), not job submission.
 
 ## Waiting well
 

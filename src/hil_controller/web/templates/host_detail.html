@@ -36,6 +36,13 @@
     <div class="form-hint">{% if hw.cpu_cores %}{{ hw.cpu_cores }}× {{ hw.cpu_model or '' }}{% endif %}{% if hw.mem_total_kb %} · {{ hw.mem_total_kb // 1024 }} MB{% endif %}{% if hw.load1 is not none %} · load {{ hw.load1 }}{% endif %}{% if hw.temp_c is not none %} · {{ hw.temp_c }}°C{% endif %}{% if hw.speed_score is not none %} · speed {{ hw.speed_score }}×{% endif %}</div>
   </div>
 </div>
+{% if bridge_caps %}
+<div class="form-panel" style="margin-bottom:1rem;">
+  {% with caps = bridge_caps, host_id = host.id %}{% include "bridge_caps.html" %}{% endwith %}
+  <a class="btn btn-sm btn-outline" href="/ui/hosts/{{ host.id }}?refresh_caps=1" style="margin-top:0.4rem;">Refresh capabilities</a>
+  <a class="btn btn-sm btn-outline" href="/ui/twins/bridges" style="margin-top:0.4rem;">Bridge discovery</a>
+</div>
+{% endif %}
 <div class="caps" style="margin-bottom:1rem;">{% for c in host.capabilities %}<span class="badge badge-gray">{{ c }}</span>{% endfor %}</div>
 
 <div class="tbl-wrap" style="margin-bottom:1.25rem;">

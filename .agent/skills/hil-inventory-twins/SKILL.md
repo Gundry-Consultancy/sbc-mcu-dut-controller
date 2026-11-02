@@ -61,10 +61,28 @@ against stale slots.
 ### 1. Make sure every host exists and is reachable
 
 - SBC/Pi hosts: `transport: ssh`. Controller itself: `transport: local`.
-- **S31 / esp-usbip-bridge:** Hosts → Add Host → Transport `esp-usbip-bridge`,
-  Address = its mDNS name (`avahi-browse -rt _usbip._tcp` → `usbip-xxxxxx.local`)
-  or IP, optional Bridge API URL, Token env var name. The host detail page
-  (`/ui/hosts/<id>`) shows whether the token variable is set on the controller.
+- **S31 / esp-usbip-bridge — discover, review, apply.** Twins → **Bridges**
+  (`/ui/twins/bridges`) or the API:
+
+  | Human (web UI) | Agent (API) |
+  |---|---|
+  | **Discover (mDNS)** — browses `_hil-bridge._tcp`, confirms each answer with `GET /api/capabilities` | `GET /v1/bridges/discover?timeout_s=3` |
+  | **Add by address** — same check for one IP / `name.local` (use this across Tailscale, and for pre-1.0 bridges, which do not advertise) | `POST /v1/bridges/probe {"address": "192.168.1.133"}` |
+  | **Apply: create host** on a `new` proposal (edit id / role / tags / token env var *name*) | `POST /v1/bridges/apply {"address", "host_id"?, "token_env"?}` |
+
+  Proposals are `new` / `known` / `moved` / `unconfirmed`; matching is by base
+  MAC (from cached capabilities), then hostname, then address, and one bridge
+  seen on Ethernet + Wi-Fi is one proposal. **Nothing is ever added, removed or
+  disabled automatically** — a bridge missing from a browse is just listed as
+  not seen (LAN flaps, multicast does not cross Tailscale). A `moved` bridge is
+  fixed by editing the host, by hand. mDNS needs the `[discovery]` extra
+  (python zeroconf) or `avahi-browse` on the controller; without either, use
+  add-by-address. Manual Hosts → Add Host (Transport `esp-usbip-bridge`,
+  Address, optional Bridge API URL, Token env var name) still works.
+- The host detail page (`/ui/hosts/<id>`) shows whether the token variable is
+  set and the bridge's capabilities (api_version, fw, board, MAC, features —
+  `pre-1.0` when it has no `/api/capabilities`; **Refresh capabilities**).
+  Agents: `GET /v1/bridges/{id}/capabilities`.
 - A UI-added host gets a transport immediately (no restart). Check the host
   detail page shows no **no transport** badge, then open its USB-IP section: a
   bridge shows its `/api/info`, devices, hubs and per-port power buttons.
@@ -121,7 +139,8 @@ Fix the scheduler's view so it matches the physical inventory:
 | Device has no/old USB IDs | Device form → USB IDs → **Learn** | `POST /v1/devices/{id}/learn-usb` |
 | Unknown USB device on a bus | Devices → **Who owns this USB device?** (searches learned IDs, iSerials, twin identities) | `POST /v1/devices/lookup-by-usb` |
 | Board removed | Device form → Status `unavailable`, Outage kind `permanent`, reason (who/when) | `PATCH /v1/devices/{id}` `{"status":"unavailable","unavailable_kind":"permanent","unavailable_reason":"…"}` |
-| New board/slot | Devices → Add Device (hub host = bridge for S31 DUTs, Power control `bridge-port`) | — (UI or topology YAML) |
+| New board/slot | Devices → Add Device (hub host = bridge for S31 DUTs, Power control `bridge-port` only behind a per-port switched hub; none on a root port) | — (UI or topology YAML) |
+| New bridge found | Twins → Bridges → Apply on its proposal | `POST /v1/bridges/apply` |
 | Sensor moved strand / channel | Hardware → Edit strand | `PUT /v1/strands/{id}` |
 
 Agents can edit a device without the form: `PATCH /v1/devices/{id}` with just

@@ -262,6 +262,9 @@ class BenchContext:
     #: The downloadable flash.log transcript is ALWAYS full verbosity regardless.
     #: Set per job via the ``log_level`` param (see docs/firmware-bench-logging.md).
     stream_log_level: str = "all"
+    #: Controller-local path of the job's firmware image. ``bridge_rescue`` stages
+    #: upload it to the bridge themselves, so it is never staged on a USB host.
+    local_firmware_path: str = ""
 
     def __post_init__(self) -> None:
         # Route both transports through the recorder so every command — esptool,
@@ -3146,6 +3149,158 @@ async def _stage_io_ws_expect(stage: dict[str, Any], ctx: BenchContext) -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# bridge_rescue: drive a bridge-hosted DUT through its bridge's own API         #
+# --------------------------------------------------------------------------- #
+
+_BRIDGE_CONSOLE_KEYS = ("dtr", "rts", "max_bytes", "port")
+
+
+async def _stage_bridge_rescue(stage: dict[str, Any], ctx: BenchContext) -> None:
+    """Rescue/flash a bridge-hosted DUT through the bridge (no USB/IP attach).
+
+    ``action``: ``info`` | ``console`` | ``reset`` (``mode``) | ``esp_info`` |
+    ``esp_flash`` | ``picoboot_info`` | ``picoboot_load`` | ``samba_info`` |
+    ``samba_flash`` | ``uf2_copy``. The DUT's busid is its ``hub_port_path``; the
+    bridge is its hub host. Before anything is sent the bridge's live
+    ``GET /api/capabilities`` must offer the matching feature (``flash_esp``,
+    ``console``, ... at version >= 1); a pre-1.0 bridge is refused whatever
+    firmware it runs. The bridge refuses rescue while the device is imported
+    over USB/IP, so jobs made only of these stages never attach it. Never
+    touches hub port power. See adapters/bridge_rescue.py.
+    """
+    import uuid
+    from pathlib import Path
+
+    from hil_controller.adapters.bridge_capabilities import fetch_capabilities
+    from hil_controller.adapters.bridge_rescue import (
+        FILE_ACTIONS,
+        BridgeRescueClient,
+        check_staging_room,
+        gate,
+        job_body,
+        staged_name,
+    )
+    from hil_controller.hosts.esp_bridge import bridge_client_of
+
+    action = str(stage.get("action") or "")
+    client = bridge_client_of(ctx.hub_transport)
+    if client is None:
+        raise StageError("bridge_rescue: the DUT's hub host is not an esp-usbip-bridge")
+    busid = str(ctx.device.get("hub_port_path") or "")
+    if not busid:
+        raise StageError("bridge_rescue: the device has no hub_port_path (its busid on the bridge)")
+    try:
+        caps = await fetch_capabilities(client)
+    except EspBridgeError as exc:
+        raise StageError(f"bridge_rescue: capabilities check failed: {exc}") from exc
+    mode = str(stage.get("mode") or "")
+    if action == "reset" and not mode:
+        raise StageError("bridge_rescue reset: 'mode' is required")
+    why = gate(caps, action, mode=mode)
+    if why:
+        raise StageError(f"bridge_rescue {action}: {why}")
+    rescue = BridgeRescueClient(client, busid)
+    ctx.log_line(
+        f"bridge_rescue: {action} on {busid} via {client.base_url} "
+        f"(api {caps.api_version}, fw {caps.fw_version})"
+    )
+    staged = ""
+    result: Any = None
+    try:
+        if action == "info":
+            result = await rescue.info()
+        elif action == "reset":
+            result = await rescue.reset(mode, port=stage.get("port"), wait_ms=stage.get("wait_ms"))
+        elif action == "console":
+            extra = {k: stage[k] for k in _BRIDGE_CONSOLE_KEYS if stage.get(k) is not None}
+            result = await rescue.console(
+                serial_baud=int(stage.get("serial_baud", 115200)),
+                pokes=stage.get("pokes") or ["enter"],
+                settle_s=float(stage.get("settle_s", 1.0)),
+                capture_s=float(stage.get("capture_s", 3.0)),
+                **extra,
+            )
+        else:
+            if action in FILE_ACTIONS:
+                path = str(stage.get("path") or ctx.local_firmware_path or "")
+                if not path:
+                    raise StageError(f"bridge_rescue {action}: no firmware file for this job")
+                try:
+                    data = Path(path).read_bytes()
+                except OSError as exc:
+                    raise StageError(f"bridge_rescue {action}: cannot read {path}: {exc}") from exc
+                room = check_staging_room(caps, len(data))
+                if room:
+                    raise StageError(f"bridge_rescue {action}: {room}")
+                staged = staged_name(uuid.uuid4().hex, path)
+                ctx.log_line(f"bridge_rescue: staging {len(data)} bytes as {staged}")
+                await rescue.stage_file(staged, data)
+            suffix, body = job_body(action, stage, staged)
+            job_id = await rescue.start_job(suffix, body)
+            ctx.log_line(f"bridge_rescue: bridge job {job_id} ({suffix})")
+            state = await rescue.wait_job(
+                job_id,
+                timeout_s=float(stage.get("timeout_s", 600)),
+                on_line=lambda ln: ctx.log_line(f"bridge job {job_id}: {ln}"),
+            )
+            result = state.get("result")
+            if state.get("state") != "done":
+                raise StageError(
+                    f"bridge_rescue {action}: bridge job {job_id} {state.get('state')}: "
+                    f"{state.get('error') or 'no error text'}"
+                )
+    except EspBridgeError as exc:
+        hint = ""
+        if exc.status == 409:
+            hint = (
+                " (the bridge refuses rescue while a USB/IP client has the device imported "
+                "or a capture/job holds it: detach it first)"
+            )
+        raise StageError(f"bridge_rescue {action}: {exc}{hint}") from exc
+    finally:
+        if staged:
+            await rescue.delete_file(staged)
+
+    text = json.dumps(result, indent=2, sort_keys=True, default=str) if result is not None else ""
+    ctx.transcript.append(
+        {
+            "at": _now_iso(),
+            "cmd": f"[bridge_rescue {action} {busid}]",
+            "exit": 0,
+            "stdout": text[:20000],
+            "stderr": "",
+        }
+    )
+    if action == "console" and isinstance(result, dict):
+        classification = str(result.get("classification") or "other")
+        out = str(result.get("text") or "")
+        nbytes = int(result.get("bytes") or len(out.encode("utf-8", errors="replace")))
+        if ctx.probe_log_path:
+            try:
+                with open(ctx.probe_log_path, "a", encoding="utf-8") as fh:
+                    fh.write(
+                        f"===== bridge console [{_now_iso()}] busid={busid} "
+                        f"classification={classification} bytes={nbytes} =====\n{out}\n"
+                    )
+            except OSError as exc:
+                ctx.log_line(f"bridge_rescue: WARNING probe asset write failed: {exc}")
+        ctx.log_line(
+            f"SERIAL_PROBE_VERDICT classification={classification} bytes={nbytes} via=bridge"
+        )
+        expect = stage.get("expect")
+        if expect:
+            patterns = [str(p) for p in (expect if isinstance(expect, list) else [expect])]
+            if not any(re.search(p, out) for p in patterns):
+                raise StageError(
+                    f"bridge_rescue console: none of {patterns} matched "
+                    f"(classification={classification})"
+                )
+    else:
+        ctx.log_line(f"bridge_rescue: {action} result: {text[:2000]}")
+    ctx.log_line(f"BRIDGE_RESCUE_VERDICT action={action} busid={busid} ok=true")
+
+
 STAGE_HANDLERS: dict[str, Handler] = {
     "write_circuitpython": write_circuitpython,
     "assert_serial": assert_serial,
@@ -3179,6 +3334,8 @@ STAGE_HANDLERS: dict[str, Handler] = {
     "picotool_rescue": _stage_picotool_rescue,
     "esptool_rescue": _stage_esptool_rescue,
     "bossac_rescue": _stage_bossac_rescue,
+    # on-bridge rescue for esp-usbip-bridge DUTs (adapters/bridge_rescue.py)
+    "bridge_rescue": _stage_bridge_rescue,
 }
 
 

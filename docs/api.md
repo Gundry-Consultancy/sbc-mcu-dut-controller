@@ -212,6 +212,48 @@ app via the RTC watchdog where an RTS-style `hard_reset` is unavailable or
 would drop a native-USB port. The web UI equivalent is `/ui/rescue/{device}`
 (see `docs/web-ui.md`). Design note: `docs/notes/board-rescue.md`.
 
+#### On-bridge rescue: `bridge_rescue` (esp-usbip-bridge DUTs)
+
+A DUT whose hub host is an esp-usbip-bridge can be rescued **through the
+bridge's own API** instead of being `usbip attach`ed and driven by host tools.
+One stage type, `bridge_rescue`, with `action`:
+
+| action | bridge endpoint | feature (>= 1) | params |
+|---|---|---|---|
+| `info` | `GET .../rescue` | `device_info` | — |
+| `console` | `POST .../console` | `console` | `pokes`, `serial_baud` (115200), `settle_s` (1), `capture_s` (3, ≤10), `dtr`, `rts`, `max_bytes`, `port`, `expect` |
+| `reset` | `POST .../reset` | `reset` + `mode` in `reset.modes` | `mode` (required), `port`, `wait_ms` |
+| `esp_info` / `esp_flash` | `esp/info`, `flash/esp` (job) | `flash_esp` | `address` (0x0), `before`, `after`, `baud`, `stub`, `verify`, `erase_all` |
+| `picoboot_info` / `picoboot_load` | `picoboot/info`, `flash/picoboot` | `flash_picoboot` | `address`, `reboot`, `erase_all`, `flash_size`, `verify` |
+| `samba_info` / `samba_flash` | `samba/info`, `flash/samba` | `flash_samba` | `offset`, `erase`, `verify`, `reset` |
+| `uf2_copy` | `flash/uf2` | `flash_uf2` | `path`, `method`, `enter_bootloader` |
+
+Endpoints are under `/api/usb/devices/{busid}/`, busid = the device's
+`hub_port_path`. Flash actions upload the job's firmware (`params.firmware.path`
+or an upload) to `PUT /api/rescue/files/{name}` (checked against
+`limits.rescue_staging_bytes`), poll `GET /api/rescue/jobs/{id}` and delete the
+staged file afterwards. Before anything is sent the stage reads the bridge's
+live `GET /api/capabilities` and refuses (StageError, nothing posted) when the
+feature is missing — **a pre-1.0 bridge (404 there) never gets these, whatever
+firmware commit it runs**. A job made *only* of `bridge_rescue` stages never
+attaches the DUT over USB/IP and opens no local serial port (the bridge
+refuses rescue with 409 while the device is imported). Output: the result JSON
+in flash.log, `BRIDGE_RESCUE_VERDICT action=… ok=true`, and for `console` a
+`SERIAL_PROBE_VERDICT … via=bridge` line plus the `serial-probe.log` asset.
+Never changes hub port power.
+
+```json
+{"script": "firmware-bench",
+ "target": {"device": {"id": "mcu-s31-d19c04-on-d19bee"}},
+ "params": {"bare": true, "window_minutes": 0, "stages": [
+   {"type": "bridge_rescue", "action": "console", "pokes": ["enter"], "capture_s": 3}
+ ]}}
+```
+
+UI: the **Through the bridge** panel on `/ui/rescue/{device}` and the
+**Route: through the DUT's bridge** option on `/ui/tools` (esptool/picotool/
+bossac actions mapped onto the bridge's; erase-only runs have no equivalent).
+
 ### Real IO stack stages (`broker: staging` / `dev-lan`)
 
 `launch_protomq`, `verify_checkin` and every `inject_*` stage only work against
@@ -384,6 +426,44 @@ curl -H "Authorization: Bearer $TOK" \
 > still-mode reconfigure is heavy and wedges if hammered. Capture one-shot — don't
 > poll it in a tight loop.
 
+
+## Bridges: discovery and capabilities (`/v1/bridges`)
+
+Contract: esp-usbip-bridge `docs/bridge-discovery-and-capabilities.md`.
+Bridges on API 1.0+ serve `GET /api/capabilities` (`api_version`, `fw`,
+`board` incl. base `mac`, `network`, `limits`, `features: {name: {version}}`) and
+advertise `_hil-bridge._tcp` over mDNS. A bridge answering **404** there is
+**pre-1.0**: only `/api/info` and its device list are used. The controller
+decides what to offer from **feature versions** (`flash_esp >= 1`, …) and
+`available: false`, never from the firmware commit; an API major other than 1
+gates every feature off.
+
+| Method | Path | |
+|---|---|---|
+| GET | `/v1/bridges` | every bridge host with its cached capabilities view |
+| GET | `/v1/bridges/{host_id}/capabilities[?refresh=true]` | one host (re-fetched when older than 5 min or asked) |
+| GET | `/v1/bridges/discover[?timeout_s=3]` | browse `_hil-bridge._tcp`, confirm each with `GET /api/capabilities`, return **proposals**; read-only |
+| POST | `/v1/bridges/probe` `{"address"}` | add-by-address: same check, one proposal (works across Tailscale) |
+| POST | `/v1/bridges/apply` `{"address", "host_id"?, "token_env"?, "role"?, "capabilities"?}` | re-checks, then creates **one** `esp-usbip-bridge` host for a `new` proposal; 409 when it matches an existing host or the id is taken, 422 when it does not confirm |
+
+Proposal `action`: `new` (apply creates the host; suggested id = the bridge's
+hostname, address = its Ethernet IP), `known` (matches a host at the same
+address), `moved` (matches by base MAC/hostname at another address — shown, never
+changed), `unconfirmed` (advertised or typed but the check failed). Matching
+order: base MAC (from the host's cached capabilities), hostname, address. One
+bridge seen on several interfaces is one proposal. Discovery never adds,
+removes or disables hosts; hosts not seen are listed in `not_seen` and left
+alone (the controller's LAN link flaps; multicast does not cross Tailscale).
+`discover`/`probe` need `inventory:read` + all pools, `apply` needs
+`inventory:write`; the capabilities reads need only a bearer token.
+
+mDNS browsing uses python `zeroconf` (`pip install -e '.[discovery]'`), else
+`avahi-browse -rpt` when on PATH, else it reports `method: unavailable` and
+add-by-address still works. The capabilities cache lives on the host row
+(`bridge_caps_*` columns, runtime only, never seeded → no topology drift); a
+failed fetch keeps the last good document marked stale and never changes the
+host's status. Web UI: **Twins → Bridges** (`/ui/twins/bridges`); host and
+USB-IP pages show `api_version`, fw, board and features.
 
 ## Physical digital twins
 

@@ -12,6 +12,58 @@
 
 <div style="max-width:900px;">
 
+  {% if bridge %}
+  {% set bc = bridge.caps %}
+  <div class="form-panel" id="through-bridge">
+    <h2>Through the bridge ({{ bridge.host_id }}, busid {{ bridge.busid or '—' }})</h2>
+    <p class="form-hint">
+      Bridge API <strong>{{ bc.api_version or 'pre-1.0' }}</strong>
+      {% if bc.fw_version %}· fw <code>{{ bc.fw_version }}</code>{% endif %}
+      {% if bc.target %}· {{ bc.target }}{% endif %}{% if bc.board_profile %} · {{ bc.board_profile }}{% endif %}
+      {% if bc.fetched_at %}· capabilities from {{ bc.fetched_at }}{% endif %}
+      {% if bc.stale %}<span class="badge badge-warn">stale: {{ bc.error }}</span>{% endif %}
+      — <a href="/ui/hosts/{{ bridge.host_id }}">host</a>
+    </p>
+    {% if bridge.actions %}
+    <p class="form-hint">
+      The bridge drives the DUT itself (<code>bridge_rescue</code> stage): no USB/IP attach, no host tools.
+      The bridge refuses these while the device is imported over USB/IP — detach first. Never changes port power.
+    </p>
+    <form method="post" action="/ui/rescue/{{ device.id }}" enctype="multipart/form-data">
+      <input type="hidden" name="rescue_action" value="bridge">
+      <div class="form-group">
+        <label for="bridge_action">Action</label>
+        <select id="bridge_action" name="bridge_action">
+          {% for a in bridge.actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
+        </select>
+        {% if 'reset' in bridge.actions %}
+        <label for="bridge_mode" style="margin-left:1rem;">Reset mode</label>
+        <select id="bridge_mode" name="bridge_mode">
+          {% for m in bridge.reset_modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+        </select>
+        {% endif %}
+      </div>
+      <div class="form-group">
+        <label>Console pokes</label>
+        <label style="display:inline-flex;gap:0.3rem;margin-right:1rem;"><input type="checkbox" name="pokes" value="enter" checked> Enter</label>
+        <label style="display:inline-flex;gap:0.3rem;margin-right:1rem;"><input type="checkbox" name="pokes" value="ctrl_c"> Ctrl-C</label>
+        <label for="b_capture_s">capture (s, ≤10)</label>
+        <input type="text" id="b_capture_s" name="capture_s" value="3" size="3">
+      </div>
+      <div class="form-group">
+        <label for="b_address">Flash address (esp_flash)</label>
+        <input type="text" id="b_address" name="address" value="0x0" size="10">
+        <label for="b_firmware" style="margin-left:1rem;">Firmware (flash/load/copy actions)</label>
+        <input type="file" id="b_firmware" name="firmware_file">
+      </div>
+      <button type="submit" class="btn btn-primary">Run through the bridge</button>
+    </form>
+    {% else %}
+    <p class="form-hint">On-bridge rescue not offered: {{ bridge.reason }}. The sections below use the USB/IP path.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="form-panel">
     <h2>Serial probe (non-destructive)</h2>
     <p class="form-hint">

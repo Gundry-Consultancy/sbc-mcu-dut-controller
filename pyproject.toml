@@ -25,6 +25,9 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.30,<2"]
+# mDNS discovery of esp-usbip-bridges (_hil-bridge._tcp). Optional: without it
+# the controller falls back to avahi-browse, else add-by-address only.
+discovery = ["zeroconf>=0.130"]
 camera = [
     "opencv-python-headless>=4.8",
     "pyzbar>=0.1.9",

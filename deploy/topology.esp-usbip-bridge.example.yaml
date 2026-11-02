@@ -14,10 +14,20 @@
 #   * serial / flashing / MSC run on the CONTROLLER after `usbip attach`
 #     (the controller needs usbip + vhci-hcd, like an arduino-ws usbip flash).
 #
-# Discovery: the bridge advertises `_usbip._tcp` (port 3240) over mDNS as
-# `usbip-xxxxxx.local`; `avahi-browse -rt _usbip._tcp` lists them. The
-# controller does not browse mDNS itself — put the hostname (resolved by the
+# Discovery: bridges on API 1.0+ advertise `_hil-bridge._tcp` (port 80, TXT
+# api/fw/target/board/mac/caps/auth) besides `_usbip._tcp` (3240). The
+# controller browses `_hil-bridge._tcp` (python zeroconf from the [discovery]
+# extra, else avahi-browse) on Twins → Bridges (`/ui/twins/bridges`, or
+# `GET /v1/bridges/discover`), confirms each one with GET /api/capabilities and
+# shows PROPOSALS; a host is only created when you apply one. Bridges it cannot
+# see (pre-1.0 firmware, or across Tailscale) are added by address the same way.
+# A YAML entry like the ones below works too: put the hostname (resolved by the
 # system's nss-mdns, as for `rpi-hil006.local`) or a static IP in `addr`.
+#
+# Feature gating: the controller reads GET /api/capabilities per bridge (cached
+# on the host row, shown on the host and USB-IP pages) and offers on-bridge
+# rescue/flashing only when e.g. `flash_esp` / `console` >= 1 — never by
+# firmware commit. A bridge answering 404 there is pre-1.0: info + devices only.
 
 hosts:
   # The controller itself: usbip client for bridge DUTs (flash/serial/MSC run here).
@@ -38,6 +48,30 @@ hosts:
     token_env: HIL_BRIDGE_TOKEN_S31
     max_concurrent_jobs: null           # per-device leases are the real constraint
     capabilities: [usbip-server, bridge-port-power, i2c-strand-mux]
+
+  # --- ESP32-S31 bridges on the bench LAN (seeded 2026-11-02) -----------------
+  # Base MAC 1c:29:04:d1:9b:ee (from GET /api/capabilities board.mac once the
+  # bridge is on API 1.0). Ethernet; Wi-Fi may come up as a second interface.
+  - id: usbip-d19bee
+    role: microcontroller-fleet
+    transport: esp-usbip-bridge
+    addr: 192.168.1.133
+    max_concurrent_jobs: null
+    capabilities: [usbip-server]
+
+  # A second S31 (base MAC 1c:29:04:d1:9c:04) about to join over Wi-Fi as a
+  # bridge of its own. It is ALSO a DUT today: plugged into usbip-d19bee's root
+  # port (busid 1-1, CP2102N) — see device mcu-s31-d19c04-on-d19bee below, which
+  # lets it be rescued/flashed through .133. Its DHCP address is unknown until
+  # it is on Wi-Fi, so addr is its mDNS name (the controller's nss-mdns resolves
+  # it); swap in the IP from its discovery proposal once it answers. Until then
+  # its capabilities show as unreachable/stale — the host is never disabled.
+  - id: usbip-d19c04
+    role: microcontroller-fleet
+    transport: esp-usbip-bridge
+    addr: usbip-d19c04.local
+    max_concurrent_jobs: null
+    capabilities: [usbip-server]
 
 auxes:
   # The bridge's I2C strand mux speaks the sbc-dut-analog-mux-api contract.
@@ -94,6 +128,24 @@ devices:
     model: esp8266
     capabilities: [arduino, wippersnapper, i2c]
     pool: public
+    status: available
+
+  # The S31 that will become bridge usbip-d19c04, as a DUT on usbip-d19bee's
+  # root port. CP2102N USB-UART (10c4:ea60); the iSerial belongs to that UART
+  # chip, not the S31. Root port (hub: null) => no switchable port power, so no
+  # power_control: rescue/reset go through the bridge's DTR/RTS reset modes.
+  # host_id: localhost = the controller is the USB/IP receiver when one is needed.
+  - id: mcu-s31-d19c04-on-d19bee
+    host_id: localhost
+    hub_host_id: usbip-d19bee
+    hub_port_path: "1-1"
+    kind: microcontroller
+    model: esp32-s31
+    flasher: esptool
+    usb: { vid: "10c4", pid: "ea60" }
+    usb_serial: 7acdcb62bcbcf011a6b3107148e9de0f
+    capabilities: [esp-usbip-bridge]
+    pool: bridge-uat
     status: available
 
 strands:

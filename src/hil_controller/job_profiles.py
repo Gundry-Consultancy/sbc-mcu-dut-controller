@@ -24,7 +24,14 @@ IO_STACK_STAGES = frozenset({"io_api_component", "io_ws_publish", "io_ws_expect"
 #: picotool/esptool rescue) — broker-independent, so no broker gating applies.
 #: Pair them with ``params.bare: true`` so a rescue job never launches protoMQ.
 RESCUE_STAGES = frozenset(
-    {"serial_probe", "enter_bootsel", "picotool_rescue", "esptool_rescue", "bossac_rescue"}
+    {
+        "serial_probe",
+        "enter_bootsel",
+        "picotool_rescue",
+        "esptool_rescue",
+        "bossac_rescue",
+        "bridge_rescue",
+    }
 )
 IO_STACK_BROKERS = frozenset({"staging", "dev-lan"})
 _IO_STAGE_RESERVED = (

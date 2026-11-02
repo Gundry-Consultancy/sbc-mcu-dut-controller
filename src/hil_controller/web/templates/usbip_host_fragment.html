@@ -55,6 +55,7 @@
     <a class="btn btn-sm btn-outline" href="/ui/hosts" title="Edit address / API URL / token env var">Edit host</a>
   </div>
   {% if bridge.info_error %}<div class="form-hint" style="margin-top:0.3rem;"><code>{{ bridge.info_error }}</code></div>{% endif %}
+  {% with caps = bridge.caps %}{% include "bridge_caps.html" %}{% endwith %}
   {% if bridge.info %}
   <details style="margin-top:0.4rem;">
     <summary style="cursor:pointer;font-size:0.78rem;color:#0d6efd;">Bridge /api/info</summary>
