@@ -102,45 +102,61 @@ def create_app(db_path: str | None = None, topology_file: str | None = None) -> 
             # auto-clear a temporary outage (network-unreachable host, or a wedge
             # that recovered out-of-band) once the device re-enumerates. Guarded by
             # a short timeout so a still-down host can't stall the reconcile tick.
-            async def _presence_probe(device: dict) -> bool:
+            async def _presence_probe(device: dict) -> tuple[bool, str | None]:
                 # Healthy = the device's by-path node enumerates AND dmesg shows no
                 # recent USB error storm. Validates a flagged device before we'd keep
                 # returning it unavailable: if it's actually healthy, the reconciler
                 # clears it. Under on-demand power an idle DUT is OFF, so a device with
                 # a solenoid channel is validated ACTIVELY (power on → check → off);
                 # a channel-less DUT (assumed always-on) is checked passively.
+                # Each "absent" answer carries the reason, which the reconciler
+                # stores as the device's unavailable_reason.
                 if host_registry is None:
-                    return False
+                    return False, None
                 host_id = device.get("hub_host_id") or device.get("host_id")
                 node = host_recovery.presence_node(device)
                 channel = device.get("solenoid_channel")
                 if not host_id:
-                    return False
+                    return False, "presence probe: device has no host"
                 try:
                     transport = host_registry.transport_for(host_id)
                 except KeyError:
-                    return False
+                    return False, f"presence probe: host {host_id} is not in the registry"
                 bridge = bridge_client_of(transport)
                 if bridge is not None:
                     # esp-usbip-bridge: HTTP presence by busid (active when the
                     # DUT is on bridge port power), no by-path node or dmesg.
-                    return await host_recovery.validate_bridge_presence(bridge, device)
+                    busid = device.get("hub_port_path")
+                    if not busid:
+                        return False, f"presence probe: no hub_port_path on bridge {host_id}"
+                    if await host_recovery.validate_bridge_presence(bridge, device):
+                        return True, None
+                    return False, f"not detected on bridge {host_id} port {busid}"
                 if node is None:
                     # An SBC has no USB node — the host being reachable IS the
                     # presence signal. Anything else nodeless can't be probed.
                     if device.get("kind") == "sbc":
                         try:
-                            return bool(await transport.healthcheck())
+                            if await transport.healthcheck():
+                                return True, None
                         except Exception:  # noqa: BLE001 — unreachable host
-                            return False
-                    return False
+                            pass
+                        return False, f"host {host_id} unreachable"
+                    return False, "presence probe: no serial_port or hub_port_path to check"
                 if channel is not None:
-                    return await host_recovery.validate_presence_active(
+                    if await host_recovery.validate_presence_active(
                         transport, channel=int(channel), node=node
+                    ):
+                        return True, None
+                    return False, (
+                        f"{node} not present on {host_id} after powering solenoid channel {channel}"
                     )
                 if not await host_recovery._node_present(transport, node):
-                    return False
-                return await host_recovery.dmesg_usb_error_count(transport) == 0
+                    return False, f"{node} not present on {host_id}"
+                errors = await host_recovery.dmesg_usb_error_count(transport)
+                if errors:
+                    return False, f"{errors} recent USB errors in {host_id} dmesg"
+                return True, None
 
             reconciler = AvailabilityReconciler(
                 db_path=_db_path, probe=_presence_probe, host_reboot_fn=_reboot_host
