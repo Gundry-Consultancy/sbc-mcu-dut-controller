@@ -218,3 +218,53 @@ async def test_full_budget_then_steady_cadence(db_path):
         db_path, probe=_always, max_attempts=3, window_s=180, steady_retry_s=900, now=_t(1020)
     )
     assert (await _row(db_path, "d1"))["status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_bare_false_keeps_existing_reason(db_path):
+    await _seed(db_path, device_id="d1")
+    await reconcile_once(db_path, probe=_never, max_attempts=3, window_s=180, now=_t(0))
+
+    assert (await _row(db_path, "d1"))["unavailable_reason"] == "wedged"
+
+
+@pytest.mark.asyncio
+async def test_probe_reason_replaces_stale_reason(db_path):
+    """A probe that explains the absence overwrites the reason that first flagged it."""
+
+    async def _absent(_device):
+        return False, "not detected on bridge b1 port 1-1.1"
+
+    await _seed(db_path, device_id="d1")
+    await reconcile_once(db_path, probe=_absent, max_attempts=3, window_s=180, now=_t(0))
+
+    row = await _row(db_path, "d1")
+    assert row["status"] == "unavailable"
+    assert row["unavailable_reason"] == "not detected on bridge b1 port 1-1.1"
+    assert row["retry_attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tuple_success_heals(db_path):
+    async def _present(_device):
+        return True, None
+
+    await _seed(db_path, device_id="d1")
+    await reconcile_once(db_path, probe=_present, max_attempts=3, window_s=180, now=_t(0))
+
+    row = await _row(db_path, "d1")
+    assert row["status"] == "available"
+    assert row["unavailable_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_probe_exception_records_reason(db_path):
+    async def _boom(_device):
+        raise RuntimeError("ssh timed out")
+
+    await _seed(db_path, device_id="d1")
+    await reconcile_once(db_path, probe=_boom, max_attempts=3, window_s=180, now=_t(0))
+
+    row = await _row(db_path, "d1")
+    assert row["unavailable_reason"] == "presence probe error: ssh timed out"
+    assert row["retry_attempts"] == 1

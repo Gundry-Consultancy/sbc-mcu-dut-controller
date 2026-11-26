@@ -28,18 +28,29 @@ from hil_controller.db.connection import get_db, now_iso
 log = logging.getLogger(__name__)
 
 # An async presence probe: "is this device actually here right now?".
-Probe = Callable[[dict], Awaitable[bool]]
+# It returns either a bare bool, or ``(present, reason)`` where ``reason`` says
+# why the device is absent. A reason replaces the stored ``unavailable_reason``,
+# so callers see the latest finding instead of whatever first flagged the device.
+ProbeOutcome = bool | tuple[bool, str | None]
+Probe = Callable[[dict], Awaitable[ProbeOutcome]]
 
 
 async def _default_probe(device: dict) -> bool:
-    """Stub presence probe — always reports absent.
+    """Fallback probe for headless runs and tests — always reports absent.
 
-    TODO: the real probe checks whether the device's ``serial_port`` /
-    ``hub_port_path`` enumerates on its host (e.g. the ``/dev/serial/by-path``
-    node exists), per docs/device-availability.md "Presence probe". Wired to the
-    bench transport in a later increment.
+    The bench probe (by-path node / bridge busid / dmesg, see
+    docs/device-availability.md "Presence probe") is built in ``main.py`` from
+    the host registry and passed in as ``probe=``.
     """
     return False
+
+
+def _outcome(result: ProbeOutcome) -> tuple[bool, str | None]:
+    """Normalise a probe result to ``(present, reason)``."""
+    if isinstance(result, tuple):
+        present, reason = result
+        return bool(present), (reason or None)
+    return bool(result), None
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -83,10 +94,10 @@ async def reconcile_once(
             continue
 
         try:
-            healed = await probe(device)
-        except Exception:  # a probe blowing up is a failed attempt, not a crash
+            healed, reason = _outcome(await probe(device))
+        except Exception as exc:  # a probe blowing up is a failed attempt, not a crash
             log.exception("availability probe raised for device %s", device.get("id"))
-            healed = False
+            healed, reason = False, f"presence probe error: {exc}"
 
         async with get_db(db_path) as db:
             if healed:
@@ -106,10 +117,14 @@ async def reconcile_once(
                 else:
                     delay = availability.backoff(window_s=window_s, max_attempts=max_attempts)
                 retry_after = (now + delay).isoformat()
+                # A probe that says *why* the device is absent replaces the stored
+                # reason (e.g. a stale "host unreachable" once the host is back but
+                # the DUT is unplugged); a bare False leaves it as it was.
                 await db.execute(
                     "UPDATE devices SET retry_attempts = retry_attempts + 1, "
-                    "retry_after = ?, last_checked_at = ? WHERE id = ?",
-                    (retry_after, now_iso(), device["id"]),
+                    "retry_after = ?, last_checked_at = ?, "
+                    "unavailable_reason = COALESCE(?, unavailable_reason) WHERE id = ?",
+                    (retry_after, now_iso(), reason, device["id"]),
                 )
             await db.commit()
 
