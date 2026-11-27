@@ -114,6 +114,7 @@ def test_health_reports_backend_metadata(running_server):
     assert body["illuminator"]["kind"] == "null"
     assert body["illuminator"]["available"] is False
     assert body["illuminator"]["brightness"] == 0
+    assert body["illuminator"]["max_brightness"] == 255
 
 
 def test_snapshot_returns_jpeg(running_server):
@@ -223,6 +224,74 @@ def test_post_illuminator_clamps_out_of_range(running_server):
         body = json.loads(r.read())
     assert body["illuminator"]["brightness"] == 255
     assert illum.get_brightness() == 255
+
+
+def _post_brightness(port: int, value: int) -> dict:
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/illuminator",
+        data=json.dumps({"brightness": value}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=2) as r:
+        return json.loads(r.read())
+
+
+def test_post_illuminator_respects_max_brightness(running_server):
+    port, _backend, illum = running_server
+    illum.max_brightness = 102  # 40% bench ceiling
+    assert _post_brightness(port, 255)["illuminator"]["brightness"] == 102
+    assert illum.get_brightness() == 102
+    assert _post_brightness(port, 50)["illuminator"]["brightness"] == 50
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
+        assert json.loads(r.read())["illuminator"]["max_brightness"] == 102
+
+
+def test_build_illuminator_from_args_applies_cap():
+    from argparse import Namespace
+
+    from server import build_illuminator_from_args
+
+    illum = build_illuminator_from_args(
+        Namespace(no_neopixel=True, neopixel_pin="D13", neopixel_count=32, max_brightness=102)
+    )
+    assert illum.max_brightness == 102
+    illum.set_brightness(200)
+    assert illum.get_brightness() == 102
+    illum.set_brightness(-5)
+    assert illum.get_brightness() == 0
+
+
+def test_max_brightness_arg_range():
+    import argparse
+
+    from server import _brightness_arg
+
+    assert _brightness_arg("102") == 102
+    for bad in ("-1", "256"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _brightness_arg(bad)
+
+
+def test_neopixel_illuminator_clamps_to_max_brightness():
+    from illuminators.neopixel_illuminator import NeoPixelIlluminator
+
+    class FakeStrip:
+        brightness = 0.0
+
+        def fill(self, _color):
+            pass
+
+        def show(self):
+            pass
+
+    # Bypass __init__ (no Blinka / rpi_ws281x in CI); exercise only the clamp path.
+    illum = NeoPixelIlluminator.__new__(NeoPixelIlluminator)
+    illum._strip, illum._color, illum._brightness = FakeStrip(), (255, 255, 255), 0
+    illum.max_brightness = 102
+    illum.set_brightness(255)
+    assert illum.get_brightness() == 102
+    assert illum._strip.brightness == pytest.approx(0.4)
 
 
 def test_post_lens_window_sets_af_window(running_server):

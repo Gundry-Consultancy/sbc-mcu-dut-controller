@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -119,11 +120,7 @@ class SnapshotHandler(BaseHTTPRequestHandler):
                 "height": backend.cfg.height,
                 "fps": backend.cfg.fps,
                 "lens": backend.get_lens(),
-                "illuminator": {
-                    "kind": illuminator.kind,
-                    "available": illuminator.is_available(),
-                    "brightness": illuminator.get_brightness(),
-                },
+                "illuminator": illuminator_state(illuminator),
             }
         ).encode()
         self.send_response(200)
@@ -198,16 +195,7 @@ class SnapshotHandler(BaseHTTPRequestHandler):
             self.send_error(400, f"brightness must be int: {exc}")
             return
         illuminator.set_brightness(brightness)
-        self._send_json(
-            {
-                "ok": True,
-                "illuminator": {
-                    "kind": illuminator.kind,
-                    "available": illuminator.is_available(),
-                    "brightness": illuminator.get_brightness(),
-                },
-            }
-        )
+        self._send_json({"ok": True, "illuminator": illuminator_state(illuminator)})
 
     def _send_json(self, payload: dict) -> None:
         body = json.dumps(payload).encode()
@@ -245,12 +233,32 @@ def build_backend(args) -> Backend:
     raise BackendUnavailable(f"unknown backend: {args.backend}")
 
 
+def illuminator_state(illuminator: Illuminator) -> dict:
+    """The illuminator block reported by /health and POST /illuminator."""
+    return {
+        "kind": illuminator.kind,
+        "available": illuminator.is_available(),
+        "brightness": illuminator.get_brightness(),
+        "max_brightness": illuminator.max_brightness,
+    }
+
+
+def _brightness_arg(value: str) -> int:
+    v = int(value)
+    if not 0 <= v <= 255:
+        raise argparse.ArgumentTypeError(f"max brightness must be 0..255, got {v}")
+    return v
+
+
 def build_illuminator_from_args(args) -> Illuminator:
     if args.no_neopixel:
-        return NullIlluminator()
-    return build_illuminator(
-        kind="neopixel", pin=args.neopixel_pin, count=args.neopixel_count
-    )
+        illuminator: Illuminator = NullIlluminator()
+    else:
+        illuminator = build_illuminator(
+            kind="neopixel", pin=args.neopixel_pin, count=args.neopixel_count
+        )
+    illuminator.max_brightness = args.max_brightness
+    return illuminator
 
 
 def main() -> None:
@@ -273,7 +281,7 @@ def main() -> None:
     ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--fps", type=int, default=5)
     ap.add_argument("--jpeg-quality", type=int, default=85)
-    # Illuminator: NeoPixel attached on Adafruit STEMMA 3-pin (default D5,
+    # Illuminator: NeoPixel attached on Adafruit STEMMA 3-pin (default D18,
     # 32 pixels). Override per-host or set --no-neopixel to disable.
     ap.add_argument(
         "--neopixel-pin",
@@ -285,6 +293,15 @@ def main() -> None:
         ),
     )
     ap.add_argument("--neopixel-count", type=int, default=32)
+    ap.add_argument(
+        "--max-brightness",
+        type=_brightness_arg,
+        default=_brightness_arg(os.environ.get("HIL_NEOPIXEL_MAX_BRIGHTNESS", "255")),
+        help=(
+            "ceiling (0..255) every illuminator request is clamped to, e.g. 102 = 40%% "
+            "(default $HIL_NEOPIXEL_MAX_BRIGHTNESS or 255)"
+        ),
+    )
     ap.add_argument(
         "--no-neopixel",
         action="store_true",

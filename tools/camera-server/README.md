@@ -71,8 +71,14 @@ hosts without a NeoPixel ring (e.g. **rpi-hil006**, imx708) run with
 server.py [--port 8080] [--backend auto|picamera2|v4l2]
           [--device /dev/video0] [--camera-num 0]
           [--width 0] [--height 0] [--fps 5] [--jpeg-quality 85]
-          [--neopixel-pin D5] [--neopixel-count 32] [--no-neopixel]
+          [--neopixel-pin D18] [--neopixel-count 32] [--no-neopixel]
+          [--max-brightness 255]
 ```
+
+The usual way to install all of this on a Pi bench host is `scripts/setup-hil-host.sh`
+with `HIL_CAMERA_SERVER=1` (plus `HIL_CAMERA_OVERLAY=imx519` and
+`HIL_CAMERA_NEOPIXEL=1 HIL_NEOPIXEL_PIN=… HIL_NEOPIXEL_MAX_BRIGHTNESS=…` as needed);
+it writes the host-specific `hil-camera.service`.
 
 ## Illuminator (NeoPixel ring)
 
@@ -81,15 +87,17 @@ The server can drive a NeoPixel ring attached to the host — useful for lightin
 - `--neopixel-pin D18` — Blinka board pin name. `rpi_ws281x` only supports a fixed set: **D12, D13, D18, D19, D21** (PWM/PCM) and **D10** (SPI). Other pins (including D5/D6 on common Adafruit bonnets) fail at `ws2811_init` with "Selected GPIO not possible" — bridge the ring's signal line to one of the supported GPIOs.
 - `--neopixel-count 32` — pixel count in the ring; 12/16/24/32 are common.
 - `--no-neopixel` — force-disable; useful on hosts without the ring or when running unprivileged.
+- `--max-brightness 255` — host-wide ceiling (0..255) every `POST /illuminator` is clamped to, whatever the client asks for; e.g. `102` keeps a ring at ≤ 40%. Defaults to `$HIL_NEOPIXEL_MAX_BRIGHTNESS`, else 255. `/health` reports it as `illuminator.max_brightness`.
 
-Dependencies on the camera host:
+The default `neopixel` library uses DMA/PWM and requires root, and the PWM pins (D12/D13/D18/D19) share the PWM block with the onboard analog audio (`dtparam=audio=off`). `setup-hil-host.sh` with `HIL_CAMERA_NEOPIXEL=1` handles all of it: it installs `adafruit-blinka`, `adafruit-circuitpython-neopixel` and `rpi_ws281x` into `/opt/hil/venv`, runs the unit as root from that venv (system site packages keep apt's `picamera2` importable), disables onboard audio for PWM pins, and passes `HIL_NEOPIXEL_PIN` / `HIL_NEOPIXEL_COUNT` / `HIL_NEOPIXEL_MAX_BRIGHTNESS`. (`neopixel_spi` on GPIO10 would stay unprivileged but is not wired in this server.)
+
+Example — rpi-hil003 (rpi-displays replacement, ring on GPIO13, 40% cap):
 
 ```bash
-sudo apt install -y python3-pip
-sudo pip3 install --break-system-packages adafruit-blinka adafruit-circuitpython-neopixel
+sudo HIL_CAMERA_SERVER=1 HIL_CAMERA_OVERLAY=imx519 HIL_CAMERA_NEOPIXEL=1 \
+     HIL_NEOPIXEL_PIN=D13 HIL_NEOPIXEL_MAX_BRIGHTNESS=102 HIL_SOLENOID_HUB=1 \
+     bash scripts/setup-hil-host.sh pi ~/rpi-hil-fleet.pub
 ```
-
-The default `neopixel` library uses DMA/PWM and requires root. The `hil-camera.service` unit runs as `pi`; switch to `User=root` on hosts where the illuminator is in use, or use `neopixel_spi` on GPIO10 to stay unprivileged (not yet wired in this server).
 
 ## `/?full=1` snapshot
 
@@ -119,4 +127,4 @@ The `/stream` endpoint avoids re-sending identical frames by waiting for a new t
 
 ## IMX519 autofocus footnote
 
-Pi OS ships an `imx519.json` tuning file with no `rpi.af` algorithm block — but the libcamera IPA library does have the AF algorithm code compiled in. Symptom: `set_controls({"AfMode": Continuous})` emits `WARN IPARPI ipa_base.cpp: Could not set AF_MODE - no AF algorithm` and the lens never moves. `tuning/imx519-af-patch.py` adds an AF block (lens map `[0.0, 0, 32.0, 1023]`, matching the Arducam IMX519 16MP module) and continuous AF starts working immediately on next libcamera open. The patch is idempotent; the original tuning is saved as `imx519.json.preaf`.
+The IMX519 is not auto-detected by `camera_auto_detect=1`: it needs `dtoverlay=imx519` in an `[all]` section of `config.txt` (`HIL_CAMERA_OVERLAY=imx519` adds it and runs this patch). Pi OS ships an `imx519.json` tuning file with no `rpi.af` algorithm block — but the libcamera IPA library does have the AF algorithm code compiled in. Symptom: `set_controls({"AfMode": Continuous})` emits `WARN IPARPI ipa_base.cpp: Could not set AF_MODE - no AF algorithm` and the lens never moves. `tuning/imx519-af-patch.py` adds an AF block (lens map `[0.0, 0, 32.0, 1023]`, matching the Arducam IMX519 16MP module) and continuous AF starts working immediately on next libcamera open. The patch is idempotent; the original tuning is saved as `imx519.json.preaf`.

@@ -25,12 +25,23 @@
 #
 # OPTIONAL capabilities (opt in via env var):
 #   HIL_SOLENOID_HUB=1        Install Blinka + MCP23017 libs and deploy the solenoid
-#                             CLI to /opt/hil (controls a USB hub's power buttons).
+#                             CLI to /opt/hil (controls a USB hub's power buttons),
+#                             plus ~/turn_on.sh ~/turn_off.sh ~/all_on.sh ~/all_off.sh.
 #     HIL_SOLENOID_I2C_ADDRESS=0x20   MCP23017 address (A0/A1/A2 jumpers; default 0x20).
+#     HIL_SOLENOID_CHANNELS="0 1 2 3 4 5 6 7"   channels ~/all_on.sh pulses.
 #   HIL_CAMERA_SERVER=1       Install picamera2/opencv + deploy the snapshot server
 #                             (tools/camera-server) as hil-camera.service on :8080.
-#     HIL_CAMERA_NEOPIXEL=1   Drive a NeoPixel illuminator ring (needs root + a ring).
+#     HIL_CAMERA_OVERLAY=imx519   dtoverlay for a sensor the firmware can't auto-detect
+#                             (added under [all]); imx519 also gets the AF tuning patch.
+#     HIL_CAMERA_NEOPIXEL=1   Drive a NeoPixel illuminator ring (unit runs as root from
+#                             /opt/hil/venv; onboard audio is disabled for PWM pins).
+#       HIL_NEOPIXEL_PIN=D18          data pin (rpi_ws281x: D10 D12 D13 D18 D19 D21).
+#       HIL_NEOPIXEL_COUNT=32         pixels in the ring.
+#       HIL_NEOPIXEL_MAX_BRIGHTNESS=255   server-side ceiling (0..255; 102 = 40%).
 #   HIL_USE_DWC2=0|1          Force the mainline dwc2 USB driver (default: on for Pi Zero).
+#   HIL_USBIP_CLIENT=0|1      Load vhci-hcd (usbip client) at boot (default: off on a
+#                             Raspberry Pi DUT host, where it renumbers the bench USB bus).
+#   HIL_WORK_ON_DISK=0|1      Bind /tmp/hil onto ~/hil-work (default: on below 1 GiB RAM).
 #
 # Group → device mapping (Linux):
 #   gpio    → /dev/gpiochip*   (GPIO, bit-bang 1-wire)
@@ -194,6 +205,21 @@ fi
 # HIL_USE_DWC2=0/1 always wins. Takes effect on the next reboot.
 MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
 case "$MODEL" in *Zero*) IS_ZERO=1 ;; *) IS_ZERO=0 ;; esac
+CONFIG_TXT=/boot/firmware/config.txt
+[[ -f "$CONFIG_TXT" ]] || CONFIG_TXT=/boot/config.txt
+# config.txt helpers. A line only applies to every board when it sits before the first
+# conditional section or under [all]; stock Pi OS images already carry lines such as
+# `dtoverlay=dwc2,dr_mode=host` under [cm5], which must NOT count as "already present".
+_cfg_all_has() {  # <ERE> — true if an active line matching ERE applies to all boards
+    [[ -f "$CONFIG_TXT" ]] || return 1
+    awk -v re="$1" 'BEGIN { s = 1 }
+        /^[[:space:]]*\[/ { s = ($0 ~ /^[[:space:]]*\[all\]/); next }
+        s && $0 ~ re { f = 1 }
+        END { exit !f }' "$CONFIG_TXT"
+}
+_cfg_all_append() {  # <line> <comment> — append under an explicit [all] section
+    printf '\n[all]\n# Added by setup-hil-host.sh: %s\n%s\n' "$2" "$1" >> "$CONFIG_TXT"
+}
 if [[ -n "${HIL_USE_DWC2:-}" ]]; then
     USE_DWC2="$HIL_USE_DWC2"
 elif [[ "$IS_ZERO" == "1" ]]; then
@@ -203,14 +229,12 @@ else
     USE_DWC2=0
 fi
 if [[ "$USE_DWC2" == "1" ]]; then
-    CONFIG_TXT=/boot/firmware/config.txt
-    [[ -f "$CONFIG_TXT" ]] || CONFIG_TXT=/boot/config.txt
     if [[ -f "$CONFIG_TXT" ]]; then
-        if grep -qE '^[[:space:]]*dtoverlay=dwc2' "$CONFIG_TXT"; then
+        if _cfg_all_has '^[[:space:]]*dtoverlay=dwc2'; then
             echo "  dwc2 overlay already present in $CONFIG_TXT"
         else
-            printf '\n# Added by setup-hil-host.sh: mainline USB driver (robust + rebindable)\ndtoverlay=dwc2,dr_mode=host\n' >> "$CONFIG_TXT"
-            echo "  dwc2 overlay appended to $CONFIG_TXT — REBOOT required to take effect"
+            _cfg_all_append "dtoverlay=dwc2,dr_mode=host" "mainline USB driver (robust + rebindable)"
+            echo "  dwc2 overlay appended under [all] in $CONFIG_TXT — REBOOT required to take effect"
         fi
     else
         echo "  WARNING: no config.txt found (/boot/firmware or /boot) — skipping dwc2" >&2
@@ -279,7 +303,9 @@ mkdir -p "$SSH_DIR"
 chmod 700 "$SSH_DIR"
 chown "$HIL_USER:$HIL_USER" "$SSH_DIR"
 
-PUBKEY="$(cat "$PUBKEY_FILE")"
+# Strip CR: a .pub saved on Windows (CRLF) otherwise never matches the existing line
+# and gets appended again on every run.
+PUBKEY="$(tr -d '\r' < "$PUBKEY_FILE")"
 if grep -qF "$PUBKEY" "$AUTH_KEYS" 2>/dev/null; then
     echo "  Key already present in $AUTH_KEYS"
 else
@@ -315,6 +341,8 @@ if python3 -c "import esptool,glob,os,sys; p=os.path.dirname(esptool.__file__); 
     echo "  esptool already present + complete ($(python3 -m esptool version 2>/dev/null | head -1))"
 else
     apt-get remove -y -qq esptool >/dev/null 2>&1 || true   # remove broken apt esptool if present
+    # Fresh Pi OS Lite (trixie) images have no pip at all.
+    command -v pip3 >/dev/null 2>&1 || _apt_install python3-pip || true
     if pip3 install --break-system-packages -q --upgrade esptool >/dev/null 2>&1 || pip3 install -q --upgrade esptool >/dev/null 2>&1; then
         echo "  esptool installed (pip)"
     else
@@ -478,6 +506,21 @@ PYVERIFY
         install -m 0755 "$SRC_DIR/scripts/solenoid_hub_cli.py" /opt/hil/solenoid_hub_cli.py
         install -m 0644 "$SRC_DIR/vendor/hil-detection/usb_hub.py" /opt/hil/usb_hub.py
         echo "  solenoid CLI + driver deployed to /opt/hil"
+        # Operator bench scripts (rpi-displays layout): ~/turn_on.sh <ch>, ~/turn_off.sh <ch>,
+        # ~/all_on.sh, ~/all_off.sh -> /opt/hil. turn_*.sh find the CLI next to their real path.
+        install -m 0755 "$SRC_DIR/scripts/turn_on.sh" /opt/hil/turn_on.sh
+        install -m 0755 "$SRC_DIR/scripts/turn_off.sh" /opt/hil/turn_off.sh
+        SOLENOID_CHANNELS="${HIL_SOLENOID_CHANNELS:-0 1 2 3 4 5 6 7}"
+        printf '%s\n' '#!/usr/bin/env bash' '# Managed by setup-hil-host.sh — send OFF to every solenoid-hub channel.' \
+            'exec python3 /opt/hil/solenoid_hub_cli.py all_off "$@"' > /opt/hil/all_off.sh
+        printf '%s\n' '#!/usr/bin/env bash' '# Managed by setup-hil-host.sh — pulse every solenoid-hub channel ON.' \
+            "for ch in $SOLENOID_CHANNELS; do /opt/hil/turn_on.sh \"\$ch\"; sleep 0.3; done" > /opt/hil/all_on.sh
+        chmod 0755 /opt/hil/all_on.sh /opt/hil/all_off.sh
+        for s in turn_on turn_off all_on all_off; do
+            ln -sfn "/opt/hil/$s.sh" "$HOME_DIR/$s.sh"
+            chown -h "$HIL_USER:$HIL_USER" "$HOME_DIR/$s.sh"
+        done
+        echo "  bench scripts: ~/turn_on.sh ~/turn_off.sh ~/all_on.sh ~/all_off.sh -> /opt/hil (channels: $SOLENOID_CHANNELS)"
     else
         echo "  WARNING: solenoid_hub_cli.py not found next to this script — deploy /opt/hil manually" >&2
     fi
@@ -500,7 +543,51 @@ if [[ "${HIL_CAMERA_SERVER:-0}" == "1" ]]; then
         install -d -m 0755 "$CAM_DST"
         cp -r "$SRC_DIR/tools/camera-server/." "$CAM_DST/" 2>/dev/null || true
         chown -R "$HIL_USER:$HIL_USER" "$CAM_DST"
-        NP_ARG="--no-neopixel"; [[ "${HIL_CAMERA_NEOPIXEL:-0}" == "1" ]] && NP_ARG=""
+        # Sensors the firmware cannot auto-detect (e.g. Arducam IMX519) need their overlay
+        # under [all]: HIL_CAMERA_OVERLAY=imx519. Pi OS ships imx519.json WITHOUT an rpi.af
+        # block ("no AF algorithm", lens never moves), so graft Arducam's AF block in too.
+        if [[ -n "${HIL_CAMERA_OVERLAY:-}" ]]; then
+            if _cfg_all_has "^[[:space:]]*dtoverlay=${HIL_CAMERA_OVERLAY}([,[:space:]]|$)"; then
+                echo "  camera overlay ${HIL_CAMERA_OVERLAY} already present in $CONFIG_TXT"
+            elif [[ -f "$CONFIG_TXT" ]]; then
+                _cfg_all_append "dtoverlay=${HIL_CAMERA_OVERLAY}" "CSI camera sensor (not auto-detected)"
+                echo "  camera overlay ${HIL_CAMERA_OVERLAY} appended under [all] — REBOOT required"
+            fi
+            if [[ "$HIL_CAMERA_OVERLAY" == "imx519" ]]; then
+                python3 "$CAM_DST/tuning/imx519-af-patch.py" 2>&1 | sed 's/^/  /' \
+                    || echo "  WARNING: imx519 AF tuning patch failed" >&2
+            fi
+        fi
+        # NeoPixel illuminator (HIL_CAMERA_NEOPIXEL=1): rpi_ws281x drives PWM/DMA, which
+        # needs root, so the unit runs as root from the /opt/hil venv (system site packages
+        # keep apt's picamera2 importable). Pin/count/cap are per host; the cap
+        # (0..255, e.g. 102 = 40%) is enforced server-side whatever a client requests.
+        CAM_USER="$HIL_USER"; CAM_PY=/usr/bin/python3; NP_ARG="--no-neopixel"
+        if [[ "${HIL_CAMERA_NEOPIXEL:-0}" == "1" ]]; then
+            NP_PIN="${HIL_NEOPIXEL_PIN:-D18}"
+            NP_VENV=/opt/hil/venv
+            if [[ ! -x "$NP_VENV/bin/python" ]]; then
+                install -d -m 0755 /opt/hil
+                apt-get install -y -qq python3-venv >/dev/null 2>&1 || true
+                python3 -m venv --system-site-packages "$NP_VENV" 2>/dev/null || true
+            fi
+            # --ignore-installed for the same reason as the solenoid venv above.
+            "$NP_VENV/bin/pip" install -q --upgrade --ignore-installed \
+                adafruit-blinka adafruit-circuitpython-neopixel rpi_ws281x >/dev/null 2>&1 \
+                && echo "  neopixel + rpi_ws281x installed in $NP_VENV" \
+                || echo "  WARNING: could not install neopixel libs into $NP_VENV" >&2
+            CAM_USER=root; CAM_PY="$NP_VENV/bin/python"
+            NP_ARG="--neopixel-pin $NP_PIN --neopixel-count ${HIL_NEOPIXEL_COUNT:-32} --max-brightness ${HIL_NEOPIXEL_MAX_BRIGHTNESS:-255}"
+            # PWM pins share the PWM block with the onboard analog audio driver.
+            case "$NP_PIN" in
+              D12|D13|D18|D19)
+                if [[ -f "$CONFIG_TXT" ]] && grep -qE '^[[:space:]]*dtparam=audio=on' "$CONFIG_TXT"; then
+                    sed -i 's/^\([[:space:]]*\)dtparam=audio=on/\1dtparam=audio=off  # setup-hil-host.sh: NeoPixel on PWM pin/' "$CONFIG_TXT"
+                    echo "  onboard audio disabled (NeoPixel on PWM pin $NP_PIN) — REBOOT required"
+                fi ;;
+            esac
+            echo "  NeoPixel illuminator: pin $NP_PIN, ${HIL_NEOPIXEL_COUNT:-32} px, max brightness ${HIL_NEOPIXEL_MAX_BRIGHTNESS:-255}/255"
+        fi
         cat > /etc/systemd/system/hil-camera.service <<EOF
 # Managed by setup-hil-host.sh — HIL camera snapshot server (IPCamera source on :8080).
 [Unit]
@@ -509,9 +596,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=$HIL_USER
+User=$CAM_USER
 WorkingDirectory=$CAM_DST
-ExecStart=/usr/bin/python3 $CAM_DST/server.py --port 8080 $NP_ARG
+ExecStart=$CAM_PY $CAM_DST/server.py --port 8080 $NP_ARG
 Restart=on-failure
 RestartSec=10
 
@@ -519,8 +606,10 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        systemctl enable --now hil-camera 2>/dev/null \
-            && echo "  hil-camera.service started (snapshots on :8080)" \
+        # restart, not just `enable --now`: on a re-run the service is already up and
+        # would keep serving the OLD code and unit until the next reboot.
+        systemctl enable hil-camera 2>/dev/null && systemctl restart hil-camera 2>/dev/null \
+            && echo "  hil-camera.service (re)started (snapshots on :8080)" \
             || echo "  WARNING: could not start hil-camera.service — check 'journalctl -u hil-camera'" >&2
     else
         echo "  WARNING: tools/camera-server not found next to this script — deploy manually" >&2
@@ -550,10 +639,23 @@ else
 fi
 
 # Load the usbip kernel modules now and persist them across reboots.
-modprobe vhci-hcd 2>/dev/null && echo "  vhci-hcd loaded (usbip client)" || true
+# vhci-hcd (client side) is NOT loaded at boot on Raspberry Pi DUT hosts: it registers
+# two USB buses, and on a Pi whose USB controller is a module (dwc2) it can register
+# first, renumbering the bench bus (1-1.x -> 3-1.x) so every stored hub_port_path /
+# usbip busid stops matching. Pi DUT hosts are usbip SERVERS; the controller is the
+# client. HIL_USBIP_CLIENT=1/0 overrides (default: 0 on a Raspberry Pi, else 1).
+case "$MODEL" in *"Raspberry Pi"*) USBIP_CLIENT_DEFAULT=0 ;; *) USBIP_CLIENT_DEFAULT=1 ;; esac
+USBIP_CLIENT="${HIL_USBIP_CLIENT:-$USBIP_CLIENT_DEFAULT}"
 modprobe usbip-host 2>/dev/null && echo "  usbip-host loaded (usbip server)" || true
-echo -e "vhci-hcd\nusbip-host" > /etc/modules-load.d/hil-usbip.conf
-echo "  persisted usbip modules in /etc/modules-load.d/hil-usbip.conf"
+if [[ "$USBIP_CLIENT" == "1" ]]; then
+    modprobe vhci-hcd 2>/dev/null && echo "  vhci-hcd loaded (usbip client)" || true
+    echo -e "vhci-hcd\nusbip-host" > /etc/modules-load.d/hil-usbip.conf
+else
+    printf '%s\n' "# Managed by setup-hil-host.sh — usbip SERVER only (vhci-hcd not loaded at boot;" \
+        "# it would renumber the bench USB bus). HIL_USBIP_CLIENT=1 to add it." usbip-host \
+        > /etc/modules-load.d/hil-usbip.conf
+fi
+echo "  persisted usbip modules in /etc/modules-load.d/hil-usbip.conf (client: $USBIP_CLIENT)"
 
 # Passwordless reboot — the controller's wedged-host auto-recovery
 # (HIL_AUTO_HOST_REBOOT) SSHes in as $HIL_USER and runs `sudo reboot` to clear a
@@ -612,6 +714,35 @@ fi
 
 # NOTE: keep the blanket vendor/usbip-autoattach autobind rule OFF — per-phase
 # flashing binds only the single leased busid, on demand.
+
+# Disk-backed /tmp/hil — job work dirs live under /tmp/hil/<job>, but /tmp is a small
+# RAM tmpfs on Pi OS (~200 MB on a Zero 2 W), too small for a firmware workspace.
+# Bind /tmp/hil onto ~/hil-work. HIL_WORK_ON_DISK=1/0 overrides (default: on when the
+# host has < 1 GiB RAM).
+MEM_KB="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+WORK_ON_DISK="${HIL_WORK_ON_DISK:-$([[ "${MEM_KB:-0}" -lt 1048576 ]] && echo 1 || echo 0)}"
+if [[ "$WORK_ON_DISK" == "1" ]]; then
+    install -d -o "$HIL_USER" -g "$HIL_USER" -m 1777 "$HOME_DIR/hil-work"
+    cat > /etc/systemd/system/tmp-hil.mount <<EOF
+# Managed by setup-hil-host.sh — disk-backed /tmp/hil for HIL job work dirs.
+[Unit]
+Description=Disk-backed /tmp/hil for HIL job work dirs
+After=tmp.mount
+
+[Mount]
+What=$HOME_DIR/hil-work
+Where=/tmp/hil
+Type=none
+Options=bind
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now tmp-hil.mount 2>/dev/null \
+        && echo "  /tmp/hil bind-mounted on $HOME_DIR/hil-work (tmp-hil.mount)" \
+        || echo "  WARNING: could not enable tmp-hil.mount" >&2
+fi
 
 echo ""
 echo "Done. Current groups for $HIL_USER:"
