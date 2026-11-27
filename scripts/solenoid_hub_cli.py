@@ -39,12 +39,23 @@ from pathlib import Path
 # no controller-side python-path config needed. Falls back to the current interpreter
 # when no venv is present (e.g. a host with system-wide Blinka). $HIL_SOLENOID_VENV
 # overrides the path; the guard env var prevents an exec loop.
+def _in_venv(venv_py: str) -> bool:
+    """True when this interpreter is already running inside the venv owning ``venv_py``.
+
+    Compares the active prefix, not the interpreter path: a venv's ``bin/python`` is a
+    symlink to the system interpreter, so ``realpath(venv_py) == realpath(sys.executable)``
+    even from plain system python — which made the re-exec never happen.
+    """
+    venv_dir = os.path.dirname(os.path.dirname(os.path.abspath(venv_py)))
+    return os.path.realpath(sys.prefix) == os.path.realpath(venv_dir)
+
+
 def _maybe_reexec_in_venv() -> None:
     venv_py = os.environ.get("HIL_SOLENOID_VENV", "/opt/hil/venv/bin/python")
     if (
         os.environ.get("_HIL_SOLENOID_VENV_REEXEC") != "1"
         and os.path.isfile(venv_py)
-        and os.path.realpath(venv_py) != os.path.realpath(sys.executable)
+        and not _in_venv(venv_py)
     ):
         os.environ["_HIL_SOLENOID_VENV_REEXEC"] = "1"
         os.execv(venv_py, [venv_py, os.path.abspath(__file__), *sys.argv[1:]])

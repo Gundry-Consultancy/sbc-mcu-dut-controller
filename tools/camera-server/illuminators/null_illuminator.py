@@ -11,7 +11,7 @@ class NullIlluminator(Illuminator):
         self._brightness = 0
 
     def set_brightness(self, value: int) -> None:
-        self._brightness = max(0, min(255, int(value)))
+        self._brightness = self.clamp(value)
 
     def get_brightness(self) -> int:
         return self._brightness

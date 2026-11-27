@@ -13,9 +13,10 @@ possible". If your STEMMA connector lands somewhere else (e.g. GPIO5 or
 GPIO6 on some Adafruit bonnets), bridge the ring's signal line to one
 of the supported GPIOs.
 
-DMA/PWM access also requires root. The systemd unit ships as User=pi;
-switch to User=root on hosts where the illuminator is needed, or use
---no-neopixel to skip illuminator init entirely.
+DMA/PWM access also requires root: setup-hil-host.sh (HIL_CAMERA_NEOPIXEL=1)
+runs the unit as root from /opt/hil/venv. On PWM pins also disable the
+onboard analog audio (dtparam=audio=off). Use --no-neopixel to skip
+illuminator init entirely.
 """
 from __future__ import annotations
 
@@ -66,7 +67,7 @@ class NeoPixelIlluminator(Illuminator):
         self._brightness = 0
 
     def set_brightness(self, value: int) -> None:
-        v = max(0, min(255, int(value)))
+        v = self.clamp(value)
         self._brightness = v
         self._strip.brightness = v / 255.0
         # Re-fill in case anything stomped the colour state, then show.
