@@ -606,8 +606,10 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        systemctl enable --now hil-camera 2>/dev/null \
-            && echo "  hil-camera.service started (snapshots on :8080)" \
+        # restart, not just `enable --now`: on a re-run the service is already up and
+        # would keep serving the OLD code and unit until the next reboot.
+        systemctl enable hil-camera 2>/dev/null && systemctl restart hil-camera 2>/dev/null \
+            && echo "  hil-camera.service (re)started (snapshots on :8080)" \
             || echo "  WARNING: could not start hil-camera.service — check 'journalctl -u hil-camera'" >&2
     else
         echo "  WARNING: tools/camera-server not found next to this script — deploy manually" >&2
